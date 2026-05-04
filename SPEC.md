@@ -1,6 +1,6 @@
 # Context Workspace — Project Specification
 
-**Date:** May 4, 2026 (updated May 5, 2026)
+**Date:** May 4, 2026 (updated May 5, 2026; plan revised May 5, 2026)
 **Status:** Early-stage — not started
 
 ---
@@ -60,6 +60,31 @@ A desktop AI workspace that unifies browsing, context memory, and multi-agent ex
 
 ---
 
+## Investigation Findings (May 5, 2026)
+
+The original direction is strong, but the plan needs one important correction: agent context injection cannot rely on every CLI treating `CLAUDE.md` as the same native memory file.
+
+Validated behavior:
+- **Claude Code:** `CLAUDE.md` is a native project instruction file. Claude Code also supports `.claude/CLAUDE.md`, `CLAUDE.local.md`, imports, and hierarchical loading from the current working directory upward.
+- **opencode:** project instructions are `AGENTS.md` first. `CLAUDE.md` is supported only as a Claude Code compatibility fallback when no local `AGENTS.md` wins.
+- **Codex CLI:** project instructions are `AGENTS.md` first. `CLAUDE.md` is ignored unless the user configures `project_doc_fallback_filenames`. The local CLI supports non-interactive execution with `codex exec`, `--cd`, stdin prompts, JSONL event output, and `--output-last-message`.
+- **Tauri 2:** webview navigation hooks exist in the Rust builder API (`on_navigation`, `on_page_load`, `on_new_window`), so embedded browsing remains viable without a Chrome extension.
+
+Plan change:
+- Add an **Agent Instruction Adapter** instead of assuming a single project `CLAUDE.md` works everywhere.
+- Treat Hermes memory as the source of truth, but treat generated agent instruction files as cache/build artifacts.
+- Never blindly overwrite an existing project `CLAUDE.md`, `AGENTS.md`, or agent config. If Hermes needs to write into a user project, it must use a generated, clearly marked block or a separate `.context-workspace/` artifact and pass that artifact path in the spawn prompt.
+- Build the backend orchestration and memory safety layer before the full Tauri UI. The fastest useful MVP is a local orchestrator that can spawn one real CLI agent with controlled context, capture output, and write a curated memory entry.
+
+Primary references checked:
+- Claude Code memory docs: https://code.claude.com/docs/en/memory
+- opencode rules docs: https://opencode.ai/docs/rules
+- Codex AGENTS.md docs: https://developers.openai.com/codex/guides/agents-md
+- Codex skills docs: https://developers.openai.com/codex/skills
+- Tauri webview builder API: https://docs.rs/tauri/latest/tauri/webview/struct.WebviewWindowBuilder.html
+
+---
+
 ## Core Design Decisions
 
 ### 1. Hermes as Primary Executor
@@ -101,11 +126,11 @@ User: "3 opencode and 3 codex in /project/foo, relevant memory from Codex repo"
   ↓
 Hermes reads MEMORY.md for Codex context
   ↓
-Hermes writes /project/foo/CLAUDE.md with project-relevant memory context
+Hermes writes /project/foo/.context-workspace/runs/<run-id>/context.md
   ↓
 Hermes spawns 6 agents into /project/foo
   ↓
-Each agent auto-loads CLAUDE.md from /project/foo/ (their working directory)
+Each agent receives context through its adapter and spawn prompt
   ↓
 Each agent gets its task via PTY stdin
   ↓
@@ -116,11 +141,19 @@ Hermes logs agent activity to MEMORY.md as if doing the work himself
 Agents exit when done, Hermes reads final output, logs result to MEMORY.md
 ```
 
-### 4. Agent Memory Injection — Two Mechanisms
+### 4. Agent Memory Injection — Adapter Layer
 
-**Static: CLAUDE.md per project directory** (persistent, loaded at every spawn)
+Hermes injects context through agent-specific adapters. The adapter chooses the safest supported mechanism for each CLI instead of pretending every tool has the same instruction-file contract.
 
-**Dynamic: hermes-memory skill** (loaded per agent type, enables mid-task memory queries)
+**Static startup context:**
+- Claude Code: use `CLAUDE.md` / `.claude/CLAUDE.md` only when Hermes owns the generated file or can append a clearly marked generated block safely.
+- opencode: prefer `AGENTS.md`; use `CLAUDE.md` only as a compatibility fallback when no `AGENTS.md` exists.
+- Codex: prefer `AGENTS.md`; optionally configure `project_doc_fallback_filenames` only in a Hermes-managed `CODEX_HOME`, not in the user's global Codex config.
+- All agents: always receive a spawn prompt that includes the task, the relevant Hermes memory excerpt, and the path to any generated `.context-workspace/` context artifact.
+
+**Dynamic memory lookup:** `hermes-memory` skill or equivalent agent instruction that tells the agent how to query Hermes mid-task.
+
+**Rule:** generated instruction files are disposable cache. Hermes's `MEMORY.md` remains the source of truth.
 
 ### Dynamic Memory Queries — hermes-memory Skill
 
@@ -129,9 +162,9 @@ Each spawned agent loads a skill that lets it ask Hermes for relevant memory mid
 **Skill name:** `hermes-memory`
 
 **Installed per agent:**
-- claude-code → `~/.claude/skills/hermes-memory.md`
-- opencode → skill file in opencode's skill directory
-- codex → skill file in codex's skill directory
+- claude-code → Claude-compatible skill or project rule, only after verifying the installed version's supported skill path
+- opencode → Claude Code compatibility skills can use `~/.claude/skills/` unless disabled; otherwise use opencode's native skill mechanism
+- codex → `.agents/skills/hermes-memory/SKILL.md` in the project or `$HOME/.agents/skills/hermes-memory/SKILL.md`
 
 **Skill content:**
 
@@ -187,41 +220,45 @@ Agent incorporates context into its task
 - Hermes logs the query to MEMORY.md: "[opencode-1] asked about: auth module"
 
 **Installation:**
-- Hermes writes the skill file to each agent's skill directory on spawn
-- For claude-code: `~/.claude/skills/hermes-memory.md`
-- For opencode: equivalent path in opencode's config
-- For codex: equivalent path in codex's config
+- Hermes writes dynamic-memory instructions only to Hermes-managed locations, unless the user explicitly opts into project-local files.
+- For Codex, use a real skill directory with `SKILL.md` metadata.
+- For opencode and Claude Code, use the native rule/skill mechanism verified at runtime.
+- If a CLI does not support skills on the installed version, Hermes falls back to putting the memory-query protocol in the spawn prompt.
 
-**Interaction with CLAUDE.md:**
-- CLAUDE.md provides static project context at startup (one-time)
-- hermes-memory skill provides dynamic queries throughout the task
-- Both draw from the same source: Hermes's MEMORY.md
+**Interaction with native instruction files:**
+- `AGENTS.md` / `CLAUDE.md` adapters can provide static project context at startup when safe.
+- `hermes-memory` skill provides dynamic queries throughout the task.
+- Spawn prompts always include enough context to work even when no native file is written.
+- All mechanisms draw from the same source: Hermes's `MEMORY.md`.
 
-### 4b. Agent Memory Injection — CLAUDE.md per Project Directory
+### 4b. Agent Instruction Files Per Project Directory
 
 **How agents receive memory at startup:**
 
-All three agents (opencode, codex, claude-code) auto-load `CLAUDE.md` from their working directory:
-- **claude-code**: loads `./CLAUDE.md` from project root + `~/.claude/CLAUDE.md` global
-- **opencode**: loads `./CLAUDE.md` from project root (confirmed from skill docs)
-- **codex**: likely similar — needs verification
+Agents do not share one universal instruction filename:
+- **claude-code**: loads `CLAUDE.md` and related Claude instruction locations.
+- **opencode**: prefers `AGENTS.md`; uses `CLAUDE.md` as a compatibility fallback.
+- **codex**: prefers `AGENTS.md`; can be configured to recognize fallback names, but should not require global user config changes.
 
-**Simplest approach: write per-project `CLAUDE.md` files.**
+**Safer approach: generate a Hermes context artifact and adapt per agent.**
 
 When spawning agents into `/project/foo`:
-1. Hermes writes relevant memory context to `/project/foo/CLAUDE.md`
-2. Each agent auto-loads it on spawn — zero extra flags, zero env vars, zero API calls
-3. `CLAUDE.md` is each agent's native memory file — it respects it
+1. Hermes writes relevant memory context to `/project/foo/.context-workspace/runs/<run-id>/context.md`
+2. Hermes builds an agent-specific spawn prompt that references this file and embeds a concise memory excerpt.
+3. If a project lacks native instruction files and the user opted in, Hermes can create managed `AGENTS.md` / `CLAUDE.md` files that import or point to the generated context.
+4. If a project already has native instruction files, Hermes must not overwrite them. It should append only inside a marked generated block after explicit opt-in, or rely on spawn prompts.
 
-**Design decision: Persistent project CLAUDE.md**
+**Design decision: persistent project context, non-destructive agent instructions**
 
-`CLAUDE.md` is persistent per project directory, not per agent instance. Multiple agents in the same directory share the same project context. This means:
+The durable context belongs in Hermes memory and in `.context-workspace/` artifacts, not necessarily in first-party instruction files. Multiple agents in the same directory can share the same generated run context. This means:
 - Agent completes task, dies
-- Later: new agent spawned into same `/project/foo` — `CLAUDE.md` still there, already knows the project
-- This is how these tools are designed to work — Claude Code's own auto-memory accumulates across sessions
+- Later: new agent spawned into same `/project/foo` — Hermes can reuse the stable project context, then generate a fresh task context
+- Existing repo instruction files remain under the user's control
 
 **Separation of concerns:**
-- `CLAUDE.md` (per project directory) = stable project context, persists across agent spawns
+- `MEMORY.md` = durable source of truth
+- `.context-workspace/runs/<run-id>/context.md` = generated task/project context for one run
+- Native instruction files (`AGENTS.md`, `CLAUDE.md`) = optional adapters, not the source of truth
 - PTY stdin = per-spawn task instruction, agent-specific assignment
 
 ### 5. Hermes Monitors via PTY Output Streams (H1)
@@ -259,7 +296,7 @@ Rationale: Keeps memory clean and curated. Prevents noise/conflict. Hermes is th
 Multiple directories + multiple instances possible:
 - `/project/foo` — 3 opencode + 3 codex working simultaneously
 - `/project/bar` — 2 claude-code in a different project
-- All agents in same directory share the same `CLAUDE.md`
+- All agents in same directory share the same Hermes-generated run context under `.context-workspace/`
 
 Each directory is a **shared workspace** — all agents in that directory work on the same project.
 
@@ -283,11 +320,13 @@ Hermes receives task
   ↓
 Hermes reads MEMORY.md for relevant context
   ↓
-Hermes writes /project/dir/CLAUDE.md with relevant context
+Hermes writes /project/dir/.context-workspace/runs/<run-id>/context.md
   ↓
-Hermes writes task instruction to agent's PTY stdin
+Hermes builds an agent-specific prompt/instruction adapter
   ↓
-Agent loads CLAUDE.md (auto), receives task via stdin
+Hermes writes task instruction to agent's PTY stdin or CLI stdin
+  ↓
+Agent receives relevant context through prompt + any native instruction adapter
   ↓
 Agent runs to completion (one-shot)
   ↓
@@ -307,11 +346,11 @@ Agent spawned into /project/foo
   ↓
 Agent's CWD = /project/foo
   ↓
-Agent auto-loads /project/foo/CLAUDE.md
+Hermes provides run context from .context-workspace/runs/<run-id>/context.md
   ↓
-CLAUDE.md contains: project name, relevant context from MEMORY.md, current task state
+Native files may also load if present (AGENTS.md, CLAUDE.md, or configured fallback)
   ↓
-Agent has full project context without any API calls or env vars
+Agent has focused project context without requiring global config changes
 ```
 
 ### Hermes Memory Write (Activity Logging)
@@ -351,9 +390,9 @@ GitHub Issue: [title] — [URL] — [intent: debug/understand/decide]
 
 ---
 
-## Project CLAUDE.md Template
+## Generated Agent Context Template
 
-Written by Hermes to `/project/foo/CLAUDE.md` on spawn:
+Written by Hermes to `/project/foo/.context-workspace/runs/<run-id>/context.md` on spawn:
 
 ```markdown
 # Project: <project name>
@@ -364,8 +403,15 @@ Written by Hermes to `/project/foo/CLAUDE.md` on spawn:
 ## Current Task
 <what the spawned agents should be working on>
 
+## Agent Assignments
+<agent id, agent type, role, expected output>
+
 ## Memory
 <any specific facts, decisions, constraints relevant to this project>
+
+## Dynamic Memory Lookup
+If more context is needed, query:
+curl -s "http://localhost:8000/memory/hermes?q=<url-encoded query>"
 ```
 
 Example:
@@ -387,48 +433,146 @@ Repo has Python backend + TypeScript frontend. Need to add test automation.
 - Missing: test step, integration test step
 ```
 
+Native adapter examples:
+- Codex/opencode: create or update Hermes-managed `AGENTS.md` only when safe.
+- Claude Code: create or update Hermes-managed `CLAUDE.md` only when safe.
+- All agents: include the generated context path in the spawn prompt so the agent can read it even when no native instruction file is written.
+
 ---
 
-## Implementation Plan
+## Revised Implementation Plan
 
-### Phase 1: Shared Memory Foundation + Agent Spawning
+### Phase 0: Compatibility Spike (must happen before UI)
 
-1. Create Tauri app with React frontend
-2. Python FastAPI subprocess managed by Tauri (start on app launch, stop on quit)
-3. FastAPI endpoints:
-   - `GET /memory/hermes?q=<query>` — reads from `~/.hermes/profiles/<profile>/memories/MEMORY.md`, returns formatted context
-   - `GET /memory/recent?limit=N` — recent entries
-   - `POST /memory/store` — writes entry to MEMORY.md
-4. Hermes PTY spawn infrastructure (from agent-ide: Rust portable-pty backend)
-5. Hermes PTY reader threads — one per spawned agent instance
-6. Spawn command: parse "N opencode, M codex in /dir" → spawn instances
-7. hermes-memory skill: write to each agent's skill directory on spawn
-8. CLAUDE.md generation per project directory on spawn
-9. Test: Spawn opencode, claude-code, codex into a directory, verify CLAUDE.md is loaded and skill is active
-10. Verify agent can query memory mid-task via curl to FastAPI
-11. Verify Hermes captures agent output and logs to MEMORY.md
+Goal: prove the agent contracts before building around them.
 
-### Phase 2: Hermes Orchestrator
+1. Add a small backend test harness that can run an agent in a temp repo and ask it to report which instruction sources it loaded.
+2. Verify Codex path:
+   - Use `codex exec --cd <dir>` for non-interactive runs.
+   - Use stdin for long task prompts.
+   - Use `--json` for event capture when stable enough; otherwise capture stdout/stderr.
+   - Use `--output-last-message` for final result extraction.
+   - Use Hermes-managed `CODEX_HOME` only when custom fallback filenames or skills are needed.
+3. Verify opencode path:
+   - Prefer `AGENTS.md`.
+   - Confirm whether the installed version exposes a non-interactive mode suitable for one-shot execution.
+   - Confirm skill loading path or fall back to prompt-based dynamic memory instructions.
+4. Verify Claude Code path:
+   - Prefer `CLAUDE.md` / `.claude/CLAUDE.md`.
+   - Confirm current skill support and location on the installed version.
+   - Confirm non-interactive execution mode and output capture behavior.
+5. Record each verified command in the spec and encode it in adapter tests.
 
-1. Hermes is the main interface in the app
-2. Hermes reads memory at startup
-3. Activity feed React component reads from `/memory/recent`
-4. Spawn command: parse "N opencode, M codex in /dir" → spawn instances
-5. Hermes logs all agent activity to MEMORY.md in his own voice
+Exit criteria:
+- At least Codex can be spawned end-to-end from the orchestrator harness.
+- Existing project `AGENTS.md` / `CLAUDE.md` files are not overwritten.
+- Generated context is readable by the agent and final output is captured.
 
-### Phase 3: Multi-Directory + Multi-Instance
+### Phase 1: Backend-Only MVP
 
-1. Support multiple simultaneous directories
-2. Support mixed agent types per directory
-3. Per-instance naming (opencode-1, opencode-2, codex-1, etc.)
-4. PTY reader threads per instance — track all simultaneously
+Goal: prove shared memory + one-shot agent execution without Tauri.
 
-### Phase 4: Context Engine Integration (Post-MVP)
+1. Create Python package under `backend/`.
+2. Implement memory access:
+   - Locate `~/.hermes/profiles/<profile>/memories/MEMORY.md` and `USER.md`.
+   - Parse `§`-delimited entries.
+   - Use file locking for writes.
+   - Add injection scanning/redaction before storing fetched or agent-produced text.
+3. Implement endpoints:
+   - `GET /health`
+   - `GET /memory/hermes?q=<query>`
+   - `GET /memory/recent?limit=N`
+   - `POST /memory/store`
+   - `POST /agents/spawn`
+   - `GET /agents/runs/<run_id>`
+4. Implement an in-memory active-run registry for process status. Memory remains the durable history; the registry is only for live process handles and UI polling.
+5. Implement generated context artifacts:
+   - `.context-workspace/runs/<run_id>/context.md`
+   - `.context-workspace/runs/<run_id>/stdout.log`
+   - `.context-workspace/runs/<run_id>/stderr.log`
+   - `.context-workspace/runs/<run_id>/result.md`
+6. Implement `AgentAdapter` interface:
+   - `build_context(project_dir, run)`
+   - `build_command(project_dir, run)`
+   - `parse_events(output_chunk)`
+   - `summarize_result(run)`
+7. Implement `CodexAdapter` first.
+8. Add tests for memory parsing, memory writes, context artifact generation, and Codex command construction.
 
-1. Webview URL detection (Tauri navigation events)
-2. YouTube transcript fetch + classification
-3. Generic web page fetch + intent ranking
-4. All context stored to MEMORY.md via context engine
+Exit criteria:
+- A local API call can spawn one Codex task in a test project.
+- Hermes captures output, summarizes it, and appends one curated memory entry.
+- The run can be inspected through `/agents/runs/<run_id>`.
+
+### Phase 2: Multi-Agent Runtime
+
+Goal: safely run multiple one-shot agents against one or more project directories.
+
+1. Add per-run IDs and per-agent IDs (`codex-1`, `opencode-1`, `claude-1`).
+2. Add concurrency limits:
+   - global maximum agents
+   - per-project maximum agents
+   - per-agent-type maximum agents
+3. Add cancellation and timeout controls.
+4. Add output readers per process with bounded logs to prevent unbounded memory/disk growth.
+5. Add task routing:
+   - parse user request into agent count, agent type, project directory, and task
+   - reject or ask for clarification when directory or command is unsafe
+6. Add opencode and Claude adapters after Phase 0 verification.
+7. Add integration tests with fake agent executables before running real CLIs in CI.
+
+Exit criteria:
+- Multiple fake agents can run concurrently with deterministic logs.
+- At least two real CLI adapter paths are verified locally.
+- Memory entries remain curated and bounded.
+
+### Phase 3: Tauri Desktop Shell
+
+Goal: wrap the proven orchestrator in a usable desktop app.
+
+1. Create Tauri + React app.
+2. Manage FastAPI subprocess lifecycle from Tauri:
+   - start on app launch
+   - health-check before UI actions
+   - stop on quit
+3. Build UI:
+   - workspace selector
+   - agent spawn form
+   - live run list
+   - terminal/log panes
+   - memory/activity feed
+4. Use Rust PTY support where interactive terminal control is needed. Keep non-interactive runs on the backend process runner until the PTY path is required.
+5. Add basic settings:
+   - Hermes profile path
+   - enabled agent types
+   - concurrency limits
+   - generated-file policy
+
+Exit criteria:
+- User can launch the app, select a project, spawn a Codex run, watch output, and see a memory entry after completion.
+
+### Phase 4: Embedded Browsing + Context Engine
+
+Goal: add browsing context after multi-agent memory sharing works.
+
+1. Add embedded webview with URL bar.
+2. Use Tauri webview navigation hooks to capture navigated URLs.
+3. Add fetch/extract pipeline:
+   - generic web page extraction
+   - GitHub issue/PR extraction
+   - YouTube transcript extraction
+4. Rank intent deterministically first; add model reranking later only if needed.
+5. Store curated browsing summaries through the same `POST /memory/store` path.
+
+Exit criteria:
+- Navigating to a URL can produce a reviewed memory entry.
+- Agent runs can query that memory through `/memory/hermes`.
+
+### Phase 5: Cloud and Pricing Work (defer)
+
+Cloud Hermes, bundled API billing, team memory, and messaging integrations are explicitly post-local-MVP. Do not build cloud-specific code until the free local product proves the loop:
+
+browser/context → Hermes memory → agent spawn → captured result → curated memory.
 
 ---
 
@@ -437,7 +581,27 @@ Repo has Python backend + TypeScript frontend. Need to add test automation.
 ```
 context-workspace/
 ├── SPEC.md                          ← this file
-├── client/                          ← Tauri React frontend
+├── backend/                         ← Python FastAPI orchestrator
+│   ├── app.py                        ← API routes and app wiring
+│   ├── memory.py                     ← MEMORY.md / USER.md parsing and writes
+│   ├── locks.py                      ← cross-platform file locking
+│   ├── safety.py                     ← injection scanning, redaction, path guards
+│   ├── runs.py                       ← active run registry
+│   ├── context_artifacts.py          ← .context-workspace artifact writer
+│   ├── adapters/
+│   │   ├── base.py                   ← AgentAdapter protocol
+│   │   ├── codex.py                  ← Codex CLI adapter
+│   │   ├── opencode.py               ← opencode adapter
+│   │   └── claude.py                 ← Claude Code adapter
+│   ├── webfetch.py                   ← generic page fetch + extract (Phase 4)
+│   └── requirements.txt
+├── tests/
+│   ├── test_memory.py
+│   ├── test_context_artifacts.py
+│   ├── test_codex_adapter.py
+│   └── fixtures/
+│       └── fake_agent.py             ← deterministic fake CLI for tests
+├── client/                          ← Tauri React frontend (Phase 3)
 │   ├── src/
 │   │   ├── App.jsx                  ← main layout
 │   │   ├── components/
@@ -450,13 +614,8 @@ context-workspace/
 │       ├── src/
 │       │   └── lib.rs               ← Rust PTY backend (from agent-ide)
 │       └── Cargo.toml
-└── backend/                         ← Python FastAPI
-    ├── app.py                        ← main API
-    ├── memory.py                     ← reads/writes Hermes MEMORY.md
-    ├── config.py                     ← model tiering
-    ├── github.py                     ← GitHub API fetch
-    ├── webfetch.py                   ← generic page fetch + extract
-    └── requirements.txt
+└── docs/
+    └── adapter-verification.md       ← verified CLI behavior and commands
 ```
 
 ---
@@ -482,7 +641,7 @@ context-workspace/
 ### Build Fresh:
 - URL input + webview navigation integration (Phase 4)
 - Hermes orchestrator integration (spawn, monitor, log)
-- CLAUDE.md generation per project directory
+- Agent instruction adapter and `.context-workspace/` context artifact generation
 - PTY reader threads for multi-instance monitoring
 
 ---
@@ -493,14 +652,17 @@ context-workspace/
 - **YouTube/GitHub Phase 1:** Focus on multi-agent collaboration first (Phase 1-3)
 - **Separate JSONL memory:** Use Hermes's existing MEMORY.md files
 - **Agents as persistent services:** One-shot CLI processes only
+- **Universal CLAUDE.md assumption:** Use agent-specific adapters instead of one instruction filename for every CLI
 
 ---
 
 ## Open Questions
 
-1. **Project name?** TBD — Conductor, Workbench, Scope, Context, or something else
-2. **codex CLI interface?** Needs investigation — how does it handle CLAUDE.md, how does it spawn, how does it output results?
-3. **Webview library in Tauri?** `tauri-plugin-webview` or `webkit2gtk` — need to verify navigation event detection
+1. **Project name?** TBD — Conductor, Workbench, Scope, Context, or something else.
+2. **Hermes ownership boundary?** Confirm whether Context Workspace is allowed to write through Hermes's existing memory tool directly, or whether it should write only through a Hermes-owned API to preserve curation semantics.
+3. **Agent install detection?** Decide whether missing CLIs should be shown as setup warnings in the UI or handled through an installer flow.
+4. **Generated file policy?** Decide default behavior for appending to existing `AGENTS.md` / `CLAUDE.md`: likely off by default, opt-in per project.
+5. **PTY vs subprocess first?** Backend subprocess capture is enough for the first Codex MVP; interactive PTY should wait until the desktop terminal UX requires it.
 
 ---
 
@@ -614,25 +776,25 @@ User's Machine (connector app)
 - Hermes logs agent activity to MEMORY.md as if he were doing the work himself
 
 ### Memory injection approaches (L)
-- Decision: persistent per-project CLAUDE.md files (simplest, token-efficient)
-- All three agents (opencode, codex, claude-code) auto-load CLAUDE.md from their working directory
-- claude-code: loads ./CLAUDE.md + ~/.claude/CLAUDE.md (global)
-- opencode: loads ./CLAUDE.md from project root
-- codex: likely similar — needs verification
-- NOT per-agent-instance: CLAUDE.md persists across agent spawns in same directory
-- Separation: CLAUDE.md = stable project context, PTY stdin = per-spawn task instruction
+- Superseded decision: do not rely on persistent per-project CLAUDE.md for all agents.
+- Revised decision: use an Agent Instruction Adapter per CLI.
+- claude-code: use CLAUDE.md-compatible files when safe.
+- opencode: prefer AGENTS.md; CLAUDE.md is a fallback.
+- codex: prefer AGENTS.md; use Hermes-managed CODEX_HOME if fallback filenames or skills are needed.
+- Stable context lives in Hermes MEMORY.md and generated `.context-workspace/` artifacts.
+- PTY/stdin prompt remains the per-spawn task instruction and agent-specific assignment.
 
 ### Dynamic memory queries (hermes-memory skill) — NEW
 - Each spawned agent also loads a hermes-memory skill
 - Lets agents ask Hermes for relevant memory mid-task (not just at startup)
 - Works like any agent skill: trigger condition + action (curl to FastAPI)
 - Skill installed per agent type on spawn:
-  - claude-code → ~/.claude/skills/hermes-memory.md
-  - opencode → equivalent path in opencode config
-  - codex → equivalent path in codex config
+  - claude-code → verified Claude-compatible skill/rule location
+  - opencode → verified opencode skill/rule location
+  - codex → `.agents/skills/hermes-memory/SKILL.md` or Hermes-managed user skill
 - How it works: agent runs `curl -s http://localhost:8000/memory/hermes?q=<query>`, incorporates response
 - Hermes logs the query to MEMORY.md: "[opencode-1] asked about: auth module"
-- Two memory mechanisms: CLAUDE.md (static, startup) + hermes-memory (dynamic, mid-task)
+- Two memory mechanisms: generated startup context + hermes-memory (dynamic, mid-task)
 - Both draw from same source: Hermes's MEMORY.md
 - Protocol: GET /memory/hermes?q=<query> → formatted plain text response
 
@@ -651,7 +813,7 @@ User's Machine (connector app)
 ### Directory model (N)
 - Single shared directory per agent group
 - /project/foo: 3 opencode + 3 codex working simultaneously
-- All agents in same directory share same CLAUDE.md
+- All agents in same directory share the same generated run context under `.context-workspace/`
 - Multiple directories supported simultaneously
 
 ### Memory write protocol (D)
@@ -661,8 +823,8 @@ User's Machine (connector app)
 
 ### Memory scope per instance (A)
 - A3: Each instance sees only what Hermes explicitly routes
-- Hermes writes targeted CLAUDE.md per project directory
-- Different directories = different CLAUDE.md = different project context
+- Hermes writes targeted run context per project directory
+- Different directories = different `.context-workspace/` context artifacts = different project context
 
 ### How agents communicate results (C)
 - C1: Agent's output captured by Hermes (via PTY reader), Hermes writes summary to MEMORY.md
@@ -675,7 +837,7 @@ User's Machine (connector app)
 - Mixed mode supported
 
 ### Task state tracking (K)
-- Memory IS the task board — no separate state store
+- Memory is the durable task history; an in-memory active-run registry tracks live process handles and transient status
 - Entries like "[opencode-1] Task: review auth.py | Status: running | Started: 10:32am"
 - When task completes, Hermes updates entry to "done" with output note
 - Next agent reads updated memory to pick up context
@@ -690,7 +852,7 @@ User's Machine (connector app)
 ### What we decided NOT to do
 - Agents do NOT write directly to MEMORY.md
 - Agents do NOT communicate peer-to-peer
-- No separate session state store (memory is the task board)
+- No separate durable task-history store beyond memory; live process state can use an in-memory registry
 - No completion markers (process exit is the signal)
 - No persistent agent services (one-shot processes only)
 

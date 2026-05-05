@@ -1,13 +1,19 @@
+import { Database } from "lucide-react";
+
 type Props = {
   entries: string[];
+  variant?: "side" | "full";
 };
 
-export function ActivityFeed({ entries }: Props) {
+export function ActivityFeed({ entries, variant = "side" }: Props) {
   return (
-    <div className="panel activityFeed">
+    <div className={variant === "full" ? "panel activityFeed fullPanel" : "panel activityFeed"}>
       <div className="panelHeader">
-        <h2>Memory</h2>
-        <span>{entries.length}</span>
+        <div className="panelTitle">
+          <Database size={16} />
+          <h2>Memory</h2>
+        </div>
+        <span>{entries.length} entries</span>
       </div>
       <div className="memoryRows">
         {entries.map((entry, index) => (

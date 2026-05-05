@@ -97,7 +97,7 @@ def create_app(
     def hermes_memory(
         q: str = Query(default=""),
         agent_id: str | None = Query(default=None),
-        limit: int = Query(default=10, ge=1, le=100),
+        limit: int = Query(default=10, ge=1, le=1000),
     ) -> str:
         response = app.state.memory.format_query_response(q, limit=limit)
         if q.strip():

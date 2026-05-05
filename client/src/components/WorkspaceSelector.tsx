@@ -24,7 +24,7 @@ export function WorkspaceSelector({ workspace, onWorkspaceChange }: Props) {
           onChange={(event) => onWorkspaceChange(event.target.value)}
           placeholder="Select a project directory"
         />
-        <button className="iconButton" onClick={chooseWorkspace} title="Select workspace">
+        <button className="button buttonIcon" onClick={chooseWorkspace} title="Select workspace">
           <FolderOpen size={18} />
         </button>
       </div>

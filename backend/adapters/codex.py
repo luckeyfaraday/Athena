@@ -17,14 +17,18 @@ class CodexAdapter:
         *,
         executable: str = "codex",
         use_json: bool = True,
+        skip_git_repo_check: bool = True,
         output_last_message: Path | None = None,
     ) -> None:
         self.executable = executable
         self.use_json = use_json
+        self.skip_git_repo_check = skip_git_repo_check
         self.output_last_message = output_last_message
 
     def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
         argv = [self.executable, "exec", "--cd", str(run.project_dir)]
+        if self.skip_git_repo_check:
+            argv.append("--skip-git-repo-check")
         if self.use_json:
             argv.append("--json")
 
@@ -63,4 +67,3 @@ def _render_prompt(run: Run, artifacts: RunArtifacts) -> str:
             "",
         ]
     )
-

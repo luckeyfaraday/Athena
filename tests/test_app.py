@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.adapters.base import AdapterCommand
 from backend.app import create_app
 from backend.context_artifacts import RunArtifacts
+from backend.hermes import HermesInstallResult, HermesStatus
 from backend.memory import HermesMemoryStore
 from backend.runs import Run, RunRegistry, RunStatus
 
@@ -34,6 +35,35 @@ class FakeAdapter:
         return artifacts.result.read_text(encoding="utf-8").strip()
 
 
+class FakeHermesManager:
+    def __init__(self, home: Path) -> None:
+        self.hermes_home = home
+        self.installed = False
+
+    def status(self) -> HermesStatus:
+        return HermesStatus(
+            installed=self.installed,
+            command_path="C:/fake/hermes" if self.installed else None,
+            version="hermes 0.12.0" if self.installed else None,
+            hermes_home=self.hermes_home,
+            config_exists=self.installed,
+            memory_path=self.hermes_home / "memories" / "MEMORY.md" if self.installed else None,
+            native_windows=False,
+            install_supported=True,
+            setup_required=False,
+            message="Hermes Agent is installed." if self.installed else "Hermes Agent is not installed.",
+        )
+
+    def install(self, *, timeout_seconds: float = 600) -> HermesInstallResult:
+        self.installed = True
+        return HermesInstallResult(
+            returncode=0,
+            stdout="installed",
+            stderr="",
+            status=self.status(),
+        )
+
+
 def test_health_endpoint(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -41,6 +71,35 @@ def test_health_endpoint(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_hermes_status_endpoint(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/hermes/status")
+
+    assert response.status_code == 200
+    hermes = response.json()["hermes"]
+    assert hermes["installed"] is False
+    assert hermes["install_supported"] is True
+
+
+def test_hermes_install_requires_confirmation(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post("/hermes/install", json={})
+
+    assert response.status_code == 400
+
+
+def test_hermes_install_endpoint_runs_manager(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post("/hermes/install", json={"confirm": True})
+
+    assert response.status_code == 200
+    assert response.json()["returncode"] == 0
+    assert response.json()["hermes"]["installed"] is True
 
 
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
@@ -87,6 +146,7 @@ def _client(tmp_path: Path) -> TestClient:
     fixture = Path(__file__).parent / "fixtures" / "fake_agent.py"
     app = create_app(
         memory=memory,
+        hermes=FakeHermesManager(tmp_path / ".hermes"),
         registry=registry,
         adapters={"codex": FakeAdapter(fixture)},
         execute_inline=True,

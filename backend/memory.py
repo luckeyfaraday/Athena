@@ -9,7 +9,7 @@ from pathlib import Path
 from .locks import exclusive_file_lock
 
 
-ENTRY_SEPARATOR = "§"
+ENTRY_SEPARATOR = "\u00a7"
 DEFAULT_PROFILE = "default"
 
 _SECRET_PATTERNS = [
@@ -37,10 +37,25 @@ class HermesMemoryStore:
         memory_path: Path | None = None,
         user_path: Path | None = None,
     ) -> None:
-        base = root or Path.home() / ".hermes" / "profiles" / profile / "memories"
+        base = root or Path.home() / ".hermes" / "memories"
         self.memory_path = memory_path or base / "MEMORY.md"
         self.user_path = user_path or base / "USER.md"
         self.lock_path = self.memory_path.with_suffix(self.memory_path.suffix + ".lock")
+
+    @classmethod
+    def from_hermes_home(
+        cls,
+        hermes_home: Path,
+        *,
+        profile: str = DEFAULT_PROFILE,
+    ) -> "HermesMemoryStore":
+        memory_path = hermes_home / "memories" / "MEMORY.md"
+        user_path = hermes_home / "memories" / "USER.md"
+        legacy_memory_path = hermes_home / "profiles" / profile / "memories" / "MEMORY.md"
+        legacy_user_path = hermes_home / "profiles" / profile / "memories" / "USER.md"
+        if legacy_memory_path.exists() and not memory_path.exists():
+            return cls(memory_path=legacy_memory_path, user_path=legacy_user_path)
+        return cls(memory_path=memory_path, user_path=user_path)
 
     def entries(self) -> list[MemoryEntry]:
         return [MemoryEntry(text=entry) for entry in parse_memory_entries(_read_text(self.memory_path))]

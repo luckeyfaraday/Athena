@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from .adapters.base import AgentAdapter
 from .adapters.codex import CodexAdapter
 from .executor import ExecutionResult, RunExecutor
+from .hermes import HermesManager
 from .memory import HermesMemoryStore
 from .runs import Run, RunRegistry
 
@@ -31,16 +32,23 @@ class SpawnAgentRequest(BaseModel):
     timeout_seconds: float | None = Field(default=None, gt=0)
 
 
+class HermesInstallRequest(BaseModel):
+    confirm: bool = False
+    timeout_seconds: float = Field(default=600, gt=0, le=3600)
+
+
 def create_app(
     *,
     memory: HermesMemoryStore | None = None,
+    hermes: HermesManager | None = None,
     registry: RunRegistry | None = None,
     executor: RunExecutor | None = None,
     adapters: dict[str, AgentAdapter] | None = None,
     execute_inline: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="Context Workspace Backend")
-    app.state.memory = memory or HermesMemoryStore()
+    app.state.hermes = hermes or HermesManager()
+    app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.hermes_home)
     app.state.registry = registry or RunRegistry()
     app.state.executor = executor or RunExecutor(registry=app.state.registry)
     app.state.adapters = adapters or {"codex": CodexAdapter()}
@@ -50,6 +58,28 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/hermes/status")
+    def hermes_status() -> dict[str, Any]:
+        return {"hermes": _hermes_status_payload(app.state.hermes.status())}
+
+    @app.post("/hermes/install")
+    def install_hermes(request: HermesInstallRequest) -> dict[str, Any]:
+        if not request.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Set confirm=true to install Hermes Agent.",
+            )
+        try:
+            result = app.state.hermes.install(timeout_seconds=request.timeout_seconds)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "hermes": _hermes_status_payload(result.status),
+        }
 
     @app.get("/memory/hermes", response_class=PlainTextResponse)
     def hermes_memory(
@@ -152,3 +182,18 @@ def _run_payload(run: Run) -> dict[str, Any]:
         if isinstance(value, datetime):
             payload[key] = value.isoformat()
     return payload
+
+
+def _hermes_status_payload(status: Any) -> dict[str, Any]:
+    return {
+        "installed": status.installed,
+        "command_path": status.command_path,
+        "version": status.version,
+        "hermes_home": str(status.hermes_home),
+        "config_exists": status.config_exists,
+        "memory_path": str(status.memory_path) if status.memory_path else None,
+        "native_windows": status.native_windows,
+        "install_supported": status.install_supported,
+        "setup_required": status.setup_required,
+        "message": status.message,
+    }

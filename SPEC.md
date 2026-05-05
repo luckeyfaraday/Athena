@@ -1,7 +1,7 @@
 # Context Workspace — Project Specification
 
 **Date:** May 4, 2026 (updated May 5, 2026; plan revised May 5, 2026)
-**Status:** Early-stage — not started
+**Status:** Backend MVP in progress; Electron desktop shell not started
 
 ---
 
@@ -25,10 +25,10 @@ A desktop AI workspace that unifies browsing, context memory, and multi-agent ex
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Tauri Desktop App (React + Rust)                           │
+│  Electron Desktop App (React + Node main process)            │
 │                                                              │
 │  ┌────────────────┐  ┌─────────────────────────────────┐   │
-│  │  Webview        │  │  Agent Instances (PTY)           │   │
+│  │  Webview        │  │  Agent Runs (subprocess first)   │   │
 │  │                 │  │                                  │   │
 │  │  youtube.com/   │  │  [Hermes] [opencode] [codex]   │   │
 │  │  github.com/... │  │  [claude]                      │   │
@@ -37,7 +37,7 @@ A desktop AI workspace that unifies browsing, context memory, and multi-agent ex
 │  └────────┬───────┘  └─────────────────────────────────┘   │
 │           │                                                    │
 │           ↓                                                    │
-│  Context Engine (Python FastAPI, subprocess of Tauri)         │
+│  Context Engine (Python FastAPI, subprocess of Electron)      │
 │  - Fetches page content (URL input or webview nav event)      │
 │  - Intent detection (deterministic intent ranking)            │
 │  - Stores results in Hermes MEMORY.md                        │
@@ -68,20 +68,20 @@ Validated behavior:
 - **Claude Code:** `CLAUDE.md` is a native project instruction file. Claude Code also supports `.claude/CLAUDE.md`, `CLAUDE.local.md`, imports, and hierarchical loading from the current working directory upward.
 - **opencode:** project instructions are `AGENTS.md` first. `CLAUDE.md` is supported only as a Claude Code compatibility fallback when no local `AGENTS.md` wins.
 - **Codex CLI:** project instructions are `AGENTS.md` first. `CLAUDE.md` is ignored unless the user configures `project_doc_fallback_filenames`. The local CLI supports non-interactive execution with `codex exec`, `--cd`, stdin prompts, JSONL event output, and `--output-last-message`.
-- **Tauri 2:** webview navigation hooks exist in the Rust builder API (`on_navigation`, `on_page_load`, `on_new_window`), so embedded browsing remains viable without a Chrome extension.
+- **Electron:** the desktop shell should use Electron + React instead of Tauri. The app is mostly forms, run lists, logs, and activity feed, so Electron's built-in DevTools, Node subprocess management, file dialogs, and packaging path reduce implementation complexity. Tradeoff accepted: larger installers and higher idle memory than Tauri.
 
 Plan change:
 - Add an **Agent Instruction Adapter** instead of assuming a single project `CLAUDE.md` works everywhere.
 - Treat Hermes memory as the source of truth, but treat generated agent instruction files as cache/build artifacts.
 - Never blindly overwrite an existing project `CLAUDE.md`, `AGENTS.md`, or agent config. If Hermes needs to write into a user project, it must use a generated, clearly marked block or a separate `.context-workspace/` artifact and pass that artifact path in the spawn prompt.
-- Build the backend orchestration and memory safety layer before the full Tauri UI. The fastest useful MVP is a local orchestrator that can spawn one real CLI agent with controlled context, capture output, and write a curated memory entry.
+- Build the backend orchestration and memory safety layer before the full Electron UI. The fastest useful MVP is a local orchestrator that can spawn one real CLI agent with controlled context, capture output, and write a curated memory entry.
 
 Primary references checked:
 - Claude Code memory docs: https://code.claude.com/docs/en/memory
 - opencode rules docs: https://opencode.ai/docs/rules
 - Codex AGENTS.md docs: https://developers.openai.com/codex/guides/agents-md
 - Codex skills docs: https://developers.openai.com/codex/skills
-- Tauri webview builder API: https://docs.rs/tauri/latest/tauri/webview/struct.WebviewWindowBuilder.html
+- Electron docs: https://www.electronjs.org/docs/latest/
 
 ---
 
@@ -181,10 +181,10 @@ When you need context about:
 ## How to invoke
 Run this command and include the output in your context:
 
-  curl -s http://localhost:8000/memory/hermes?q=<your query>
+  curl -s <backend-base-url>/memory/hermes?q=<your query>
 
 Replace `<your query>` with a short keyword or phrase. Example:
-  curl -s http://localhost:8000/memory/hermes?q=auth+module+decisions
+  curl -s <backend-base-url>/memory/hermes?q=auth+module+decisions
 
 ## When to invoke
 - When you start working on a new file or module
@@ -200,7 +200,7 @@ Replace `<your query>` with a short keyword or phrase. Example:
 
 **How Hermes serves memory queries:**
 ```
-Agent: curl http://localhost:8000/memory/hermes?q=auth+module
+Agent: curl <backend-base-url>/memory/hermes?q=auth+module
   ↓
 FastAPI reads from MEMORY.md (via Hermes memory tool)
   ↓
@@ -218,6 +218,7 @@ Agent incorporates context into its task
 - FastAPI returns formatted plain text (no JSON wrapper)
 - Agent treats response as informational context
 - Hermes logs the query to MEMORY.md: "[opencode-1] asked about: auth module"
+- In the Electron app, `<backend-base-url>` is assigned dynamically by the main process and injected into generated run context; agents must not assume `localhost:8000`.
 
 **Installation:**
 - Hermes writes dynamic-memory instructions only to Hermes-managed locations, unless the user explicitly opts into project-local files.
@@ -411,7 +412,7 @@ Written by Hermes to `/project/foo/.context-workspace/runs/<run-id>/context.md` 
 
 ## Dynamic Memory Lookup
 If more context is needed, query:
-curl -s "http://localhost:8000/memory/hermes?q=<url-encoded query>"
+curl -s "<backend-base-url>/memory/hermes?q=<url-encoded query>"
 ```
 
 Example:
@@ -470,7 +471,7 @@ Exit criteria:
 
 ### Phase 1: Backend-Only MVP
 
-Goal: prove shared memory + one-shot agent execution without Tauri.
+Goal: prove shared memory + one-shot agent execution without the desktop shell.
 
 1. Create Python package under `backend/`.
 2. Implement memory access:
@@ -526,23 +527,36 @@ Exit criteria:
 - At least two real CLI adapter paths are verified locally.
 - Memory entries remain curated and bounded.
 
-### Phase 3: Tauri Desktop Shell
+### Phase 3: Electron Desktop Shell
 
 Goal: wrap the proven orchestrator in a usable desktop app.
 
-1. Create Tauri + React app.
-2. Manage FastAPI subprocess lifecycle from Tauri:
-   - start on app launch
-   - health-check before UI actions
-   - stop on quit
-3. Build UI:
+1. Create Electron + React + Vite app under `client/`.
+2. Manage FastAPI subprocess lifecycle from the Electron main process:
+   - choose a free localhost port dynamically on launch; do not hardcode `8000`
+   - start the Python FastAPI backend with the chosen host/port in environment/config
+   - wait for `GET /health` before enabling backend-dependent UI actions
+   - pass the backend base URL to the renderer through preload/context bridge
+   - stop the backend subprocess on app quit
+3. Keep Electron security boundaries strict from day one:
+   - `contextIsolation: true`
+   - `nodeIntegration: false`
+   - narrow preload API only
+   - renderer never spawns processes or reads arbitrary files directly
+   - renderer talks to FastAPI through HTTP using the backend URL supplied by preload
+4. Build a workspace-first UI, not a landing page:
    - workspace selector
    - agent spawn form
    - live run list
-   - terminal/log panes
+   - log viewer backed by `/agents/runs/{run_id}/artifacts/{artifact_name}`
    - memory/activity feed
-4. Use Rust PTY support where interactive terminal control is needed. Keep non-interactive runs on the backend process runner until the PTY path is required.
-5. Add basic settings:
+   - Hermes status/setup panel
+5. Add renderer backend-health monitoring:
+   - poll `GET /health` while the app is open
+   - show a clear degraded/offline state if the backend dies
+   - allow an explicit restart action, and consider automatic restart after the UI can surface failures safely
+6. Keep non-interactive runs on the Python backend process runner until interactive terminal control is truly required.
+7. Add basic settings:
    - Hermes profile path
    - enabled agent types
    - concurrency limits
@@ -550,13 +564,15 @@ Goal: wrap the proven orchestrator in a usable desktop app.
 
 Exit criteria:
 - User can launch the app, select a project, spawn a Codex run, watch output, and see a memory entry after completion.
+- The renderer receives the backend base URL from Electron preload, not from a hardcoded `localhost:8000` constant.
+- If the backend process dies, the UI detects it via health polling and exposes a recovery path.
 
 ### Phase 4: Embedded Browsing + Context Engine
 
 Goal: add browsing context after multi-agent memory sharing works.
 
 1. Add embedded webview with URL bar.
-2. Use Tauri webview navigation hooks to capture navigated URLs.
+2. Use Electron `webContents` navigation/page-load events to capture navigated URLs.
 3. Add fetch/extract pipeline:
    - generic web page extraction
    - GitHub issue/PR extraction
@@ -601,19 +617,24 @@ context-workspace/
 │   ├── test_codex_adapter.py
 │   └── fixtures/
 │       └── fake_agent.py             ← deterministic fake CLI for tests
-├── client/                          ← Tauri React frontend (Phase 3)
+├── client/                          ← Electron + React frontend (Phase 3)
+│   ├── package.json                  ← Electron, React, Vite, builder scripts
+│   ├── vite.config.ts                ← React bundling
 │   ├── src/
-│   │   ├── App.jsx                  ← main layout
-│   │   ├── components/
-│   │   │   ├── ActivityFeed.jsx     ← recent memories / agent status
-│   │   │   ├── SuggestionsPanel.jsx ← suggested next actions
-│   │   │   ├── InstancePool.jsx     ← agent terminals (from agent-ide)
-│   │   │   └── ...
-│   │   └── tauri.js                ← Tauri IPC wrapper
-│   └── src-tauri/
-│       ├── src/
-│       │   └── lib.rs               ← Rust PTY backend (from agent-ide)
-│       └── Cargo.toml
+│   │   ├── App.tsx                  ← workspace-first layout
+│   │   ├── api.ts                   ← FastAPI client using injected backend URL
+│   │   ├── electron.ts              ← Electron preload API wrapper
+│   │   └── components/
+│   │       ├── WorkspaceSelector.tsx
+│   │       ├── AgentSpawnForm.tsx
+│   │       ├── RunList.tsx
+│   │       ├── LogViewer.tsx
+│   │       └── ActivityFeed.tsx
+│   ├── electron/
+│   │   ├── main.ts                  ← window + backend subprocess lifecycle
+│   │   ├── preload.ts               ← narrow context bridge
+│   │   └── ipc-handlers.ts          ← file dialogs, backend restart/status
+│   └── electron-builder.yml
 └── docs/
     └── adapter-verification.md       ← verified CLI behavior and commands
 ```
@@ -623,10 +644,9 @@ context-workspace/
 ## Borrowed from Existing Projects
 
 ### From agent-ide:
-- Tauri app shell (Rust + React)
-- Rust PTY backend (`portable-pty`) for spawning agent instances
 - Multi-instance workspace model
 - React component architecture
+- Terminal/log layout ideas where they fit the Electron UI
 
 ### From hermes-agent:
 - `memory_tool.py` — MEMORY.md read/write with file locking, char limits, injection scanning
@@ -639,10 +659,12 @@ context-workspace/
 - Ollama reranking (optional)
 
 ### Build Fresh:
-- URL input + webview navigation integration (Phase 4)
+- Electron app shell and secure preload API
+- FastAPI subprocess lifecycle management with dynamic localhost port selection
+- URL input + Electron webview navigation integration (Phase 4)
 - Hermes orchestrator integration (spawn, monitor, log)
 - Agent instruction adapter and `.context-workspace/` context artifact generation
-- PTY reader threads for multi-instance monitoring
+- Interactive PTY support only when a later terminal UX requires it
 
 ---
 
@@ -761,7 +783,7 @@ User's Machine (connector app)
 - Not a chat interface. Not an agent sandbox. AI proactively knows context.
 
 ### Core architecture decisions confirmed
-- Tauri desktop app (React + Rust PTY)
+- Electron desktop app (React renderer + Node main process)
 - Embedded webview (no Chrome extension)
 - Python FastAPI as context engine subprocess
 - Hermes as primary executor / orchestrator
@@ -792,7 +814,7 @@ User's Machine (connector app)
   - claude-code → verified Claude-compatible skill/rule location
   - opencode → verified opencode skill/rule location
   - codex → `.agents/skills/hermes-memory/SKILL.md` or Hermes-managed user skill
-- How it works: agent runs `curl -s http://localhost:8000/memory/hermes?q=<query>`, incorporates response
+- How it works: agent runs `curl -s <backend-base-url>/memory/hermes?q=<query>`, incorporates response
 - Hermes logs the query to MEMORY.md: "[opencode-1] asked about: auth module"
 - Two memory mechanisms: generated startup context + hermes-memory (dynamic, mid-task)
 - Both draw from same source: Hermes's MEMORY.md
@@ -846,7 +868,7 @@ User's Machine (connector app)
 - GitHub issue fetch (focusing on multi-agent collaboration first)
 - YouTube and web content workflows (Phase 4 post-MVP)
 - Separate JSONL memory (using Hermes MEMORY.md)
-- Browser extension (Tauri webview replaces it)
+- Browser extension (Electron webview replaces it)
 - promptless-ai as separate project (merged into this one)
 
 ### What we decided NOT to do

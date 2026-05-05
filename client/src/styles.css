@@ -1,6 +1,26 @@
 :root {
-  color: #1d2430;
-  background: #f6f7f9;
+  color-scheme: dark;
+  --bg: #0e1117;
+  --bg-soft: #151a22;
+  --panel: #191f29;
+  --panel-raised: #202733;
+  --panel-hover: #242d3a;
+  --border: #303948;
+  --border-strong: #405066;
+  --text: #e7ebf2;
+  --muted: #99a4b5;
+  --muted-strong: #c0c8d4;
+  --accent: #4c8dff;
+  --accent-strong: #74a5ff;
+  --success: #48c285;
+  --success-bg: #10291e;
+  --warning: #e0a43a;
+  --warning-bg: #2d2412;
+  --danger: #ee6b73;
+  --danger-bg: #32191d;
+  --code-bg: #090c11;
+  color: var(--text);
+  background: var(--bg);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -16,6 +36,7 @@ body {
   margin: 0;
   min-width: 960px;
   min-height: 640px;
+  background: var(--bg);
 }
 
 button,
@@ -39,6 +60,9 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  background:
+    linear-gradient(180deg, rgba(76, 141, 255, 0.08), transparent 260px),
+    var(--bg);
 }
 
 .topbar {
@@ -47,7 +71,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  border-bottom: 1px solid #d9dee7;
+  border-bottom: 1px solid var(--border);
 }
 
 .topbar h1 {
@@ -59,7 +83,7 @@ button:disabled {
 
 .topbar p {
   margin: 5px 0 0;
-  color: #697386;
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -72,7 +96,7 @@ button:disabled {
 .status {
   min-width: 122px;
   padding: 7px 10px;
-  border: 1px solid #d9dee7;
+  border: 1px solid var(--border);
   border-radius: 6px;
   text-align: center;
   font-size: 13px;
@@ -80,23 +104,23 @@ button:disabled {
 }
 
 .status.ok {
-  color: #0e6245;
-  background: #e8f5ee;
-  border-color: #b9dfcc;
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: rgba(72, 194, 133, 0.45);
 }
 
 .status.bad {
-  color: #8f2432;
-  background: #fff0f0;
-  border-color: #efc2c2;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: rgba(238, 107, 115, 0.45);
 }
 
 .iconButton,
 .primaryButton,
 .tabs button {
-  border: 1px solid #c9d1de;
-  background: #ffffff;
-  color: #263244;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-raised);
+  color: var(--text);
   border-radius: 6px;
 }
 
@@ -107,23 +131,28 @@ button:disabled {
   place-items: center;
 }
 
+.iconButton:hover,
+.tabs button:hover {
+  background: var(--panel-hover);
+}
+
 .primaryButton {
   height: 36px;
   padding: 0 12px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: #ffffff;
-  background: #246bfe;
-  border-color: #246bfe;
+  color: #07101f;
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
   font-weight: 650;
 }
 
 .notice {
   padding: 10px 12px;
-  color: #8f2432;
-  background: #fff0f0;
-  border: 1px solid #efc2c2;
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid rgba(238, 107, 115, 0.45);
   border-radius: 6px;
   font-size: 13px;
 }
@@ -141,7 +170,7 @@ button:disabled {
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  color: #697386;
+  color: var(--muted);
 }
 
 .workspaceSelector div {
@@ -149,14 +178,23 @@ button:disabled {
   gap: 8px;
 }
 
+.workspaceSelector input,
+.spawnForm textarea {
+  border: 1px solid var(--border-strong);
+  background: #111720;
+  color: var(--text);
+}
+
+.workspaceSelector input::placeholder,
+.spawnForm textarea::placeholder {
+  color: #69758a;
+}
+
 .workspaceSelector input {
   width: 100%;
   height: 38px;
   padding: 0 11px;
-  border: 1px solid #c9d1de;
   border-radius: 6px;
-  background: #ffffff;
-  color: #263244;
 }
 
 .summaryGrid {
@@ -168,15 +206,15 @@ button:disabled {
 .statusBlock {
   min-height: 54px;
   padding: 10px;
-  border: 1px solid #d9dee7;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--panel);
 }
 
 .statusBlock span {
   display: block;
   margin-bottom: 4px;
-  color: #697386;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
@@ -191,15 +229,15 @@ button:disabled {
 }
 
 .statusBlock.ok {
-  border-left: 4px solid #2b9464;
+  border-left: 4px solid var(--success);
 }
 
 .statusBlock.warn {
-  border-left: 4px solid #c98516;
+  border-left: 4px solid var(--warning);
 }
 
 .statusBlock.neutral {
-  border-left: 4px solid #77839a;
+  border-left: 4px solid var(--muted);
 }
 
 .mainGrid {
@@ -219,9 +257,9 @@ button:disabled {
 
 .panel {
   min-height: 0;
-  border: 1px solid #d9dee7;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--panel);
 }
 
 .panelHeader {
@@ -231,7 +269,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  border-bottom: 1px solid #e3e7ee;
+  border-bottom: 1px solid var(--border);
 }
 
 .panelHeader h2 {
@@ -241,7 +279,7 @@ button:disabled {
 }
 
 .panelHeader span {
-  color: #697386;
+  color: var(--muted);
   font-size: 13px;
 }
 
@@ -255,10 +293,10 @@ button:disabled {
   min-height: 142px;
   resize: vertical;
   padding: 12px;
-  border: 0;
+  border-width: 0;
+  border-top: 1px solid var(--border);
   outline: 0;
   border-radius: 0 0 6px 6px;
-  color: #263244;
 }
 
 .runList,
@@ -284,15 +322,20 @@ button:disabled {
   grid-template-columns: 10px minmax(0, 1fr) 26px;
   align-items: center;
   gap: 9px;
-  border: 1px solid #e3e7ee;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fbfcfd;
+  background: var(--bg-soft);
+  color: var(--text);
   text-align: left;
 }
 
+.runRow:hover {
+  background: var(--panel-hover);
+}
+
 .runRow.selected {
-  border-color: #246bfe;
-  background: #f1f5ff;
+  border-color: var(--accent);
+  background: #17243a;
 }
 
 .runRow strong,
@@ -309,7 +352,7 @@ button:disabled {
 }
 
 .runRow small {
-  color: #697386;
+  color: var(--muted);
   font-size: 12px;
 }
 
@@ -322,27 +365,27 @@ button:disabled {
 }
 
 .rowIcon:hover {
-  background: #e9edf5;
+  background: #2c3748;
 }
 
 .dot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  background: #77839a;
+  background: var(--muted);
 }
 
 .dot.running {
-  background: #246bfe;
+  background: var(--accent);
 }
 
 .dot.succeeded {
-  background: #2b9464;
+  background: var(--success);
 }
 
 .dot.failed,
 .dot.cancelled {
-  background: #c2414b;
+  background: var(--danger);
 }
 
 .tabs {
@@ -357,9 +400,9 @@ button:disabled {
 }
 
 .tabs button.active {
-  color: #ffffff;
-  background: #263244;
-  border-color: #263244;
+  color: #07101f;
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
 }
 
 .logViewer pre {
@@ -368,8 +411,8 @@ button:disabled {
   margin: 0;
   padding: 12px;
   overflow: auto;
-  color: #e8edf4;
-  background: #111821;
+  color: #dce5f1;
+  background: var(--code-bg);
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
   line-height: 1.55;
@@ -379,16 +422,16 @@ button:disabled {
 .memoryRows article {
   padding: 10px;
   margin-bottom: 8px;
-  border: 1px solid #e3e7ee;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: #fbfcfd;
-  color: #263244;
+  background: var(--bg-soft);
+  color: var(--muted-strong);
   font-size: 13px;
   line-height: 1.45;
 }
 
 .empty {
   margin: 10px;
-  color: #697386;
+  color: var(--muted);
   font-size: 13px;
 }

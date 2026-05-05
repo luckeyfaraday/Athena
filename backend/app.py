@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .adapters.base import AgentAdapter
@@ -50,6 +51,13 @@ def create_app(
     execute_inline: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="Context Workspace Backend")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+    )
     app.state.hermes = hermes or HermesManager()
     app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.hermes_home)
     app.state.registry = registry or RunRegistry()

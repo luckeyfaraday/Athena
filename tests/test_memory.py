@@ -29,6 +29,38 @@ def test_memory_store_appends_and_searches_entries(tmp_path: Path) -> None:
     assert "§" in (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
 
 
+def test_memory_store_defaults_to_current_hermes_memory_layout(tmp_path: Path) -> None:
+    store = HermesMemoryStore(root=tmp_path / ".hermes" / "memories")
+
+    assert store.memory_path == tmp_path / ".hermes" / "memories" / "MEMORY.md"
+    assert store.user_path == tmp_path / ".hermes" / "memories" / "USER.md"
+
+
+def test_memory_store_from_hermes_home_prefers_current_layout(tmp_path: Path) -> None:
+    hermes_home = tmp_path / ".hermes"
+    current = hermes_home / "memories" / "MEMORY.md"
+    legacy = hermes_home / "profiles" / "default" / "memories" / "MEMORY.md"
+    current.parent.mkdir(parents=True)
+    legacy.parent.mkdir(parents=True)
+    current.write_text("§\nCurrent\n", encoding="utf-8")
+    legacy.write_text("§\nLegacy\n", encoding="utf-8")
+
+    store = HermesMemoryStore.from_hermes_home(hermes_home)
+
+    assert store.memory_path == current
+
+
+def test_memory_store_from_hermes_home_falls_back_to_legacy_profile_path(tmp_path: Path) -> None:
+    hermes_home = tmp_path / ".hermes"
+    legacy = hermes_home / "profiles" / "default" / "memories" / "MEMORY.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("§\nLegacy\n", encoding="utf-8")
+
+    store = HermesMemoryStore.from_hermes_home(hermes_home)
+
+    assert store.memory_path == legacy
+
+
 def test_recent_memory_returns_latest_entries(tmp_path: Path) -> None:
     store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
     store.append("First")

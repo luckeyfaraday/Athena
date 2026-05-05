@@ -140,6 +140,9 @@ def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -
     assert detail_body["artifacts"]["stderr"]["exists"] is True
     assert detail_body["artifacts"]["result"]["exists"] is True
     assert detail_body["artifacts"]["result"]["size_bytes"] > 0
+    assert detail_body["artifacts"]["stdout"]["name"] == "stdout"
+    assert detail_body["artifacts"]["stdout"]["url"] == f"/agents/runs/{run['run_id']}/artifacts/stdout"
+    assert "path" not in detail_body["artifacts"]["stdout"]
 
     stdout = client.get(f"/agents/runs/{run['run_id']}/artifacts/stdout")
     assert stdout.status_code == 200

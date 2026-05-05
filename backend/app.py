@@ -141,7 +141,7 @@ def create_app(
     def get_run(run_id: str) -> dict[str, Any]:
         run = _get_run_or_404(app.state.registry, run_id)
         artifacts = app.state.executor.artifacts.paths_for(run)
-        return {"run": _run_payload(run), "artifacts": _artifacts_payload(artifacts)}
+        return {"run": _run_payload(run), "artifacts": _artifacts_payload(run.run_id, artifacts)}
 
     @app.get("/agents/runs/{run_id}/artifacts/{artifact_name}", response_class=PlainTextResponse)
     def get_run_artifact(
@@ -206,12 +206,13 @@ def _get_run_or_404(registry: RunRegistry, run_id: str) -> Run:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _artifacts_payload(artifacts: RunArtifacts) -> dict[str, Any]:
+def _artifacts_payload(run_id: str, artifacts: RunArtifacts) -> dict[str, Any]:
     return {
         name: {
-            "path": str(path),
+            "name": name,
             "exists": path.exists(),
             "size_bytes": path.stat().st_size if path.exists() else 0,
+            "url": f"/agents/runs/{run_id}/artifacts/{name}",
         }
         for name, path in _artifact_paths(artifacts).items()
     }

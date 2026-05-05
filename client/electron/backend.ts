@@ -1,0 +1,149 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import net from "node:net";
+import path from "node:path";
+
+export type BackendState = {
+  baseUrl: string | null;
+  healthy: boolean;
+  running: boolean;
+  port: number | null;
+  lastError: string | null;
+};
+
+let backendProcess: ChildProcessWithoutNullStreams | null = null;
+let state: BackendState = {
+  baseUrl: null,
+  healthy: false,
+  running: false,
+  port: null,
+  lastError: null,
+};
+
+export function getBackendState(): BackendState {
+  return { ...state };
+}
+
+export async function startBackend(appRoot: string): Promise<BackendState> {
+  if (backendProcess && state.baseUrl) {
+    return waitForHealth(state.baseUrl);
+  }
+
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const python = process.env.CONTEXT_WORKSPACE_PYTHON || "python";
+  const repoRoot = path.resolve(appRoot, "..");
+
+  backendProcess = spawn(
+    python,
+    ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port)],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
+      },
+      windowsHide: true,
+    },
+  );
+
+  state = {
+    baseUrl,
+    healthy: false,
+    running: true,
+    port,
+    lastError: null,
+  };
+
+  backendProcess.stderr.on("data", (chunk: Buffer) => {
+    const text = chunk.toString("utf8").trim();
+    if (text) {
+      state = { ...state, lastError: text };
+    }
+  });
+
+  backendProcess.on("exit", (code, signal) => {
+    state = {
+      ...state,
+      healthy: false,
+      running: false,
+      lastError: `Backend exited: ${code ?? signal ?? "unknown"}`,
+    };
+    backendProcess = null;
+  });
+
+  return waitForHealth(baseUrl);
+}
+
+export async function restartBackend(appRoot: string): Promise<BackendState> {
+  await stopBackend();
+  return startBackend(appRoot);
+}
+
+export async function stopBackend(): Promise<void> {
+  const processToStop = backendProcess;
+  backendProcess = null;
+  if (!processToStop) {
+    state = { ...state, healthy: false, running: false };
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const timeout = setTimeout(() => {
+      processToStop.kill();
+      resolve();
+    }, 3000);
+    processToStop.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    processToStop.kill();
+  });
+
+  state = { ...state, healthy: false, running: false };
+}
+
+export async function checkBackendHealth(): Promise<BackendState> {
+  if (!state.baseUrl || !state.running) {
+    return getBackendState();
+  }
+  try {
+    const response = await fetch(`${state.baseUrl}/health`);
+    state = { ...state, healthy: response.ok };
+  } catch (error) {
+    state = { ...state, healthy: false, lastError: String(error) };
+  }
+  return getBackendState();
+}
+
+async function waitForHealth(baseUrl: string): Promise<BackendState> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15000) {
+    const checked = await checkBackendHealth();
+    if (checked.healthy) {
+      return checked;
+    }
+    await delay(250);
+  }
+  state = { ...state, healthy: false, lastError: "Backend health check timed out." };
+  return getBackendState();
+}
+
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Unable to allocate backend port.")));
+        return;
+      }
+      const port = address.port;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

@@ -18,7 +18,8 @@ from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
 from .hermes import HermesManager
 from .memory import HermesMemoryStore
-from .runs import Run, RunRegistry
+from .runs import Run, RunRegistry, RunStatus
+from .runtime import RuntimeLimits, adapter_statuses, check_runtime_limits
 
 
 class MemoryStoreRequest(BaseModel):
@@ -45,6 +46,7 @@ def create_app(
     registry: RunRegistry | None = None,
     executor: RunExecutor | None = None,
     adapters: dict[str, AgentAdapter] | None = None,
+    limits: RuntimeLimits | None = None,
     execute_inline: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="Context Workspace Backend")
@@ -53,6 +55,7 @@ def create_app(
     app.state.registry = registry or RunRegistry()
     app.state.executor = executor or RunExecutor(registry=app.state.registry)
     app.state.adapters = adapters or {"codex": CodexAdapter()}
+    app.state.limits = limits or RuntimeLimits()
     app.state.pool = ThreadPoolExecutor(max_workers=4)
     app.state.execute_inline = execute_inline
 
@@ -102,15 +105,32 @@ def create_app(
         entry = app.state.memory.append(request.text)
         return {"stored": True, "entry": entry.text}
 
+    @app.get("/agents/adapters")
+    def get_agent_adapters() -> dict[str, Any]:
+        return {"adapters": adapter_statuses(app.state.adapters)}
+
     @app.post("/agents/spawn", status_code=202)
     def spawn_agent(request: SpawnAgentRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-        adapter = app.state.adapters.get(request.agent_type.strip().lower())
+        agent_type = request.agent_type.strip().lower()
+        adapter = app.state.adapters.get(agent_type)
         if adapter is None:
             raise HTTPException(status_code=400, detail=f"Unsupported agent type: {request.agent_type}")
 
         try:
+            limit_decision = check_runtime_limits(
+                app.state.registry,
+                app.state.limits,
+                project_dir=request.project_dir,
+                agent_type=agent_type,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not limit_decision.allowed:
+            raise HTTPException(status_code=429, detail=limit_decision.reason)
+
+        try:
             run = app.state.registry.create_run(
-                agent_type=request.agent_type,
+                agent_type=agent_type,
                 project_dir=request.project_dir,
                 task=request.task,
             )
@@ -120,9 +140,12 @@ def create_app(
         memory_query = request.memory_query or request.task
         memory_excerpt = app.state.memory.format_query_response(memory_query, limit=10)
         app.state.memory.append(f"[{run.agent_id}] Task: {run.task} | Status: pending")
+        timeout_seconds = request.timeout_seconds
+        if timeout_seconds is None:
+            timeout_seconds = app.state.limits.default_timeout_seconds
 
         if app.state.execute_inline:
-            _execute_and_record(app.state.executor, app.state.memory, run, adapter, memory_excerpt, request.timeout_seconds)
+            _execute_and_record(app.state.executor, app.state.memory, run, adapter, memory_excerpt, timeout_seconds)
         else:
             background_tasks.add_task(
                 app.state.pool.submit,
@@ -132,16 +155,31 @@ def create_app(
                 run,
                 adapter,
                 memory_excerpt,
-                request.timeout_seconds,
+                timeout_seconds,
             )
 
         return {"run": _run_payload(run)}
+
+    @app.get("/agents/runs")
+    def list_runs() -> dict[str, Any]:
+        return {"runs": [_run_payload(run) for run in app.state.registry.list_runs()]}
 
     @app.get("/agents/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         run = _get_run_or_404(app.state.registry, run_id)
         artifacts = app.state.executor.artifacts.paths_for(run)
         return {"run": _run_payload(run), "artifacts": _artifacts_payload(run.run_id, artifacts)}
+
+    @app.post("/agents/runs/{run_id}/cancel")
+    def cancel_run(run_id: str) -> dict[str, Any]:
+        run = _get_run_or_404(app.state.registry, run_id)
+        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            return {"cancelled": False, "run": _run_payload(run)}
+
+        updated = app.state.registry.request_cancel(run.run_id)
+        terminated = app.state.executor.cancel(run.run_id)
+        app.state.memory.append(f"[{updated.agent_id}] cancellation requested for task: {updated.task}")
+        return {"cancelled": True, "terminated_process": terminated, "run": _run_payload(updated)}
 
     @app.get("/agents/runs/{run_id}/artifacts/{artifact_name}", response_class=PlainTextResponse)
     def get_run_artifact(

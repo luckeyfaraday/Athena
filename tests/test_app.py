@@ -11,22 +11,28 @@ from backend.context_artifacts import RunArtifacts
 from backend.hermes import HermesInstallResult, HermesStatus
 from backend.memory import HermesMemoryStore
 from backend.runs import Run, RunRegistry, RunStatus
+from backend.runtime import RuntimeLimits
 
 
 class FakeAdapter:
     agent_type = "codex"
 
-    def __init__(self, fixture: Path) -> None:
+    def __init__(self, fixture: Path, *, sleep: float = 0) -> None:
         self.fixture = fixture
+        self.executable = sys.executable
+        self.sleep = sleep
 
     def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
+        argv = [
+            sys.executable,
+            str(self.fixture),
+            "--output-last-message",
+            str(artifacts.result),
+        ]
+        if self.sleep:
+            argv.extend(["--sleep", str(self.sleep)])
         return AdapterCommand(
-            argv=[
-                sys.executable,
-                str(self.fixture),
-                "--output-last-message",
-                str(artifacts.result),
-            ],
+            argv=argv,
             cwd=run.project_dir,
             stdin=f"run={run.run_id}\ncontext={artifacts.context}\n",
         )
@@ -102,6 +108,19 @@ def test_hermes_install_endpoint_runs_manager(tmp_path: Path) -> None:
     assert response.json()["hermes"]["installed"] is True
 
 
+def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/agents/adapters")
+
+    assert response.status_code == 200
+    adapters = response.json()["adapters"]
+    assert adapters["codex"]["configured"] is True
+    assert adapters["codex"]["executable"] == sys.executable
+    assert adapters["opencode"]["configured"] is False
+    assert adapters["claude"]["configured"] is False
+
+
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -170,15 +189,104 @@ def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -
     assert "fake final message" in memory_text
 
 
-def _client(tmp_path: Path) -> TestClient:
-    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+def test_list_runs_endpoint_returns_spawned_runs(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Run fake agent.",
+        },
+    )
+
+    runs = client.get("/agents/runs")
+
+    assert response.status_code == 202
+    assert runs.status_code == 200
+    assert [run["run_id"] for run in runs.json()["runs"]] == [response.json()["run"]["run_id"]]
+
+
+def test_spawn_rejects_when_global_limit_is_reached(tmp_path: Path) -> None:
     registry = RunRegistry()
+    registry.create_run(agent_type="codex", project_dir=tmp_path, task="Already pending")
+    client = _client(
+        tmp_path,
+        registry=registry,
+        limits=RuntimeLimits(max_global=1, max_per_project=10, max_per_agent_type={"codex": 10}),
+    )
+
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Run fake agent.",
+        },
+    )
+
+    assert response.status_code == 429
+    assert "Global concurrency limit" in response.json()["detail"]
+
+
+def test_spawn_uses_default_timeout_from_runtime_limits(tmp_path: Path) -> None:
+    client = _client(
+        tmp_path,
+        adapter=FakeAdapter(Path(__file__).parent / "fixtures" / "fake_agent.py", sleep=0.2),
+        limits=RuntimeLimits(default_timeout_seconds=0.01),
+        execute_inline=True,
+    )
+
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Run fake agent.",
+        },
+    )
+
+    assert response.status_code == 202
+    detail = client.get(f"/agents/runs/{response.json()['run']['run_id']}")
+    assert detail.json()["run"]["status"] == RunStatus.FAILED.value
+
+
+def test_cancel_run_marks_active_run_cancelled(tmp_path: Path) -> None:
+    client = _client(tmp_path, adapter=FakeAdapter(Path(__file__).parent / "fixtures" / "fake_agent.py", sleep=1), execute_inline=False)
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Run slow fake agent.",
+        },
+    )
+    run_id = response.json()["run"]["run_id"]
+
+    cancelled = client.post(f"/agents/runs/{run_id}/cancel")
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["cancelled"] is True
+    assert cancelled.json()["run"]["status"] == RunStatus.CANCELLED.value
+
+
+def _client(
+    tmp_path: Path,
+    *,
+    adapter: FakeAdapter | None = None,
+    registry: RunRegistry | None = None,
+    limits: RuntimeLimits | None = None,
+    execute_inline: bool = True,
+) -> TestClient:
+    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    registry = registry or RunRegistry()
     fixture = Path(__file__).parent / "fixtures" / "fake_agent.py"
     app = create_app(
         memory=memory,
         hermes=FakeHermesManager(tmp_path / ".hermes"),
         registry=registry,
-        adapters={"codex": FakeAdapter(fixture)},
-        execute_inline=True,
+        adapters={"codex": adapter or FakeAdapter(fixture)},
+        limits=limits,
+        execute_inline=execute_inline,
     )
     return TestClient(app)

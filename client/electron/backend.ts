@@ -30,7 +30,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
 
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
-  const python = process.env.CONTEXT_WORKSPACE_PYTHON || "python";
+  const python = process.env.CONTEXT_WORKSPACE_PYTHON || (process.platform === "win32" ? "python" : "python3");
   const repoRoot = path.resolve(appRoot, "..");
 
   backendProcess = spawn(
@@ -59,6 +59,16 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     if (text) {
       state = { ...state, lastError: text };
     }
+  });
+
+  backendProcess.on("error", (error) => {
+    state = {
+      ...state,
+      healthy: false,
+      running: false,
+      lastError: `Backend failed to start with ${python}: ${error.message}`,
+    };
+    backendProcess = null;
   });
 
   backendProcess.on("exit", (code, signal) => {

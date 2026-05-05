@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,8 +42,14 @@ class HermesInstallResult:
 class HermesManager:
     def __init__(self, *, hermes_home: Path | None = None) -> None:
         self.hermes_home = hermes_home or Path.home() / ".hermes"
+        self._cached_status: HermesStatus | None = None
+        self._cached_at = 0.0
 
     def status(self) -> HermesStatus:
+        now = time.monotonic()
+        if self._cached_status is not None and now - self._cached_at < 60:
+            return self._cached_status
+
         command_path = shutil.which("hermes")
         version = _hermes_version() if command_path else None
         config_exists = (self.hermes_home / "config.yaml").exists()
@@ -61,7 +68,7 @@ class HermesManager:
         else:
             message = "Hermes Agent is installed."
 
-        return HermesStatus(
+        status = HermesStatus(
             installed=installed,
             command_path=command_path,
             version=version,
@@ -73,6 +80,9 @@ class HermesManager:
             setup_required=setup_required,
             message=message,
         )
+        self._cached_status = status
+        self._cached_at = now
+        return status
 
     def install(self, *, timeout_seconds: float = 600) -> HermesInstallResult:
         before = self.status()
@@ -88,6 +98,8 @@ class HermesManager:
             timeout=timeout_seconds,
             check=False,
         )
+        self._cached_status = None
+        self._cached_at = 0.0
         return HermesInstallResult(
             returncode=completed.returncode,
             stdout=completed.stdout,

@@ -22,7 +22,7 @@ export function AgentSpawnForm({ disabled, onSpawn }: Props) {
     <form className="panel spawnForm" onSubmit={submit}>
       <div className="panelHeader">
         <h2>Codex Run</h2>
-        <button className="primaryButton" disabled={disabled || !task.trim()} title="Spawn Codex">
+        <button className="button buttonPrimary" disabled={disabled || !task.trim()} title="Spawn Codex">
           <Play size={17} />
           <span>Spawn</span>
         </button>

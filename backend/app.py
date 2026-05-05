@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from .adapters.base import AgentAdapter
 from .adapters.codex import CodexAdapter
+from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
 from .hermes import HermesManager
 from .memory import HermesMemoryStore
@@ -138,13 +139,25 @@ def create_app(
 
     @app.get("/agents/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
-        try:
-            run = app.state.registry.get(run_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=f"Run not found: {run_id}") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"run": _run_payload(run)}
+        run = _get_run_or_404(app.state.registry, run_id)
+        artifacts = app.state.executor.artifacts.paths_for(run)
+        return {"run": _run_payload(run), "artifacts": _artifacts_payload(artifacts)}
+
+    @app.get("/agents/runs/{run_id}/artifacts/{artifact_name}", response_class=PlainTextResponse)
+    def get_run_artifact(
+        run_id: str,
+        artifact_name: str,
+        max_bytes: int = Query(default=65536, ge=1, le=1048576),
+        tail: bool = Query(default=True),
+    ) -> str:
+        run = _get_run_or_404(app.state.registry, run_id)
+        artifacts = app.state.executor.artifacts.paths_for(run)
+        path = _artifact_path(artifacts, artifact_name)
+        if path is None:
+            raise HTTPException(status_code=404, detail=f"Unknown artifact: {artifact_name}")
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_name}")
+        return _read_bounded_text(path, max_bytes=max_bytes, tail=tail)
 
     return app
 
@@ -182,6 +195,48 @@ def _run_payload(run: Run) -> dict[str, Any]:
         if isinstance(value, datetime):
             payload[key] = value.isoformat()
     return payload
+
+
+def _get_run_or_404(registry: RunRegistry, run_id: str) -> Run:
+    try:
+        return registry.get(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _artifacts_payload(artifacts: RunArtifacts) -> dict[str, Any]:
+    return {
+        name: {
+            "path": str(path),
+            "exists": path.exists(),
+            "size_bytes": path.stat().st_size if path.exists() else 0,
+        }
+        for name, path in _artifact_paths(artifacts).items()
+    }
+
+
+def _artifact_paths(artifacts: RunArtifacts) -> dict[str, Path]:
+    return {
+        "context": artifacts.context,
+        "stdout": artifacts.stdout,
+        "stderr": artifacts.stderr,
+        "result": artifacts.result,
+    }
+
+
+def _artifact_path(artifacts: RunArtifacts, artifact_name: str) -> Path | None:
+    return _artifact_paths(artifacts).get(artifact_name.strip().lower())
+
+
+def _read_bounded_text(path: Path, *, max_bytes: int, tail: bool) -> str:
+    size = path.stat().st_size
+    with path.open("rb") as handle:
+        if tail and size > max_bytes:
+            handle.seek(size - max_bytes)
+        data = handle.read(max_bytes)
+    return data.decode("utf-8", errors="replace")
 
 
 def _hermes_status_payload(status: Any) -> dict[str, Any]:

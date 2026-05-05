@@ -27,8 +27,24 @@ The generated context artifact is written before execution:
 Current implementation status:
 
 - Command construction is covered by unit tests.
+- The run executor is covered with a deterministic fake agent.
 - Real Codex execution is not invoked by the tests yet.
 - `AGENTS.md` behavior still needs a live compatibility spike.
+
+## Fake Agent Harness
+
+The test fixture at `tests/fixtures/fake_agent.py` simulates a one-shot CLI:
+
+- reads the task prompt from stdin
+- writes a final message to `--output-last-message`
+- emits stdout/stderr
+- exits with a configurable status code
+
+This validates the backend loop before real CLI calls:
+
+```text
+RunRegistry -> ContextArtifactWriter -> AgentAdapter -> RunExecutor -> artifacts/status
+```
 
 ## File Safety
 
@@ -40,4 +56,3 @@ Generated artifacts are allowed only under:
 
 The project directory must be absolute, must exist, and cannot be a protected root
 such as `/`, `/etc`, `/usr`, `/var`, or the user's home directory itself.
-

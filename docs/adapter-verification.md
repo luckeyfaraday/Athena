@@ -7,7 +7,7 @@ This document records CLI behavior that Context Workspace depends on.
 Initial adapter target:
 
 ```bash
-codex exec --cd <project-dir> --json --output-last-message <result-path>
+codex exec --cd <project-dir> --skip-git-repo-check --json --output-last-message <result-path>
 ```
 
 The task prompt is passed on stdin. The prompt includes:
@@ -28,8 +28,11 @@ Current implementation status:
 
 - Command construction is covered by unit tests.
 - The run executor is covered with a deterministic fake agent.
+- Live local verification found that `codex exec --cd <dir> --skip-git-repo-check -o <path>` reads `AGENTS.md`, exits `0` on success, and writes the final response.
+- `--json` streams JSONL events to stderr, not stdout.
+- Codex does not discover `.context-workspace/runs/<run-id>/context.md` by itself. The spawn prompt must provide the exact absolute context path.
 - Real Codex execution is not invoked by the tests yet.
-- `AGENTS.md` behavior still needs a live compatibility spike.
+- `scripts/verify_codex_adapter.py` is the local live compatibility harness.
 
 ## Fake Agent Harness
 

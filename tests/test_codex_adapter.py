@@ -21,6 +21,7 @@ def test_codex_adapter_builds_non_interactive_command(tmp_path: Path) -> None:
         "exec",
         "--cd",
         str(tmp_path.resolve()),
+        "--skip-git-repo-check",
         "--json",
         "--output-last-message",
         str(artifacts.result),
@@ -42,4 +43,3 @@ def test_codex_adapter_summarizes_result_file(tmp_path: Path) -> None:
     artifacts.result.write_text("Final answer", encoding="utf-8")
 
     assert CodexAdapter().summarize_result(run, artifacts) == "Final answer"
-

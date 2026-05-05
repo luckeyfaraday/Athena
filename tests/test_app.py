@@ -133,7 +133,37 @@ def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -
 
     detail = client.get(f"/agents/runs/{run['run_id']}")
     assert detail.status_code == 200
-    assert detail.json()["run"]["status"] == RunStatus.SUCCEEDED.value
+    detail_body = detail.json()
+    assert detail_body["run"]["status"] == RunStatus.SUCCEEDED.value
+    assert detail_body["artifacts"]["context"]["exists"] is True
+    assert detail_body["artifacts"]["stdout"]["exists"] is True
+    assert detail_body["artifacts"]["stderr"]["exists"] is True
+    assert detail_body["artifacts"]["result"]["exists"] is True
+    assert detail_body["artifacts"]["result"]["size_bytes"] > 0
+    assert detail_body["artifacts"]["stdout"]["name"] == "stdout"
+    assert detail_body["artifacts"]["stdout"]["url"] == f"/agents/runs/{run['run_id']}/artifacts/stdout"
+    assert "path" not in detail_body["artifacts"]["stdout"]
+
+    stdout = client.get(f"/agents/runs/{run['run_id']}/artifacts/stdout")
+    assert stdout.status_code == 200
+    assert stdout.text.replace("\r\n", "\n") == "fake stdout\n"
+
+    bounded_stdout = client.get(
+        f"/agents/runs/{run['run_id']}/artifacts/stdout",
+        params={"max_bytes": 4},
+    )
+    assert bounded_stdout.status_code == 200
+    assert bounded_stdout.text.replace("\r\n", "\n").endswith("t\n")
+
+    context = client.get(
+        f"/agents/runs/{run['run_id']}/artifacts/context",
+        params={"tail": False, "max_bytes": 32},
+    )
+    assert context.status_code == 200
+    assert context.text.startswith("# Context Workspace")
+
+    unknown = client.get(f"/agents/runs/{run['run_id']}/artifacts/nope")
+    assert unknown.status_code == 404
 
     memory_text = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
     assert "[codex-1] Task: Run fake agent. | Status: pending" in memory_text

@@ -1,4 +1,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+node_modules/
+client/dist/
+client/dist-electron/
+client/release/
 

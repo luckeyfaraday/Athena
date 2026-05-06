@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bot,
@@ -16,6 +16,8 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
+  Maximize2,
+  Minimize2,
   TerminalSquare,
   Users,
   Workflow,
@@ -23,7 +25,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type Run } from "./api";
-import { desktop, type EmbeddedTerminalSession } from "./electron";
+import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "./electron";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
 
@@ -42,6 +44,13 @@ type AgentRole = {
   icon: ReactNode;
   status: "ready" | "running" | "waiting" | "offline";
   brief: string;
+};
+
+type PaneDragState = {
+  id: string;
+  deltaX: number;
+  deltaY: number;
+  targetId: string | null;
 };
 
 const emptyLoadState: LoadState = {
@@ -74,16 +83,27 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
   },
 };
 
-const defaultWorkspace = "/home/alan/home_ai/projects/context-workspace";
+const defaultWorkspace = "C:\\Users\\alanq\\context-workspace";
+const workspaceStorageKey = "context-workspace:lastWorkspace";
+
+function initialWorkspace(): string {
+  try {
+    return window.localStorage.getItem(workspaceStorageKey) || defaultWorkspace;
+  } catch {
+    return defaultWorkspace;
+  }
+}
 
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
-  const [workspace, setWorkspace] = useState(defaultWorkspace);
+  const [workspace, setWorkspace] = useState(initialWorkspace);
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
+  const [terminalFocus, setTerminalFocus] = useState(false);
+  const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
@@ -132,6 +152,14 @@ export function App() {
   }, [client]);
 
   useEffect(() => {
+    try {
+      if (workspace.trim()) window.localStorage.setItem(workspaceStorageKey, workspace);
+    } catch {
+      // Ignore storage failures; the selected workspace still works for this session.
+    }
+  }, [workspace]);
+
+  useEffect(() => {
     desktop
       .getBackendState()
       .then((status) => {
@@ -174,7 +202,7 @@ export function App() {
   useEffect(() => {
     if (autoStartedTerminals.current || !workspace || embeddedSessions.length > 0) return;
     autoStartedTerminals.current = true;
-    void launchEmbedded("shell", 4);
+    void launchEmbedded("shell", 1);
   }, [workspace, embeddedSessions.length]);
 
   async function restartBackend() {
@@ -190,12 +218,12 @@ export function App() {
     }
   }
 
-  async function launchEmbedded(kind: "shell" | "codex", count = 1) {
+  async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1) {
     if (!workspace || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const titles = kind === "codex" ? ["Builder", "Reviewer", "Scout", "Fixer"] : ["Shell"];
+      const titles = terminalGridTitles(kind);
       const created = await Promise.all(
         Array.from({ length: count }, (_, index) =>
           desktop.spawnEmbeddedTerminal(workspace, {
@@ -207,10 +235,20 @@ export function App() {
         ),
       );
       setEmbeddedSessions((current) => [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]);
+      if (count > 1) setLayoutResetNonce((value) => value + 1);
     } catch (err) {
       setError(String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function closeEmbeddedTerminal(id: string) {
+    try {
+      await desktop.killEmbeddedTerminal(id);
+      setEmbeddedSessions((current) => current.filter((session) => session.id !== id));
+    } catch (err) {
+      setError(String(err));
     }
   }
 
@@ -265,7 +303,7 @@ export function App() {
         <span className={backend?.healthy ? "railPulse ok" : "railPulse bad"} />
       </aside>
 
-      <section className="workspaceShell">
+      <section className={terminalFocus && activeRoom === "command" ? "workspaceShell terminalFocusShell" : "workspaceShell"}>
         <header className="heroTopbar">
           <div className="brandLockup">
             <span className="tinyLabel">Context Workspace</span>
@@ -324,14 +362,25 @@ export function App() {
           </div>
         </section>
 
-        <section className="roomGrid">
+        <section className={terminalFocus && activeRoom === "command" ? "roomGrid terminalFocusGrid" : "roomGrid"}>
           <div className="mainRoom">
-            {activeRoom === "command" && <CommandRoom workspace={workspace} sessions={embeddedSessions} busy={busy} onLaunch={launchEmbedded} />}
+            {activeRoom === "command" && (
+              <CommandRoom
+                workspace={workspace}
+                sessions={embeddedSessions}
+                busy={busy}
+                focused={terminalFocus}
+                layoutResetNonce={layoutResetNonce}
+                onFocusChange={setTerminalFocus}
+                onLaunch={launchEmbedded}
+                onClose={closeEmbeddedTerminal}
+              />
+            )}
             {activeRoom === "swarm" && <SwarmRoom roles={agentRoles} runs={activeRuns} adapters={state.adapters} />}
             {activeRoom === "review" && <ReviewRoom latestRun={latestRun} completedRuns={completedRuns} />}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} />}
           </div>
-          <HermesMemoryPanel entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />
+          {!(terminalFocus && activeRoom === "command") && <HermesMemoryPanel entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />}
         </section>
       </section>
     </main>
@@ -368,37 +417,154 @@ function CommandRoom({
   workspace,
   sessions,
   busy,
+  focused,
+  layoutResetNonce,
+  onFocusChange,
   onLaunch,
+  onClose,
 }: {
   workspace: string;
   sessions: EmbeddedTerminalSession[];
   busy: boolean;
-  onLaunch: (kind: "shell" | "codex", count?: number) => Promise<void>;
+  focused: boolean;
+  layoutResetNonce: number;
+  onFocusChange: (focused: boolean) => void;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+  onClose: (id: string) => Promise<void>;
 }) {
-  const visibleSessions = sessions.slice(0, 4);
+  const [paneOrder, setPaneOrder] = useState<string[]>([]);
+  const [dragState, setDragState] = useState<PaneDragState | null>(null);
+  const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const dragTargetRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    setPaneOrder((current) => {
+      const sessionIds = sessions.map((session) => session.id);
+      const known = current.filter((id) => sessionIds.includes(id));
+      const added = sessionIds.filter((id) => !known.includes(id));
+      return [...known, ...added];
+    });
+  }, [sessions]);
+
+  useEffect(() => {
+    if (layoutResetNonce === 0 || sessions.length === 0) return;
+    setPaneOrder(sessions.map((session) => session.id));
+  }, [layoutResetNonce, sessions]);
+
+  const visibleSessions = paneOrder
+    .map((id) => sessions.find((session) => session.id === id))
+    .filter((session): session is EmbeddedTerminalSession => Boolean(session));
+  const shownCount = visibleSessions.length;
+
+  function arrangeGrid() {
+    setPaneOrder(sessions.map((session) => session.id));
+  }
+
+  function movePaneToSlot(sourceSessionId: string, targetSessionId: string) {
+    if (sourceSessionId === targetSessionId) return;
+    setPaneOrder((current) => {
+      const sourceIndex = current.indexOf(sourceSessionId);
+      const targetIndex = current.indexOf(targetSessionId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const next = [...current];
+      next[sourceIndex] = targetSessionId;
+      next[targetIndex] = sourceSessionId;
+      return next;
+    });
+  }
+
+  function startPaneDrag(event: ReactPointerEvent, sessionId: string) {
+    if ((event.target as HTMLElement).closest("button")) return;
+    event.preventDefault();
+    const chrome = event.currentTarget as HTMLElement;
+    chrome.setPointerCapture(event.pointerId);
+    dragStartRef.current = { id: sessionId, x: event.clientX, y: event.clientY };
+    setDragState({ id: sessionId, deltaX: 0, deltaY: 0, targetId: null });
+
+    const move = (moveEvent: PointerEvent) => {
+      const dragStart = dragStartRef.current;
+      if (!dragStart) return;
+      const element = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
+      const targetPane = element?.closest<HTMLElement>("[data-pane-id]");
+      const targetId = targetPane?.dataset.paneId;
+      const nextTargetId = targetId && targetId !== dragStart.id ? targetId : null;
+      dragTargetRef.current = nextTargetId;
+      setDragState({
+        id: dragStart.id,
+        deltaX: moveEvent.clientX - dragStart.x,
+        deltaY: moveEvent.clientY - dragStart.y,
+        targetId: nextTargetId,
+      });
+    };
+
+    const end = () => {
+      const dragStart = dragStartRef.current;
+      const targetId = dragTargetRef.current;
+      dragStartRef.current = null;
+      dragTargetRef.current = null;
+      if (dragStart && targetId) movePaneToSlot(dragStart.id, targetId);
+      setDragState(null);
+      chrome.removeEventListener("pointermove", move);
+      chrome.removeEventListener("pointerup", end);
+      chrome.removeEventListener("pointercancel", end);
+    };
+
+    chrome.addEventListener("pointermove", move);
+    chrome.addEventListener("pointerup", end);
+    chrome.addEventListener("pointercancel", end);
+  }
 
   return (
-    <div className="roomPanel commandRoom">
+    <div className={focused ? "roomPanel commandRoom focused" : "roomPanel commandRoom"}>
       <div className="roomPanelHeader">
         <div>
           <span className="tinyLabel">Embedded PTY control</span>
           <h3>Real terminals inside the workspace</h3>
+          <span className="panelMeta">{sessions.length ? `${shownCount} running sessions` : "No sessions running"}</span>
         </div>
         <div className="buttonRow">
+          <button className="ghostButton" onClick={() => onFocusChange(!focused)} title={focused ? "Exit terminal focus" : "Focus terminals"}>
+            {focused ? <Minimize2 size={15} /> : <Maximize2 size={15} />} {focused ? "Exit Focus" : "Focus"}
+          </button>
           <button className="ghostButton" onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
             <TerminalSquare size={15} /> New Shell
           </button>
+          <button className="ghostButton" onClick={arrangeGrid} disabled={sessions.length === 0}>
+            <Layers3 size={15} /> Arrange Grid
+          </button>
           <button className="primaryButton" onClick={() => void onLaunch("codex", 4)} disabled={!workspace || busy}>
-            <Bot size={15} /> Launch Codex Grid
+            <Bot size={15} /> Codex Grid
+          </button>
+          <button className="primaryButton" onClick={() => void onLaunch("opencode", 4)} disabled={!workspace || busy}>
+            <Bot size={15} /> OpenCode Grid
+          </button>
+          <button className="primaryButton" onClick={() => void onLaunch("claude", 4)} disabled={!workspace || busy}>
+            <Bot size={15} /> Claude Grid
           </button>
         </div>
       </div>
 
-      <div className="terminalStage embeddedStage">
+      <div className="terminalStage embeddedStage slotTerminalStage">
         {visibleSessions.map((session) => (
-          <div key={session.id} className="terminalPane liveTerminalPane">
-            <div className="terminalChrome">
-              <span className="dot red" />
+          <div
+            key={session.id}
+            data-pane-id={session.id}
+            className={[
+              "terminalPane liveTerminalPane slotPane",
+              dragState?.id === session.id ? "dragging" : "",
+              dragState?.targetId === session.id ? "dropTarget" : "",
+            ].filter(Boolean).join(" ")}
+            style={
+              dragState?.id === session.id
+                ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
+                : undefined
+            }
+          >
+            <div
+              className="terminalChrome draggableChrome"
+              onPointerDown={(event) => startPaneDrag(event, session.id)}
+            >
+              <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
               <span className="dot amber" />
               <span className="dot green" />
               <strong>{session.title}</strong>
@@ -418,18 +584,25 @@ function CommandRoom({
 
       <div className="sessionStrip embeddedSessionStrip">
         {sessions.map((session) => (
-          <article key={session.id} className="sessionChip">
+          <div key={session.id} className="sessionChip active">
             <TerminalSquare size={15} />
             <div>
               <strong>{session.title}</strong>
               <span>{session.kind} · {session.status}{session.promptPath ? " · Hermes prompt" : ""}</span>
             </div>
-          </article>
+          </div>
         ))}
         {sessions.length === 0 &&            <p>Embedded terminals replace the old pop-out launcher. This is the Context Workspace surface.</p>}
       </div>
     </div>
   );
+}
+
+function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
+  if (kind === "codex") return ["Codex Builder", "Codex Reviewer", "Codex Scout", "Codex Fixer"];
+  if (kind === "opencode") return ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"];
+  if (kind === "claude") return ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"];
+  return ["Shell"];
 }
 
 function SwarmRoom({ roles, runs, adapters }: { roles: AgentRole[]; runs: Run[]; adapters: Record<string, AdapterStatus> }) {

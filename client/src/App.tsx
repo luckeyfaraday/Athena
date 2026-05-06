@@ -1,4 +1,4 @@
-import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent as ReactDragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bot,
@@ -44,13 +44,6 @@ type AgentRole = {
   icon: ReactNode;
   status: "ready" | "running" | "waiting" | "offline";
   brief: string;
-};
-
-type PaneLayout = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
 };
 
 const emptyLoadState: LoadState = {
@@ -432,123 +425,51 @@ function CommandRoom({
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
 }) {
-  const visibleSessions = sessions;
-  const shownCount = visibleSessions.length;
-  const stageRef = useRef<HTMLDivElement | null>(null);
-  const [paneLayouts, setPaneLayouts] = useState<Record<string, PaneLayout>>({});
-
-  function gridLayouts(nextSessions: EmbeddedTerminalSession[]): Record<string, PaneLayout> {
-    const stageWidth = stageRef.current?.clientWidth ?? 1500;
-    const gap = 16;
-    const columns = stageWidth >= 1180 ? 2 : 1;
-    const paneWidth = Math.max(520, Math.floor((stageWidth - gap * (columns - 1)) / columns));
-    const paneHeight = 400;
-    return Object.fromEntries(
-      nextSessions.map((session, index) => {
-        const col = index % columns;
-        const row = Math.floor(index / columns);
-        return [
-          session.id,
-          {
-            x: col * (paneWidth + gap),
-            y: row * (paneHeight + gap),
-            width: paneWidth,
-            height: paneHeight,
-          },
-        ];
-      }),
-    );
-  }
+  const [paneOrder, setPaneOrder] = useState<string[]>([]);
+  const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
 
   useEffect(() => {
-    setPaneLayouts((current) => {
-      const sessionIds = new Set(sessions.map((session) => session.id));
-      const next = Object.fromEntries(Object.entries(current).filter(([id]) => sessionIds.has(id)));
-      const defaults = gridLayouts(sessions);
-      sessions.forEach((session, index) => {
-        if (next[session.id]) return;
-        next[session.id] = defaults[session.id];
-      });
-      return next;
+    setPaneOrder((current) => {
+      const sessionIds = sessions.map((session) => session.id);
+      const known = current.filter((id) => sessionIds.includes(id));
+      const added = sessionIds.filter((id) => !known.includes(id));
+      return [...known, ...added];
     });
   }, [sessions]);
 
   useEffect(() => {
     if (layoutResetNonce === 0 || sessions.length === 0) return;
-    setPaneLayouts(gridLayouts(sessions));
+    setPaneOrder(sessions.map((session) => session.id));
   }, [layoutResetNonce, sessions]);
 
-  const stageHeight = Math.max(
-    420,
-    ...visibleSessions.map((session) => {
-      const layout = paneLayouts[session.id];
-      return layout ? layout.y + layout.height + 18 : 0;
-    }),
-  );
+  const visibleSessions = paneOrder
+    .map((id) => sessions.find((session) => session.id === id))
+    .filter((session): session is EmbeddedTerminalSession => Boolean(session));
+  const shownCount = visibleSessions.length;
 
-  function updatePaneLayout(sessionId: string, nextLayout: PaneLayout) {
-    setPaneLayouts((current) => ({
-      ...current,
-      [sessionId]: {
-        x: Math.max(0, Math.round(nextLayout.x)),
-        y: Math.max(0, Math.round(nextLayout.y)),
-        width: Math.max(360, Math.round(nextLayout.width)),
-        height: Math.max(220, Math.round(nextLayout.height)),
-      },
-    }));
+  function arrangeGrid() {
+    setPaneOrder(sessions.map((session) => session.id));
   }
 
-  function startPaneDrag(event: ReactPointerEvent, sessionId: string) {
-    if ((event.target as HTMLElement).closest("button")) return;
-    const start = paneLayouts[sessionId];
-    if (!start) return;
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const target = event.currentTarget as HTMLElement;
-    target.setPointerCapture(event.pointerId);
-
-    const move = (moveEvent: PointerEvent) => {
-      updatePaneLayout(sessionId, {
-        ...start,
-        x: start.x + moveEvent.clientX - startX,
-        y: start.y + moveEvent.clientY - startY,
-      });
-    };
-    const up = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", up);
-      target.removeEventListener("pointercancel", up);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", up);
-    target.addEventListener("pointercancel", up);
+  function startPaneDrag(event: ReactDragEvent, sessionId: string) {
+    setDraggedPaneId(sessionId);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", sessionId);
   }
 
-  function startPaneResize(event: ReactPointerEvent, sessionId: string) {
-    event.preventDefault();
-    event.stopPropagation();
-    const start = paneLayouts[sessionId];
-    if (!start) return;
-    const startX = event.clientX;
-    const startY = event.clientY;
-    const target = event.currentTarget as HTMLElement;
-    target.setPointerCapture(event.pointerId);
-
-    const move = (moveEvent: PointerEvent) => {
-      updatePaneLayout(sessionId, {
-        ...start,
-        width: start.width + moveEvent.clientX - startX,
-        height: start.height + moveEvent.clientY - startY,
-      });
-    };
-    const up = () => {
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", up);
-      target.removeEventListener("pointercancel", up);
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", up);
-    target.addEventListener("pointercancel", up);
+  function swapPaneSlots(targetSessionId: string) {
+    const sourceSessionId = draggedPaneId;
+    setDraggedPaneId(null);
+    if (!sourceSessionId || sourceSessionId === targetSessionId) return;
+    setPaneOrder((current) => {
+      const sourceIndex = current.indexOf(sourceSessionId);
+      const targetIndex = current.indexOf(targetSessionId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const next = [...current];
+      next[sourceIndex] = targetSessionId;
+      next[targetIndex] = sourceSessionId;
+      return next;
+    });
   }
 
   return (
@@ -566,7 +487,7 @@ function CommandRoom({
           <button className="ghostButton" onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
             <TerminalSquare size={15} /> New Shell
           </button>
-          <button className="ghostButton" onClick={() => setPaneLayouts(gridLayouts(sessions))} disabled={sessions.length === 0}>
+          <button className="ghostButton" onClick={arrangeGrid} disabled={sessions.length === 0}>
             <Layers3 size={15} /> Arrange Grid
           </button>
           <button className="primaryButton" onClick={() => void onLaunch("codex", 4)} disabled={!workspace || busy}>
@@ -581,24 +502,20 @@ function CommandRoom({
         </div>
       </div>
 
-      <div className="terminalStage embeddedStage freeformTerminalStage" ref={stageRef}>
-        <div className="freeformCanvas" style={{ height: stageHeight }}>
+      <div className="terminalStage embeddedStage slotTerminalStage">
         {visibleSessions.map((session) => (
           <div
             key={session.id}
-            className="terminalPane liveTerminalPane freeformPane"
-            style={
-              paneLayouts[session.id]
-                ? {
-                    left: paneLayouts[session.id].x,
-                    top: paneLayouts[session.id].y,
-                    width: paneLayouts[session.id].width,
-                    height: paneLayouts[session.id].height,
-                  }
-                : undefined
-            }
+            className={draggedPaneId === session.id ? "terminalPane liveTerminalPane slotPane dragging" : "terminalPane liveTerminalPane slotPane"}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={() => swapPaneSlots(session.id)}
           >
-            <div className="terminalChrome draggableChrome" onPointerDown={(event) => startPaneDrag(event, session.id)}>
+            <div
+              className="terminalChrome draggableChrome"
+              draggable
+              onDragStart={(event) => startPaneDrag(event, session.id)}
+              onDragEnd={() => setDraggedPaneId(null)}
+            >
               <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
               <span className="dot amber" />
               <span className="dot green" />
@@ -606,7 +523,6 @@ function CommandRoom({
               <em>{session.status}{session.pid ? ` · pid ${session.pid}` : ""}</em>
             </div>
             <EmbeddedTerminal session={session} />
-            <button className="paneResizeHandle" onPointerDown={(event) => startPaneResize(event, session.id)} title={`Resize ${session.title}`} />
           </div>
         ))}
         {visibleSessions.length === 0 && (
@@ -616,7 +532,6 @@ function CommandRoom({
             <span>Select a workspace, then start a shell or launch a four-pane Codex grid with Hermes memory attached.</span>
           </div>
         )}
-        </div>
       </div>
 
       <div className="sessionStrip embeddedSessionStrip">

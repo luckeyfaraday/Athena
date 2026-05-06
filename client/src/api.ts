@@ -1,0 +1,137 @@
+export type BackendStatus = {
+  baseUrl: string | null;
+  healthy: boolean;
+  running: boolean;
+  port: number | null;
+  lastError: string | null;
+};
+
+export type HermesStatus = {
+  installed: boolean;
+  command_path: string | null;
+  version: string | null;
+  hermes_home: string;
+  config_exists: boolean;
+  memory_path: string | null;
+  native_windows: boolean;
+  install_supported: boolean;
+  setup_required: boolean;
+  message: string;
+};
+
+export type AdapterStatus = {
+  agent_type: string;
+  configured: boolean;
+  executable: string;
+  installed: boolean;
+  command_path: string | null;
+};
+
+export type RunStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled";
+
+export type Run = {
+  run_id: string;
+  agent_id: string;
+  agent_type: string;
+  project_dir: string;
+  task: string;
+  status: RunStatus;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  error: string | null;
+};
+
+export type RunArtifact = {
+  name: string;
+  exists: boolean;
+  size_bytes: number;
+  url: string;
+};
+
+export type RunDetail = {
+  run: Run;
+  artifacts: Record<string, RunArtifact>;
+};
+
+export class BackendClient {
+  constructor(private readonly baseUrl: string) {}
+
+  async health(): Promise<{ status: string }> {
+    return this.json("/health");
+  }
+
+  async hermesStatus(): Promise<HermesStatus> {
+    const response = await this.json<{ hermes: HermesStatus }>("/hermes/status");
+    return response.hermes;
+  }
+
+  async adapters(): Promise<Record<string, AdapterStatus>> {
+    const response = await this.json<{ adapters: Record<string, AdapterStatus> }>("/agents/adapters");
+    return response.adapters;
+  }
+
+  async runs(): Promise<Run[]> {
+    const response = await this.json<{ runs: Run[] }>("/agents/runs");
+    return response.runs;
+  }
+
+  async run(runId: string): Promise<RunDetail> {
+    return this.json(`/agents/runs/${encodeURIComponent(runId)}`);
+  }
+
+  async artifact(runId: string, artifactName: string, maxBytes = 65536): Promise<string> {
+    return this.text(`/agents/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactName)}?max_bytes=${maxBytes}`);
+  }
+
+  async recentMemory(limit = 20): Promise<string[]> {
+    const response = await this.json<{ entries: string[] }>(`/memory/recent?limit=${limit}`);
+    return response.entries;
+  }
+
+  async spawnCodex(projectDir: string, task: string): Promise<Run> {
+    const response = await this.json<{ run: Run }>("/agents/spawn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agent_type: "codex",
+        project_dir: projectDir,
+        task,
+      }),
+    });
+    return response.run;
+  }
+
+  async cancelRun(runId: string): Promise<Run> {
+    const response = await this.json<{ run: Run }>(`/agents/runs/${encodeURIComponent(runId)}/cancel`, {
+      method: "POST",
+    });
+    return response.run;
+  }
+
+  private async json<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(`${this.baseUrl}${path}`, init);
+    if (!response.ok) {
+      throw new Error(await errorMessage(response));
+    }
+    return response.json() as Promise<T>;
+  }
+
+  private async text(path: string, init?: RequestInit): Promise<string> {
+    const response = await fetch(`${this.baseUrl}${path}`, init);
+    if (!response.ok) {
+      throw new Error(await errorMessage(response));
+    }
+    return response.text();
+  }
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  try {
+    const body = await response.json();
+    return body.detail ?? response.statusText;
+  } catch {
+    return response.statusText;
+  }
+}

@@ -405,21 +405,14 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .embeddedStage {
   align-content: start;
-  grid-auto-rows: clamp(360px, 42vh, 520px);
+  grid-auto-rows: minmax(390px, auto);
   grid-template-columns: repeat(2, minmax(0, 1fr));
   overflow: auto;
   overscroll-behavior: contain;
 }
-.freeformTerminalStage {
-  display: block;
-  position: relative;
-}
-.freeformCanvas {
-  position: relative;
-  min-width: 100%;
-}
+.slotTerminalStage { grid-auto-flow: row dense; }
 .commandRoom.focused .embeddedStage {
-  grid-auto-rows: clamp(400px, 44vh, 560px);
+  grid-auto-rows: minmax(430px, auto);
 }
 .commandRoom.focused .sessionStrip {
   min-height: 62px;
@@ -440,14 +433,17 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   background: var(--terminal);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 18px 50px rgba(0,0,0,.28);
 }
-.freeformPane {
-  position: absolute;
+.slotPane {
+  min-height: 390px;
+  resize: vertical;
   transition: box-shadow 120ms ease, border-color 120ms ease;
 }
-.freeformPane:hover {
+.slotPane:hover,
+.slotPane.dragging {
   border-color: rgba(34,211,238,.32);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.03), 0 20px 56px rgba(0,0,0,.34), 0 0 0 1px rgba(34,211,238,.08);
 }
+.slotPane.dragging { opacity: .72; }
 .terminalChrome {
   height: 36px;
   padding: 0 12px;
@@ -478,28 +474,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .terminalControl:hover {
   outline: 4px solid rgba(251, 113, 133, .18);
-}
-.paneResizeHandle {
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background:
-    linear-gradient(135deg, transparent 0 45%, rgba(148,163,184,.42) 46% 54%, transparent 55%),
-    linear-gradient(135deg, transparent 0 63%, rgba(148,163,184,.54) 64% 72%, transparent 73%);
-  cursor: nwse-resize;
-  touch-action: none;
-  opacity: .7;
-}
-.paneResizeHandle:hover {
-  background:
-    linear-gradient(135deg, transparent 0 45%, rgba(34,211,238,.72) 46% 54%, transparent 55%),
-    linear-gradient(135deg, transparent 0 63%, rgba(34,211,238,.86) 64% 72%, transparent 73%);
-  opacity: 1;
 }
 .dot.amber { background: #f59e0b; }
 .dot.green { background: #22c55e; }

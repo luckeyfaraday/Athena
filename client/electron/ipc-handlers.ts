@@ -13,6 +13,16 @@ import {
   type NativeTerminalResult,
   type NativeTerminalSession,
 } from "./codex-terminal.js";
+import {
+  getEmbeddedTerminalBuffer,
+  killEmbeddedTerminal,
+  listEmbeddedTerminals,
+  resizeEmbeddedTerminal,
+  spawnEmbeddedTerminal,
+  writeEmbeddedTerminal,
+  type EmbeddedTerminalKind,
+  type EmbeddedTerminalSession,
+} from "./embedded-terminal.js";
 
 export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("backend:getState", (): BackendState => getBackendState());
@@ -38,6 +48,18 @@ export function registerIpcHandlers(appRoot: string): void {
     openNativeCodexGrid(workspace, panes),
   );
   ipcMain.handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
+  ipcMain.handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
+  ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
+  ipcMain.handle(
+    "embeddedTerminal:spawn",
+    (_event, workspace: string, options?: { kind?: EmbeddedTerminalKind; title?: string; cols?: number; rows?: number }): Promise<EmbeddedTerminalSession> =>
+      spawnEmbeddedTerminal(workspace, options),
+  );
+  ipcMain.handle("embeddedTerminal:write", (_event, id: string, data: string): EmbeddedTerminalSession => writeEmbeddedTerminal(id, data));
+  ipcMain.handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): EmbeddedTerminalSession =>
+    resizeEmbeddedTerminal(id, cols, rows),
+  );
+  ipcMain.handle("embeddedTerminal:kill", (_event, id: string): EmbeddedTerminalSession => killEmbeddedTerminal(id));
   ipcMain.handle("dialog:selectWorkspace", async (): Promise<string | null> => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],

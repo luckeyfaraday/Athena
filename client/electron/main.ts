@@ -2,17 +2,63 @@ import { app, BrowserWindow } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcess } from "node:child_process";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 import { startBackend, stopBackend } from "./backend.js";
+import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appRoot = path.resolve(__dirname, "..");
 
 let mainWindow: BrowserWindow | null = null;
+let viteProc: ChildProcess | null = null;
+
+function waitForVite(url: string, timeout = 15000): Promise<void> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    async function poll() {
+      try {
+        const http = await import("node:http");
+        const req = http.get(url, (res: IncomingMessage) => {
+          if (res.statusCode === 200) resolve();
+        });
+        req.on("error", retry);
+      } catch (e) {
+        retry();
+      }
+    }
+    function retry() {
+      if (Date.now() - start > timeout) {
+        reject(new Error(`Vite did not start at ${url} within ${timeout}ms`));
+      } else {
+        setTimeout(poll, 500);
+      }
+    }
+    poll();
+  });
+}
 
 async function createWindow(): Promise<void> {
   await startBackend(appRoot);
+
+  const inDev = !app.isPackaged && isDev;
+  if (inDev) {
+    viteProc = spawn("npx", ["vite", "--host", "127.0.0.1"], {
+      cwd: appRoot,
+      stdio: "pipe",
+      detached: false,
+    });
+    try {
+      await waitForVite("http://127.0.0.1:5173/", 20000);
+    } catch (e) {
+      console.error("Vite failed to start:", e);
+      if (viteProc) {
+        viteProc.kill();
+        viteProc = null;
+      }
+    }
+  }
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -28,7 +74,7 @@ async function createWindow(): Promise<void> {
     },
   });
 
-  if (isDev) {
+  if (inDev) {
     await mainWindow.loadURL("http://127.0.0.1:5173");
   } else {
     await mainWindow.loadFile(path.join(appRoot, "dist", "index.html"));
@@ -38,6 +84,15 @@ async function createWindow(): Promise<void> {
     mainWindow = null;
   });
 }
+
+// GPU/sandbox flags — required in container/CI environments without real GPU
+// Must be set BEFORE app.whenReady() and before any window creation
+app.commandLine.appendSwitch("no-sandbox");
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-software-rasterizer");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("disable-gpu-rasterization");
+app.disableHardwareAcceleration();
 
 app.whenReady().then(async () => {
   registerIpcHandlers(appRoot);
@@ -58,4 +113,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   void stopBackend();
+  if (viteProc) {
+    viteProc.kill();
+    viteProc = null;
+  }
 });

@@ -5,7 +5,7 @@ import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { getBackendState } from "./backend.js";
 
-export type EmbeddedTerminalKind = "shell" | "codex";
+export type EmbeddedTerminalKind = "shell" | "codex" | "opencode" | "claude";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -49,13 +49,12 @@ export async function spawnEmbeddedTerminal(
 
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const promptPath = kind === "codex" ? await writeHermesPrompt(cwd, options.title) : null;
-  const command = process.platform === "win32" ? "cmd.exe" : "bash";
-  const args = process.platform === "win32" ? [] : ["-lc", launchCommand(kind, cwd, promptPath)];
+  const promptPath = kind === "shell" ? null : await writeHermesPrompt(cwd, kind, options.title);
+  const launch = terminalLaunch(kind, cwd, promptPath);
 
   const session: EmbeddedTerminalSession = {
     id,
-    title: options.title ?? (kind === "codex" ? "Codex" : "Shell"),
+    title: options.title ?? defaultTitle(kind),
     kind,
     workspace: cwd,
     pid: null,
@@ -67,7 +66,7 @@ export async function spawnEmbeddedTerminal(
   };
 
   try {
-    const term = pty.spawn(command, args, {
+    const term = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cwd,
       cols: options.cols ?? 96,
@@ -138,12 +137,32 @@ function requireTerminal(id: string): ManagedTerminal {
   return entry;
 }
 
+function terminalLaunch(
+  kind: EmbeddedTerminalKind,
+  cwd: string,
+  promptPath: string | null,
+): { command: string; args: string[] } {
+  if (process.platform === "win32") {
+    if (kind !== "shell" && promptPath) {
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath)],
+      };
+    }
+    return { command: "cmd.exe", args: [] };
+  }
+
+  return { command: "bash", args: ["-lc", launchCommand(kind, cwd, promptPath)] };
+}
+
 function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null): string {
-  if (kind === "codex" && promptPath) {
+  if (kind !== "shell" && promptPath) {
+    const agent = agentConfig(kind);
     return [
       `cd ${quoteShell(cwd)}`,
-      `printf '\\033[36m[Context Workspace] Hermes memory prompt: %s\\033[0m\\n' ${quoteShell(promptPath)}`,
-      `codex --cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
+      `printf '\\033[36m[Context Workspace] %s Hermes prompt: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`,
+      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash")}`,
       "exec bash -l",
     ].join("; ");
   }
@@ -155,7 +174,22 @@ function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: stri
   ].join("; ");
 }
 
-async function writeHermesPrompt(cwd: string, title?: string): Promise<string> {
+function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string): string {
+  const agent = agentConfig(kind);
+  return [
+    `$workspace = ${quotePowerShell(cwd)}`,
+    `$promptPath = ${quotePowerShell(promptPath)}`,
+    "Set-Location -LiteralPath $workspace",
+    `$agentCommand = ${quotePowerShell(agent.executable)}`,
+    `$agentLabel = ${quotePowerShell(agent.label)}`,
+    "Write-Host \"[Context Workspace] $agentLabel Hermes prompt: $promptPath\" -ForegroundColor Cyan",
+    "if (-not (Get-Command $agentCommand -ErrorAction SilentlyContinue)) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    "$prompt = Get-Content -LiteralPath $promptPath -Raw",
+    agent.powerShellCommand,
+  ].join("; ");
+}
+
+async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?: string): Promise<string> {
   const memory = await fetchHermesMemory();
   const directory = path.join(os.tmpdir(), "context-workspace");
   fs.mkdirSync(directory, { recursive: true });
@@ -163,6 +197,7 @@ async function writeHermesPrompt(cwd: string, title?: string): Promise<string> {
   const prompt = [
     "You are running inside an embedded Context Workspace terminal.",
     "",
+    `Agent: ${agentConfig(kind).label}`,
     `Pane: ${title ?? "Codex"}`,
     `Workspace: ${cwd}`,
     "",
@@ -173,6 +208,43 @@ async function writeHermesPrompt(cwd: string, title?: string): Promise<string> {
   ].join("\n");
   fs.writeFileSync(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
   return promptPath;
+}
+
+function defaultTitle(kind: EmbeddedTerminalKind): string {
+  if (kind === "codex") return "Codex";
+  if (kind === "opencode") return "OpenCode";
+  if (kind === "claude") return "Claude";
+  return "Shell";
+}
+
+function agentConfig(kind: EmbeddedTerminalKind): {
+  label: string;
+  executable: string;
+  powerShellCommand: string;
+  args: (cwd: string, promptPath: string, shell: "bash") => string;
+} {
+  if (kind === "opencode") {
+    return {
+      label: "OpenCode",
+      executable: "opencode",
+      powerShellCommand: "& $agentCommand $workspace --prompt $prompt",
+      args: (cwd, promptPath) => `${quoteShell(cwd)} --prompt "$(cat ${quoteShell(promptPath)})"`,
+    };
+  }
+  if (kind === "claude") {
+    return {
+      label: "Claude Code",
+      executable: "claude",
+      powerShellCommand: "& $agentCommand $prompt",
+      args: (_cwd, promptPath) => `"$(cat ${quoteShell(promptPath)})"`,
+    };
+  }
+  return {
+    label: "Codex",
+    executable: "codex",
+    powerShellCommand: "& $agentCommand --cd $workspace $prompt",
+    args: (cwd, promptPath) => `--cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
+  };
 }
 
 async function fetchHermesMemory(): Promise<string> {
@@ -196,4 +268,8 @@ function emit(channel: string, payload: unknown): void {
 
 function quoteShell(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }

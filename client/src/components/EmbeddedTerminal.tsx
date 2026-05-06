@@ -22,10 +22,10 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       cursorBlink: true,
       cursorStyle: "block",
       fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, monospace",
-      fontSize: 12,
-      lineHeight: 1.45,
+      fontSize: 10,
+      lineHeight: 1.25,
       scrollback: 10000,
-      convertEol: true,
+      convertEol: false,
       theme: {
         background: "#03050a",
         foreground: "#dbeafe",

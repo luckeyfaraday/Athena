@@ -1,4 +1,4 @@
-import { type DragEvent as ReactDragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bot,
@@ -44,6 +44,13 @@ type AgentRole = {
   icon: ReactNode;
   status: "ready" | "running" | "waiting" | "offline";
   brief: string;
+};
+
+type PaneDragState = {
+  id: string;
+  deltaX: number;
+  deltaY: number;
+  targetId: string | null;
 };
 
 const emptyLoadState: LoadState = {
@@ -426,7 +433,9 @@ function CommandRoom({
   onClose: (id: string) => Promise<void>;
 }) {
   const [paneOrder, setPaneOrder] = useState<string[]>([]);
-  const [draggedPaneId, setDraggedPaneId] = useState<string | null>(null);
+  const [dragState, setDragState] = useState<PaneDragState | null>(null);
+  const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const dragTargetRef = useRef<string | null>(null);
 
   useEffect(() => {
     setPaneOrder((current) => {
@@ -451,16 +460,8 @@ function CommandRoom({
     setPaneOrder(sessions.map((session) => session.id));
   }
 
-  function startPaneDrag(event: ReactDragEvent, sessionId: string) {
-    setDraggedPaneId(sessionId);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", sessionId);
-  }
-
-  function swapPaneSlots(targetSessionId: string) {
-    const sourceSessionId = draggedPaneId;
-    setDraggedPaneId(null);
-    if (!sourceSessionId || sourceSessionId === targetSessionId) return;
+  function movePaneToSlot(sourceSessionId: string, targetSessionId: string) {
+    if (sourceSessionId === targetSessionId) return;
     setPaneOrder((current) => {
       const sourceIndex = current.indexOf(sourceSessionId);
       const targetIndex = current.indexOf(targetSessionId);
@@ -470,6 +471,47 @@ function CommandRoom({
       next[targetIndex] = sourceSessionId;
       return next;
     });
+  }
+
+  function startPaneDrag(event: ReactPointerEvent, sessionId: string) {
+    if ((event.target as HTMLElement).closest("button")) return;
+    event.preventDefault();
+    const chrome = event.currentTarget as HTMLElement;
+    chrome.setPointerCapture(event.pointerId);
+    dragStartRef.current = { id: sessionId, x: event.clientX, y: event.clientY };
+    setDragState({ id: sessionId, deltaX: 0, deltaY: 0, targetId: null });
+
+    const move = (moveEvent: PointerEvent) => {
+      const dragStart = dragStartRef.current;
+      if (!dragStart) return;
+      const element = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
+      const targetPane = element?.closest<HTMLElement>("[data-pane-id]");
+      const targetId = targetPane?.dataset.paneId;
+      const nextTargetId = targetId && targetId !== dragStart.id ? targetId : null;
+      dragTargetRef.current = nextTargetId;
+      setDragState({
+        id: dragStart.id,
+        deltaX: moveEvent.clientX - dragStart.x,
+        deltaY: moveEvent.clientY - dragStart.y,
+        targetId: nextTargetId,
+      });
+    };
+
+    const end = () => {
+      const dragStart = dragStartRef.current;
+      const targetId = dragTargetRef.current;
+      dragStartRef.current = null;
+      dragTargetRef.current = null;
+      if (dragStart && targetId) movePaneToSlot(dragStart.id, targetId);
+      setDragState(null);
+      chrome.removeEventListener("pointermove", move);
+      chrome.removeEventListener("pointerup", end);
+      chrome.removeEventListener("pointercancel", end);
+    };
+
+    chrome.addEventListener("pointermove", move);
+    chrome.addEventListener("pointerup", end);
+    chrome.addEventListener("pointercancel", end);
   }
 
   return (
@@ -506,15 +548,21 @@ function CommandRoom({
         {visibleSessions.map((session) => (
           <div
             key={session.id}
-            className={draggedPaneId === session.id ? "terminalPane liveTerminalPane slotPane dragging" : "terminalPane liveTerminalPane slotPane"}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={() => swapPaneSlots(session.id)}
+            data-pane-id={session.id}
+            className={[
+              "terminalPane liveTerminalPane slotPane",
+              dragState?.id === session.id ? "dragging" : "",
+              dragState?.targetId === session.id ? "dropTarget" : "",
+            ].filter(Boolean).join(" ")}
+            style={
+              dragState?.id === session.id
+                ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
+                : undefined
+            }
           >
             <div
               className="terminalChrome draggableChrome"
-              draggable
-              onDragStart={(event) => startPaneDrag(event, session.id)}
-              onDragEnd={() => setDraggedPaneId(null)}
+              onPointerDown={(event) => startPaneDrag(event, session.id)}
             >
               <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
               <span className="dot amber" />

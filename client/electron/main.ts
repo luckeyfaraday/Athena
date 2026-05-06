@@ -44,18 +44,29 @@ async function createWindow(): Promise<void> {
 
   const inDev = !app.isPackaged && isDev;
   if (inDev) {
-    viteProc = spawn("npx", ["vite", "--host", "127.0.0.1"], {
-      cwd: appRoot,
-      stdio: "pipe",
-      detached: false,
-    });
     try {
-      await waitForVite("http://127.0.0.1:5173/", 20000);
+      await waitForVite("http://127.0.0.1:5173/", 1000);
     } catch (e) {
-      console.error("Vite failed to start:", e);
-      if (viteProc) {
-        viteProc.kill();
+      const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
+      viteProc = spawn(npxCommand, ["vite", "--host", "127.0.0.1"], {
+        cwd: appRoot,
+        stdio: "pipe",
+        detached: false,
+        windowsHide: true,
+      });
+      viteProc.on("error", (error) => {
+        console.error("Vite failed to start:", error);
         viteProc = null;
+      });
+
+      try {
+        await waitForVite("http://127.0.0.1:5173/", 20000);
+      } catch (error) {
+        console.error("Vite failed to become ready:", error);
+        if (viteProc) {
+          viteProc.kill();
+          viteProc = null;
+        }
       }
     }
   }

@@ -59,7 +59,7 @@ def create_app(
         allow_headers=["Content-Type"],
     )
     app.state.hermes = hermes or HermesManager()
-    app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.hermes_home)
+    app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.status().hermes_home)
     app.state.registry = registry or RunRegistry()
     app.state.executor = executor or RunExecutor(registry=app.state.registry)
     app.state.adapters = adapters or {"codex": CodexAdapter()}

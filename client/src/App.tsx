@@ -103,6 +103,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
   const [terminalFocus, setTerminalFocus] = useState(false);
+  const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
@@ -234,6 +235,7 @@ export function App() {
         ),
       );
       setEmbeddedSessions((current) => [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]);
+      if (count > 1) setLayoutResetNonce((value) => value + 1);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -368,6 +370,7 @@ export function App() {
                 sessions={embeddedSessions}
                 busy={busy}
                 focused={terminalFocus}
+                layoutResetNonce={layoutResetNonce}
                 onFocusChange={setTerminalFocus}
                 onLaunch={launchEmbedded}
                 onClose={closeEmbeddedTerminal}
@@ -415,6 +418,7 @@ function CommandRoom({
   sessions,
   busy,
   focused,
+  layoutResetNonce,
   onFocusChange,
   onLaunch,
   onClose,
@@ -423,6 +427,7 @@ function CommandRoom({
   sessions: EmbeddedTerminalSession[];
   busy: boolean;
   focused: boolean;
+  layoutResetNonce: number;
   onFocusChange: (focused: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
@@ -432,29 +437,46 @@ function CommandRoom({
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [paneLayouts, setPaneLayouts] = useState<Record<string, PaneLayout>>({});
 
+  function gridLayouts(nextSessions: EmbeddedTerminalSession[]): Record<string, PaneLayout> {
+    const stageWidth = stageRef.current?.clientWidth ?? 1500;
+    const gap = 16;
+    const columns = stageWidth >= 1180 ? 2 : 1;
+    const paneWidth = Math.max(520, Math.floor((stageWidth - gap * (columns - 1)) / columns));
+    const paneHeight = 400;
+    return Object.fromEntries(
+      nextSessions.map((session, index) => {
+        const col = index % columns;
+        const row = Math.floor(index / columns);
+        return [
+          session.id,
+          {
+            x: col * (paneWidth + gap),
+            y: row * (paneHeight + gap),
+            width: paneWidth,
+            height: paneHeight,
+          },
+        ];
+      }),
+    );
+  }
+
   useEffect(() => {
     setPaneLayouts((current) => {
       const sessionIds = new Set(sessions.map((session) => session.id));
       const next = Object.fromEntries(Object.entries(current).filter(([id]) => sessionIds.has(id)));
-      const stageWidth = stageRef.current?.clientWidth ?? 1500;
-      const gap = 16;
-      const columns = stageWidth >= 1180 ? 2 : 1;
-      const paneWidth = Math.max(520, Math.floor((stageWidth - gap * (columns - 1)) / columns));
-      const paneHeight = 400;
+      const defaults = gridLayouts(sessions);
       sessions.forEach((session, index) => {
         if (next[session.id]) return;
-        const col = index % columns;
-        const row = Math.floor(index / columns);
-        next[session.id] = {
-          x: col * (paneWidth + gap),
-          y: row * (paneHeight + gap),
-          width: paneWidth,
-          height: paneHeight,
-        };
+        next[session.id] = defaults[session.id];
       });
       return next;
     });
   }, [sessions]);
+
+  useEffect(() => {
+    if (layoutResetNonce === 0 || sessions.length === 0) return;
+    setPaneLayouts(gridLayouts(sessions));
+  }, [layoutResetNonce, sessions]);
 
   const stageHeight = Math.max(
     420,
@@ -543,6 +565,9 @@ function CommandRoom({
           </button>
           <button className="ghostButton" onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
             <TerminalSquare size={15} /> New Shell
+          </button>
+          <button className="ghostButton" onClick={() => setPaneLayouts(gridLayouts(sessions))} disabled={sessions.length === 0}>
+            <Layers3 size={15} /> Arrange Grid
           </button>
           <button className="primaryButton" onClick={() => void onLaunch("codex", 4)} disabled={!workspace || busy}>
             <Bot size={15} /> Codex Grid

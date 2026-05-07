@@ -31,16 +31,17 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const python = process.env.CONTEXT_WORKSPACE_PYTHON || (process.platform === "win32" ? "python" : "python3");
-  const repoRoot = path.resolve(appRoot, "..");
+  const backendParent = resolveBackendParent(appRoot);
 
   backendProcess = spawn(
     python,
     ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port)],
     {
-      cwd: repoRoot,
+      cwd: backendParent,
       env: {
         ...process.env,
         CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
+        PYTHONPATH: mergePythonPath(backendParent, process.env.PYTHONPATH),
       },
       windowsHide: true,
     },
@@ -132,6 +133,9 @@ async function waitForHealth(baseUrl: string): Promise<BackendState> {
     if (checked.healthy) {
       return checked;
     }
+    if (!checked.running && checked.lastError) {
+      return checked;
+    }
     await delay(250);
   }
   state = { ...state, healthy: false, lastError: "Backend health check timed out." };
@@ -156,4 +160,17 @@ function findFreePort(): Promise<number> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveBackendParent(appRoot: string): string {
+  const packagedBackendParent = path.dirname(appRoot);
+  const packagedBackend = path.join(packagedBackendParent, "backend");
+  if (appRoot.includes(".asar") && path.isAbsolute(packagedBackend)) {
+    return packagedBackendParent;
+  }
+  return path.resolve(appRoot, "..");
+}
+
+function mergePythonPath(backendParent: string, existing: string | undefined): string {
+  return existing ? `${backendParent}${path.delimiter}${existing}` : backendParent;
 }

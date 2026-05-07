@@ -164,9 +164,8 @@ def _project_needles(project_dir: str | Path) -> list[tuple[str, int]]:
         candidates.append((normalized_path, 100))
         home_prefix = _normalize_for_project_match(str(Path.home()))
         for relative in _home_relative_variants(normalized_path, home_prefix):
-            candidates.append((f"{home_prefix}/{relative}", 95))
-            candidates.append((f"/home/you/{relative}", 95))
-            candidates.append((f"/home/youq/{relative}", 95))
+            for prefix in _home_prefix_candidates(normalized_path, home_prefix):
+                candidates.append((f"{prefix}/{relative}", 95))
 
     seen: set[str] = set()
     unique: list[tuple[str, int]] = []
@@ -191,6 +190,26 @@ def _home_relative_variants(normalized_path: str, home_prefix: str) -> list[str]
         variants.append(windows_home_match.group(1))
 
     return variants
+
+
+def _home_prefix_candidates(normalized_path: str, home_prefix: str) -> list[str]:
+    candidates = [home_prefix]
+    local_user = Path.home().name
+    if local_user:
+        candidates.append(f"/home/{local_user.lower()}")
+
+    windows_home_match = re.match(r"^[a-z]:/users/([^/]+)/", normalized_path)
+    if windows_home_match:
+        candidates.append(f"/home/{windows_home_match.group(1).lower()}")
+
+    seen: set[str] = set()
+    unique = []
+    for candidate in candidates:
+        normalized = _normalize_for_project_match(candidate)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            unique.append(normalized)
+    return unique
 
 
 def _read_text(path: Path) -> str:

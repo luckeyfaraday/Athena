@@ -30,7 +30,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type Run } from "./api";
-import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "./electron";
+import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
 
 type LoadState = {
@@ -89,45 +89,27 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 
-function getDefaultWorkspace(): string {
-  const cwd = typeof process !== "undefined" && process.cwd ? process.cwd() : undefined;
-  if (cwd && cwd !== "/" && !cwd.startsWith("C:\\")) {
-    return cwd;
-  }
-  return "/home/you/home_ai/projects/context-workspace";
-}
-
-function isValidWorkspace(path: string): boolean {
+function storedWorkspaceValue(): string | null {
   try {
-    return typeof path === "string" && path.length > 1 && !path.startsWith("C:\\") && !path.includes("C:");
+    return window.localStorage.getItem(workspaceStorageKey);
   } catch {
-    return false;
+    return null;
   }
 }
 
-function initialWorkspace(): string {
-  const stored = (() => {
-    try {
-      return window.localStorage.getItem(workspaceStorageKey);
-    } catch {
-      return null;
-    }
-  })();
-  if (stored && isValidWorkspace(stored)) {
-    return stored;
-  }
-  const defaultWs = getDefaultWorkspace();
+function parseStoredWorkspace(value: string | null): string | null {
+  if (!value) return null;
   try {
-    window.localStorage.setItem(workspaceStorageKey, defaultWs);
+    const parsed = JSON.parse(value) as Partial<WorkspacePath>;
+    return parsed.nativePath || null;
   } catch {
-    // ignore
+    return value;
   }
-  return defaultWs;
 }
 
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
-  const [workspace, setWorkspace] = useState(initialWorkspace);
+  const [workspacePath, setWorkspacePath] = useState<WorkspacePath | null>(null);
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -140,6 +122,8 @@ export function App() {
   const dataRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
   const newMenuRef = useRef<HTMLDivElement | null>(null);
+  const workspace = workspacePath?.nativePath ?? "";
+  const workspaceDisplay = workspacePath?.displayPath ?? workspace;
 
   const client = useMemo(() => {
     return backend?.healthy && backend.baseUrl ? new BackendClient(backend.baseUrl) : null;
@@ -186,13 +170,19 @@ export function App() {
 
   useEffect(() => {
     try {
-      if (workspace.trim()) window.localStorage.setItem(workspaceStorageKey, workspace);
+      if (workspacePath?.nativePath.trim()) window.localStorage.setItem(workspaceStorageKey, JSON.stringify(workspacePath));
     } catch {
       // Ignore storage failures; the selected workspace still works for this session.
     }
-  }, [workspace]);
+  }, [workspacePath]);
 
   useEffect(() => {
+    const stored = parseStoredWorkspace(storedWorkspaceValue());
+    const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
+    workspacePromise
+      .then((resolved) => setWorkspacePath(resolved))
+      .catch((err) => setError(String(err)));
+
     desktop
       .getBackendState()
       .then((status) => {
@@ -405,7 +395,7 @@ export function App() {
                 <p>{roomCopy[activeRoom].description}</p>
               </div>
               <div className="topbarActions">
-                <button className="ghostButton" onClick={() => void desktop.selectWorkspace().then((selected) => selected && setWorkspace(selected))}>
+                <button className="ghostButton" onClick={() => void desktop.selectWorkspace().then((selected) => selected && setWorkspacePath(selected))}>
                   <FolderOpen size={14} /> Open Workspace
                 </button>
                 <button className="ghostButton" onClick={() => void launchEmbedded("shell", 1)} disabled={!workspace || busy}>
@@ -452,7 +442,7 @@ export function App() {
             <MemoryTimeline entries={memoryEntries} runs={state.runs} />
           </aside>
 
-          <SharedMemorySnapshot workspace={workspace} entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />
+          <SharedMemorySnapshot workspace={workspaceDisplay} entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />
         </section>
       </section>
     </main>

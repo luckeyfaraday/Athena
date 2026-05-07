@@ -1,9 +1,17 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { getBackendState } from "./backend.js";
+import {
+  defaultShell,
+  isWindows,
+  quotePowerShell,
+  quoteShell,
+  resolveOpenCodeBaselineBinary,
+  tempWorkspaceDirectory,
+  windowsPathToWslPath,
+} from "./platform.js";
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 
@@ -163,7 +171,7 @@ function terminalLaunch(
   cwd: string,
   promptPath: string | null,
 ): { command: string; args: string[] } {
-  if (process.platform === "win32") {
+  if (isWindows) {
     if (kind === "hermes") {
       return {
         command: "powershell.exe",
@@ -176,7 +184,7 @@ function terminalLaunch(
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath)],
       };
     }
-    return { command: "cmd.exe", args: [] };
+    return defaultShell();
   }
 
   return { command: "bash", args: ["-lc", launchCommand(kind, cwd, promptPath)] };
@@ -212,7 +220,7 @@ function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: stri
 }
 
 function launchHermesPowerShellCommand(cwd: string): string {
-  const wslCwd = windowsPathToWslPath(cwd);
+  const wslCwd = windowsPathToWslPath(cwd) ?? cwd.replace(/\\/g, "/");
   const wslCommand = `cd ${quoteShell(wslCwd)} && hermes`;
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -246,8 +254,7 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
 
 async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?: string): Promise<string> {
   const memory = await fetchHermesMemory(cwd);
-  const directory = path.join(os.tmpdir(), "context-workspace");
-  fs.mkdirSync(directory, { recursive: true });
+  const directory = tempWorkspaceDirectory();
   const promptPath = path.join(directory, `embedded-hermes-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
   const prompt = [
     "You are running inside an embedded Context Workspace terminal.",
@@ -323,43 +330,6 @@ function emit(channel: string, payload: unknown): void {
   }
 }
 
-function quoteShell(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function quotePowerShell(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-function windowsPathToWslPath(value: string): string {
-  const normalized = path.resolve(value);
-  const driveMatch = /^([A-Za-z]):\\(.*)$/.exec(normalized);
-  if (!driveMatch) return normalized.replace(/\\/g, "/");
-  const drive = driveMatch[1].toLowerCase();
-  const rest = driveMatch[2].replace(/\\/g, "/");
-  return `/mnt/${drive}/${rest}`;
-}
-
-function resolveOpenCodeBaselineBinary(): string | null {
-  if (process.platform !== "win32") return null;
-
-  const candidates = [
-    path.join(
-      process.env.APPDATA ?? "",
-      "npm",
-      "node_modules",
-      "opencode-ai",
-      "node_modules",
-      "opencode-windows-x64-baseline",
-      "bin",
-      "opencode.exe",
-    ),
-    "C:\\Users\\alanq\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe",
-  ];
-
-  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) ?? null;
-}
-
 function selectOpenCodeBaselinePowerShell(): string {
   return [
     "$baselineCandidates = @()",
@@ -375,7 +345,9 @@ function selectOpenCodeBaselinePowerShell(): string {
     "    $baselineCandidates += Join-Path $packageRoot 'node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe'",
     "  }",
     "}",
-    "$baselineCandidates += 'C:\\Users\\alanq\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe'",
+    "if ($env:APPDATA) {",
+    "  $baselineCandidates += Join-Path $env:APPDATA 'npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe'",
+    "}",
     "$baseline = $baselineCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1",
     "if ($baseline) {",
     "  $agentCommand = $baseline",

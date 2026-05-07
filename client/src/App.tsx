@@ -87,15 +87,42 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
   },
 };
 
-const defaultWorkspace = "C:\\Users\\alanq\\context-workspace";
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 
-function initialWorkspace(): string {
-  try {
-    return window.localStorage.getItem(workspaceStorageKey) || defaultWorkspace;
-  } catch {
-    return defaultWorkspace;
+function getDefaultWorkspace(): string {
+  const cwd = typeof process !== "undefined" && process.cwd ? process.cwd() : undefined;
+  if (cwd && cwd !== "/" && !cwd.startsWith("C:\\")) {
+    return cwd;
   }
+  return "/home/alan/home_ai/projects/context-workspace";
+}
+
+function isValidWorkspace(path: string): boolean {
+  try {
+    return typeof path === "string" && path.length > 1 && !path.startsWith("C:\\") && !path.includes("C:");
+  } catch {
+    return false;
+  }
+}
+
+function initialWorkspace(): string {
+  const stored = (() => {
+    try {
+      return window.localStorage.getItem(workspaceStorageKey);
+    } catch {
+      return null;
+    }
+  })();
+  if (stored && isValidWorkspace(stored)) {
+    return stored;
+  }
+  const defaultWs = getDefaultWorkspace();
+  try {
+    window.localStorage.setItem(workspaceStorageKey, defaultWs);
+  } catch {
+    // ignore
+  }
+  return defaultWs;
 }
 
 export function App() {

@@ -66,10 +66,10 @@ class HermesMemoryStore:
 
     def search(self, query: str, *, limit: int = 10) -> list[MemoryEntry]:
         terms = [term.lower() for term in re.findall(r"\w+", query) if term.strip()]
-        entries = self.entries()
         if not terms:
-            return entries[-max(1, min(limit, 100)) :]
+            return []
 
+        entries = self.entries()
         scored: list[tuple[int, int, MemoryEntry]] = []
         for index, entry in enumerate(entries):
             haystack = entry.text.lower()
@@ -96,7 +96,9 @@ class HermesMemoryStore:
     def format_query_response(self, query: str, *, limit: int = 10) -> str:
         matches = self.search(query, limit=limit)
         if not matches:
-            return f"No Hermes memory entries matched query: {query.strip() or '(empty)'}"
+            if not query.strip():
+                return ""
+            return f"No Hermes memory entries matched query: {query.strip()}"
 
         body = "\n\n".join(f"- {entry.text}" for entry in matches)
         return f"Project context from Hermes memory:\n\n{body}"
@@ -156,17 +158,15 @@ def _project_needles(project_dir: str | Path) -> list[tuple[str, int]]:
         return []
 
     normalized_path = _normalize_for_project_match(raw)
-    name = raw.rstrip("\\/").replace("\\", "/").split("/")[-1]
-    normalized_name = _normalize_for_project_match(name)
-    spaced_name = _normalize_for_project_match(re.sub(r"[-_]+", " ", name))
 
     candidates: list[tuple[str, int]] = []
     if len(normalized_path) >= 6:
         candidates.append((normalized_path, 100))
-    if len(normalized_name) >= 3:
-        candidates.append((normalized_name, 60))
-    if spaced_name != normalized_name and len(spaced_name) >= 3:
-        candidates.append((spaced_name, 45))
+        windows_home_prefix = _normalize_for_project_match(str(Path.home()))
+        if normalized_path.startswith(f"{windows_home_prefix}/"):
+            relative = normalized_path.removeprefix(f"{windows_home_prefix}/")
+            candidates.append((f"/home/you/{relative}", 95))
+            candidates.append((f"/home/youq/{relative}", 95))
 
     seen: set[str] = set()
     unique: list[tuple[str, int]] = []

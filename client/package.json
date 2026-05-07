@@ -8,6 +8,7 @@
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "tsc -p tsconfig.json && vite build && npm run build:electron",
     "build:electron": "tsc -p tsconfig.electron.json",
+    "test:electron": "npm run build:electron && node --test tests/platform.test.mjs",
     "start": "electron .",
     "package": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { defaultPythonExecutable } from "./platform.js";
 
 export type BackendState = {
   baseUrl: string | null;
@@ -31,7 +32,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
 
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
-  const python = process.env.CONTEXT_WORKSPACE_PYTHON || (process.platform === "win32" ? "python" : "python3");
+  const python = defaultPythonExecutable();
   const backendParent = resolveBackendParent(appRoot);
 
   backendProcess = spawn(

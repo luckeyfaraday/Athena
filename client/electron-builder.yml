@@ -7,7 +7,11 @@ files:
   - dist-electron/**
   - package.json
 asar: true
+asarUnpack:
+  - node_modules/node-pty/**
+npmRebuild: false
 win:
+  signAndEditExecutable: false
   target:
     - nsis
 mac:

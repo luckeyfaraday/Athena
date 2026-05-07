@@ -515,6 +515,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   padding: 0;
   border: 0;
   background: #b85f50;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.terminalControl:hover {
+  background: #e07060;
 }
 .dot.amber { background: var(--orange); }
 .dot.green { background: var(--green); }

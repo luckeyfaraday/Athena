@@ -126,12 +126,31 @@ def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
 
     stored = client.post("/memory/store", json={"text": "Codex adapter verified."})
     queried = client.get("/memory/hermes", params={"q": "codex"})
+    empty = client.get("/memory/hermes")
     recent = client.get("/memory/recent", params={"limit": 2})
 
     assert stored.status_code == 200
     assert "Project context from Hermes memory" in queried.text
     assert "Codex adapter verified." in queried.text
+    assert empty.status_code == 200
+    assert empty.text == ""
     assert recent.json()["entries"][-1] == "[agent] asked Hermes memory about: codex"
+
+
+def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post("/memory/store", json={"text": "Persephone project: /home/alan/home_ai/projects/free-model-drops newsletter."})
+    client.post("/memory/store", json={"text": "Context Workspace project: C:/Users/alanq/context-workspace Electron shell."})
+
+    matched = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/alanq/context-workspace"})
+    missing = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/alanq/unknown-project"})
+
+    assert matched.status_code == 200
+    assert "Context Workspace project" in matched.text
+    assert "Persephone project" not in matched.text
+    assert missing.status_code == 200
+    assert missing.text == ""
 
 
 def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -> None:

@@ -6,6 +6,13 @@ files:
   - dist/**
   - dist-electron/**
   - package.json
+extraResources:
+  - from: ../backend
+    to: backend
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
 asar: true
 asarUnpack:
   - node_modules/node-pty/**

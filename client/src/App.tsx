@@ -1,10 +1,11 @@
-import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   BookOpen,
   Bot,
   BrainCircuit,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   CircleDot,
   Code2,
@@ -105,10 +106,12 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
   const [terminalFocus, setTerminalFocus] = useState(false);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
+  const newMenuRef = useRef<HTMLDivElement | null>(null);
 
   const client = useMemo(() => {
     return backend?.healthy && backend.baseUrl ? new BackendClient(backend.baseUrl) : null;
@@ -206,6 +209,24 @@ export function App() {
     autoStartedTerminals.current = true;
     void launchEmbedded("shell", 1);
   }, [workspace, embeddedSessions.length]);
+
+  useEffect(() => {
+    if (!newMenuOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!newMenuRef.current?.contains(event.target as Node)) setNewMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNewMenuOpen(false);
+    };
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [newMenuOpen]);
 
   async function restartBackend() {
     setBusy(true);
@@ -338,9 +359,14 @@ export function App() {
                 <button className="ghostButton" onClick={() => void launchEmbedded("shell", 1)} disabled={!workspace || busy}>
                   <TerminalSquare size={14} /> Open in Terminal
                 </button>
-                <button className="primaryButton" onClick={() => void launchEmbedded("codex", 1)} disabled={!workspace || busy}>
-                  <Play size={14} /> New
-                </button>
+                <NewLaunchMenu
+                  busy={busy}
+                  open={newMenuOpen}
+                  workspace={workspace}
+                  menuRef={newMenuRef}
+                  onOpenChange={setNewMenuOpen}
+                  onLaunch={launchEmbedded}
+                />
               </div>
             </header>
 
@@ -412,6 +438,64 @@ function FlowStep({ icon, label, active }: { icon: ReactNode; label: string; act
     <div className={active ? "flowStep active" : "flowStep"}>
       {icon}
       <span>{label}</span>
+    </div>
+  );
+}
+
+function NewLaunchMenu({
+  busy,
+  open,
+  workspace,
+  menuRef,
+  onOpenChange,
+  onLaunch,
+}: {
+  busy: boolean;
+  open: boolean;
+  workspace: string;
+  menuRef: RefObject<HTMLDivElement | null>;
+  onOpenChange: (open: boolean) => void;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+}) {
+  const disabled = !workspace || busy;
+  const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number }> = [
+    { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
+    { label: "Codex", detail: "Spawn one Codex agent", icon: <Bot size={14} />, kind: "codex", count: 1 },
+    { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <Layers3 size={14} />, kind: "codex", count: 4 },
+    { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <Users size={14} />, kind: "opencode", count: 4 },
+    { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ShieldCheck size={14} />, kind: "claude", count: 4 },
+  ];
+
+  function launch(kind: EmbeddedTerminalKind, count: number) {
+    onOpenChange(false);
+    void onLaunch(kind, count);
+  }
+
+  return (
+    <div className="newMenu" ref={menuRef}>
+      <button
+        className="primaryButton newMenuButton"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => onOpenChange(!open)}
+      >
+        <Play size={14} /> New <ChevronDown size={13} />
+      </button>
+      {open && (
+        <div className="newMenuPanel" role="menu">
+          {actions.map((action) => (
+            <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count)}>
+              <span>{action.icon}</span>
+              <span>
+                <strong>{action.label}</strong>
+                <small>{action.detail}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

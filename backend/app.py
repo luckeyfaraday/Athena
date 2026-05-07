@@ -104,6 +104,13 @@ def create_app(
             app.state.memory.log_query(agent_id, q)
         return response
 
+    @app.get("/memory/hermes/project", response_class=PlainTextResponse)
+    def hermes_project_memory(
+        project_dir: str = Query(min_length=1),
+        limit: int = Query(default=10, ge=1, le=100),
+    ) -> str:
+        return app.state.memory.format_project_context(project_dir, limit=limit)
+
     @app.get("/memory/recent")
     def recent_memory(limit: int = Query(default=10, ge=1, le=100)) -> dict[str, Any]:
         return {"entries": [entry.text for entry in app.state.memory.recent(limit=limit)]}

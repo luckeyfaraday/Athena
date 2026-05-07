@@ -30,7 +30,9 @@ const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
 
 export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
-  return Array.from(terminals.values()).map((entry) => ({ ...entry.session }));
+  return Array.from(terminals.values())
+    .filter((entry) => entry.session.status === "running")
+    .map((entry) => ({ ...entry.session }));
 }
 
 export function getEmbeddedTerminalBuffer(id: string): string {
@@ -66,6 +68,7 @@ export async function spawnEmbeddedTerminal(
   };
 
   try {
+    const openCodeBaseline = kind === "opencode" ? resolveOpenCodeBaselineBinary() : null;
     const term = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cwd,
@@ -77,6 +80,7 @@ export async function spawnEmbeddedTerminal(
         COLORTERM: "truecolor",
         CONTEXT_WORKSPACE_TERMINAL_ID: id,
         ...(promptPath ? { CONTEXT_WORKSPACE_HERMES_PROMPT: promptPath } : {}),
+        ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
       },
     });
 
@@ -93,6 +97,7 @@ export async function spawnEmbeddedTerminal(
       if (entry) {
         entry.session = { ...entry.session, status: "exited", exitCode };
         emit("embedded-terminal:exit", { id, exitCode });
+        terminals.delete(id);
       }
     });
 
@@ -112,7 +117,8 @@ export function writeEmbeddedTerminal(id: string, data: string): EmbeddedTermina
 }
 
 export function resizeEmbeddedTerminal(id: string, cols: number, rows: number): EmbeddedTerminalSession {
-  const entry = requireTerminal(id);
+  const entry = terminals.get(id);
+  if (!entry) return missingSession(id);
   entry.process.resize(Math.max(20, Math.floor(cols)), Math.max(6, Math.floor(rows)));
   return { ...entry.session };
 }
@@ -135,6 +141,21 @@ function requireTerminal(id: string): ManagedTerminal {
   const entry = terminals.get(id);
   if (!entry) throw new Error(`Embedded terminal not found: ${id}`);
   return entry;
+}
+
+function missingSession(id: string): EmbeddedTerminalSession {
+  return {
+    id,
+    title: "Unknown terminal",
+    kind: "shell",
+    workspace: "",
+    pid: null,
+    promptPath: null,
+    createdAt: new Date().toISOString(),
+    status: "exited",
+    exitCode: null,
+    error: "Embedded terminal not found.",
+  };
 }
 
 function terminalLaunch(
@@ -183,14 +204,16 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     "Write-Host \"[Context Workspace] $agentLabel Hermes prompt: $promptPath\" -ForegroundColor Cyan",
-    "if (-not (Get-Command $agentCommand -ErrorAction SilentlyContinue)) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
+    "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     "$prompt = Get-Content -LiteralPath $promptPath -Raw",
     agent.powerShellCommand,
   ].join("; ");
 }
 
 async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?: string): Promise<string> {
-  const memory = await fetchHermesMemory();
+  const memory = await fetchHermesMemory(cwd);
   const directory = path.join(os.tmpdir(), "context-workspace");
   fs.mkdirSync(directory, { recursive: true });
   const promptPath = path.join(directory, `embedded-hermes-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
@@ -247,12 +270,13 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   };
 }
 
-async function fetchHermesMemory(): Promise<string> {
+async function fetchHermesMemory(cwd: string): Promise<string> {
   const backend = getBackendState();
   if (!backend.healthy || !backend.baseUrl) return "";
 
   try {
-    const response = await fetch(`${backend.baseUrl}/memory/hermes?limit=1000`);
+    const params = new URLSearchParams({ project_dir: cwd, limit: "10" });
+    const response = await fetch(`${backend.baseUrl}/memory/hermes/project?${params.toString()}`);
     if (!response.ok) return "";
     return await response.text();
   } catch {
@@ -272,4 +296,49 @@ function quoteShell(value: string): string {
 
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function resolveOpenCodeBaselineBinary(): string | null {
+  if (process.platform !== "win32") return null;
+
+  const candidates = [
+    path.join(
+      process.env.APPDATA ?? "",
+      "npm",
+      "node_modules",
+      "opencode-ai",
+      "node_modules",
+      "opencode-windows-x64-baseline",
+      "bin",
+      "opencode.exe",
+    ),
+    "C:\\Users\\alanq\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe",
+  ];
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) ?? null;
+}
+
+function selectOpenCodeBaselinePowerShell(): string {
+  return [
+    "$baselineCandidates = @()",
+    "if ($resolvedAgent.Path) {",
+    "  $agentPath = $resolvedAgent.Path",
+    "  $agentDir = Split-Path -Parent $agentPath",
+    "  $baselineCandidates += Join-Path $agentDir 'node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe'",
+    "  if ($agentPath -like '*\\opencode-windows-x64\\bin\\opencode.exe') {",
+    "    $baselineCandidates += ($agentPath -replace '\\\\opencode-windows-x64\\\\bin\\\\opencode\\.exe$', '\\opencode-windows-x64-baseline\\bin\\opencode.exe')",
+    "  }",
+    "  if ($agentPath -like '*\\node_modules\\opencode-ai\\bin\\opencode') {",
+    "    $packageRoot = Split-Path -Parent (Split-Path -Parent $agentPath)",
+    "    $baselineCandidates += Join-Path $packageRoot 'node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe'",
+    "  }",
+    "}",
+    "$baselineCandidates += 'C:\\Users\\alanq\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe'",
+    "$baseline = $baselineCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1",
+    "if ($baseline) {",
+    "  $agentCommand = $baseline",
+    "  $env:OPENCODE_BIN_PATH = $baseline",
+    "  Write-Host \"[Context Workspace] OpenCode baseline binary selected to avoid Bun AVX2 crash: $baseline\" -ForegroundColor Yellow",
+    "}",
+  ].join("\n");
 }

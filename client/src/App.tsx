@@ -17,6 +17,7 @@ import {
   Play,
   RefreshCw,
   Search,
+  Send,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -247,16 +248,25 @@ export function App() {
     setError(null);
     try {
       const titles = terminalGridTitles(kind);
-      const created = await Promise.all(
-        Array.from({ length: count }, (_, index) =>
-          desktop.spawnEmbeddedTerminal(workspace, {
+      const launchOptions = Array.from({ length: count }, (_, index) => ({
+        kind,
+        title: titles[index] ?? `${kind}-${index + 1}`,
+        cols: 96,
+        rows: 28,
+      }));
+      const created: EmbeddedTerminalSession[] = [];
+
+      for (const [index, options] of launchOptions.entries()) {
+        if (kind === "opencode" && index > 0) await delay(650);
+        created.push(
+          await desktop.spawnEmbeddedTerminal(workspace, {
             kind,
-            title: titles[index] ?? `${kind}-${index + 1}`,
-            cols: 96,
-            rows: 28,
+            title: options.title,
+            cols: options.cols,
+            rows: options.rows,
           }),
-        ),
-      );
+        );
+      }
       setEmbeddedSessions((current) => [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]);
       if (count > 1) setLayoutResetNonce((value) => value + 1);
     } catch (err) {
@@ -273,6 +283,21 @@ export function App() {
     } catch (err) {
       setError(String(err));
     }
+  }
+
+  async function broadcastPromptToAgents(prompt: string, sessionIds: string[]) {
+    const trimmed = prompt.trim();
+    if (!trimmed || sessionIds.length === 0) return;
+
+    const results = await Promise.allSettled(
+      sessionIds.map((id) => desktop.writeEmbeddedTerminal(id, `${trimmed}\r`)),
+    );
+    const failed = results.filter((result) => result.status === "rejected").length;
+    if (failed > 0) {
+      setError(`Prompt sent to ${sessionIds.length - failed} agents; ${failed} agent${failed === 1 ? "" : "s"} could not receive it.`);
+      return;
+    }
+    setError(null);
   }
 
   const activeRuns = state.runs.filter((run) => run.status === "running" || run.status === "pending");
@@ -380,6 +405,7 @@ export function App() {
                 onFocusChange={setTerminalFocus}
                 onLaunch={launchEmbedded}
                 onClose={closeEmbeddedTerminal}
+                onBroadcastPrompt={broadcastPromptToAgents}
               />
             )}
             {activeRoom === "swarm" && <SwarmRoom roles={agentRoles} runs={activeRuns} adapters={state.adapters} />}
@@ -462,6 +488,7 @@ function NewLaunchMenu({
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
     { label: "Codex", detail: "Spawn one Codex agent", icon: <Bot size={14} />, kind: "codex", count: 1 },
     { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <Layers3 size={14} />, kind: "codex", count: 4 },
+    { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <Bot size={14} />, kind: "opencode", count: 1 },
     { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <Users size={14} />, kind: "opencode", count: 4 },
     { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ShieldCheck size={14} />, kind: "claude", count: 4 },
   ];
@@ -686,6 +713,7 @@ function CommandRoom({
   onFocusChange,
   onLaunch,
   onClose,
+  onBroadcastPrompt,
 }: {
   workspace: string;
   sessions: EmbeddedTerminalSession[];
@@ -695,9 +723,12 @@ function CommandRoom({
   onFocusChange: (focused: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
+  onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
 }) {
   const [paneOrder, setPaneOrder] = useState<string[]>([]);
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
+  const [broadcastPrompt, setBroadcastPrompt] = useState("");
+  const [broadcasting, setBroadcasting] = useState(false);
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
 
@@ -719,6 +750,8 @@ function CommandRoom({
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
   const shownCount = visibleSessions.length;
+  const promptTargets = sessions.filter((session) => session.status === "running" && session.kind !== "shell");
+  const canBroadcast = promptTargets.length > 0 && broadcastPrompt.trim().length > 0 && !broadcasting;
 
   function arrangeGrid() {
     setPaneOrder(sessions.map((session) => session.id));
@@ -776,6 +809,18 @@ function CommandRoom({
     chrome.addEventListener("pointermove", move);
     chrome.addEventListener("pointerup", end);
     chrome.addEventListener("pointercancel", end);
+  }
+
+  async function submitBroadcastPrompt() {
+    const trimmed = broadcastPrompt.trim();
+    if (!trimmed || promptTargets.length === 0 || broadcasting) return;
+    setBroadcasting(true);
+    try {
+      await onBroadcastPrompt(trimmed, promptTargets.map((session) => session.id));
+      setBroadcastPrompt("");
+    } finally {
+      setBroadcasting(false);
+    }
   }
 
   return (
@@ -855,6 +900,25 @@ function CommandRoom({
         ))}
         {sessions.length === 0 &&            <p>Embedded terminals replace the old pop-out launcher. This is the Context Workspace surface.</p>}
       </div>
+
+      <form
+        className="broadcastComposer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submitBroadcastPrompt();
+        }}
+      >
+        <span>{promptTargets.length ? `${promptTargets.length} ready` : "No agents"}</span>
+        <input
+          value={broadcastPrompt}
+          onChange={(event) => setBroadcastPrompt(event.target.value)}
+          placeholder="Prompt all ready agents"
+          disabled={broadcasting || promptTargets.length === 0}
+        />
+        <button className="primaryButton" type="submit" disabled={!canBroadcast} title="Send prompt to all ready agents">
+          <Send size={14} /> Send
+        </button>
+      </form>
     </div>
   );
 }
@@ -864,6 +928,10 @@ function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
   if (kind === "opencode") return ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"];
   if (kind === "claude") return ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"];
   return ["Shell"];
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function SwarmRoom({ roles, runs, adapters }: { roles: AgentRole[]; runs: Run[]; adapters: Record<string, AdapterStatus> }) {

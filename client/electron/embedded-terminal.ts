@@ -5,7 +5,7 @@ import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { getBackendState } from "./backend.js";
 
-export type EmbeddedTerminalKind = "shell" | "codex" | "opencode" | "claude";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -51,7 +51,7 @@ export async function spawnEmbeddedTerminal(
 
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const promptPath = kind === "shell" ? null : await writeHermesPrompt(cwd, kind, options.title);
+  const promptPath = kind === "shell" || kind === "hermes" ? null : await writeHermesPrompt(cwd, kind, options.title);
   const launch = terminalLaunch(kind, cwd, promptPath);
 
   const session: EmbeddedTerminalSession = {
@@ -164,6 +164,12 @@ function terminalLaunch(
   promptPath: string | null,
 ): { command: string; args: string[] } {
   if (process.platform === "win32") {
+    if (kind === "hermes") {
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchHermesPowerShellCommand(cwd)],
+      };
+    }
     if (kind !== "shell" && promptPath) {
       return {
         command: "powershell.exe",
@@ -177,6 +183,16 @@ function terminalLaunch(
 }
 
 function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null): string {
+  if (kind === "hermes") {
+    return [
+      `cd ${quoteShell(cwd)}`,
+      "printf '\\033[36m[Context Workspace] Hermes ready.\\033[0m\\n'",
+      "if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31mhermes is not installed or not on PATH.\\033[0m\\n'; exec bash -l; fi",
+      "hermes",
+      "exec bash -l",
+    ].join("; ");
+  }
+
   if (kind !== "shell" && promptPath) {
     const agent = agentConfig(kind);
     return [
@@ -192,6 +208,22 @@ function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: stri
     `cd ${quoteShell(cwd)}`,
     "printf '\\033[36m[Context Workspace] Embedded shell ready. Launch Codex with Hermes from the Command Room when needed.\\033[0m\\n'",
     "exec bash -l",
+  ].join("; ");
+}
+
+function launchHermesPowerShellCommand(cwd: string): string {
+  const wslCwd = windowsPathToWslPath(cwd);
+  const wslCommand = `cd ${quoteShell(wslCwd)} && hermes`;
+  return [
+    `$workspace = ${quotePowerShell(cwd)}`,
+    `$wslCommand = ${quotePowerShell(wslCommand)}`,
+    "Set-Location -LiteralPath $workspace",
+    "Write-Host \"[Context Workspace] Hermes ready.\" -ForegroundColor Cyan",
+    "$resolvedWsl = Get-Command wsl.exe -ErrorAction SilentlyContinue",
+    "if ($resolvedWsl) { & wsl.exe -e sh -lc $wslCommand; return }",
+    "$resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue",
+    "if ($resolvedHermes) { & hermes; return }",
+    "Write-Host \"wsl.exe is unavailable and native hermes is not on PATH.\" -ForegroundColor Red",
   ].join("; ");
 }
 
@@ -234,6 +266,7 @@ async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?
 }
 
 function defaultTitle(kind: EmbeddedTerminalKind): string {
+  if (kind === "hermes") return "Hermes";
   if (kind === "codex") return "Codex";
   if (kind === "opencode") return "OpenCode";
   if (kind === "claude") return "Claude";
@@ -296,6 +329,15 @@ function quoteShell(value: string): string {
 
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function windowsPathToWslPath(value: string): string {
+  const normalized = path.resolve(value);
+  const driveMatch = /^([A-Za-z]):\\(.*)$/.exec(normalized);
+  if (!driveMatch) return normalized.replace(/\\/g, "/");
+  const drive = driveMatch[1].toLowerCase();
+  const rest = driveMatch[2].replace(/\\/g, "/");
+  return `/mnt/${drive}/${rest}`;
 }
 
 function resolveOpenCodeBaselineBinary(): string | null {

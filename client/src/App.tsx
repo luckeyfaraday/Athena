@@ -796,9 +796,6 @@ function CommandRoom({
           <button className="ghostButton" onClick={arrangeGrid} disabled={sessions.length === 0}>
             <Layers3 size={15} /> Arrange Grid
           </button>
-          <button className="primaryButton" onClick={() => void onLaunch("codex", 4)} disabled={!workspace || busy}>
-            <Bot size={15} /> Codex Grid
-          </button>
           <button className="primaryButton" onClick={() => void onLaunch("opencode", 4)} disabled={!workspace || busy}>
             <Bot size={15} /> OpenCode Grid
           </button>

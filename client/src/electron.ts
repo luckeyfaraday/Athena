@@ -29,7 +29,7 @@ export type NativeTerminalSession = {
   error: string | null;
 };
 
-export type EmbeddedTerminalKind = "shell" | "codex" | "opencode" | "claude";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -146,6 +146,7 @@ function fallbackTerminalResult(workspace: string, mode: "single" | "grid", pane
 export const desktop = window.contextWorkspace ?? browserFallback;
 
 function fallbackTerminalTitle(kind: EmbeddedTerminalKind): string {
+  if (kind === "hermes") return "Hermes";
   if (kind === "codex") return "Codex";
   if (kind === "opencode") return "OpenCode";
   if (kind === "claude") return "Claude";

@@ -101,6 +101,32 @@ class HermesMemoryStore:
         body = "\n\n".join(f"- {entry.text}" for entry in matches)
         return f"Project context from Hermes memory:\n\n{body}"
 
+    def format_project_context(self, project_dir: str | Path, *, limit: int = 10) -> str:
+        matches = self.search_project(project_dir, limit=limit)
+        if not matches:
+            return ""
+
+        body = "\n\n".join(f"- {entry.text}" for entry in matches)
+        return f"Project context from Hermes memory:\n\n{body}"
+
+    def search_project(self, project_dir: str | Path, *, limit: int = 10) -> list[MemoryEntry]:
+        needles = _project_needles(project_dir)
+        if not needles:
+            return []
+
+        scored: list[tuple[int, int, MemoryEntry]] = []
+        for index, entry in enumerate(self.entries()):
+            haystack = _normalize_for_project_match(entry.text)
+            score = 0
+            for needle, weight in needles:
+                if needle in haystack:
+                    score += weight
+            if score:
+                scored.append((score, index, entry))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [entry for _, _, entry in scored[: max(1, min(limit, 100))]]
+
     def log_query(self, agent_id: str | None, query: str) -> None:
         actor = agent_id.strip() if agent_id else "agent"
         self.append(f"[{actor}] asked Hermes memory about: {query.strip()}")
@@ -122,6 +148,37 @@ def sanitize_memory_text(text: str) -> str:
     for pattern in _INJECTION_PATTERNS:
         sanitized = pattern.sub("[POTENTIAL_INJECTION_REDACTED]", sanitized)
     return sanitized
+
+
+def _project_needles(project_dir: str | Path) -> list[tuple[str, int]]:
+    raw = str(project_dir).strip()
+    if not raw:
+        return []
+
+    normalized_path = _normalize_for_project_match(raw)
+    name = raw.rstrip("\\/").replace("\\", "/").split("/")[-1]
+    normalized_name = _normalize_for_project_match(name)
+    spaced_name = _normalize_for_project_match(re.sub(r"[-_]+", " ", name))
+
+    candidates: list[tuple[str, int]] = []
+    if len(normalized_path) >= 6:
+        candidates.append((normalized_path, 100))
+    if len(normalized_name) >= 3:
+        candidates.append((normalized_name, 60))
+    if spaced_name != normalized_name and len(spaced_name) >= 3:
+        candidates.append((spaced_name, 45))
+
+    seen: set[str] = set()
+    unique: list[tuple[str, int]] = []
+    for needle, weight in candidates:
+        if needle and needle not in seen:
+            seen.add(needle)
+            unique.append((needle, weight))
+    return unique
+
+
+def _normalize_for_project_match(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("\\", "/").strip().lower())
 
 
 def _read_text(path: Path) -> str:

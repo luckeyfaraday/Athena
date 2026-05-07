@@ -68,6 +68,7 @@ export async function spawnEmbeddedTerminal(
   };
 
   try {
+    const openCodeBaseline = kind === "opencode" ? resolveOpenCodeBaselineBinary() : null;
     const term = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cwd,
@@ -79,6 +80,7 @@ export async function spawnEmbeddedTerminal(
         COLORTERM: "truecolor",
         CONTEXT_WORKSPACE_TERMINAL_ID: id,
         ...(promptPath ? { CONTEXT_WORKSPACE_HERMES_PROMPT: promptPath } : {}),
+        ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
       },
     });
 
@@ -211,7 +213,7 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
 }
 
 async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?: string): Promise<string> {
-  const memory = await fetchHermesMemory();
+  const memory = await fetchHermesMemory(cwd);
   const directory = path.join(os.tmpdir(), "context-workspace");
   fs.mkdirSync(directory, { recursive: true });
   const promptPath = path.join(directory, `embedded-hermes-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
@@ -268,12 +270,13 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   };
 }
 
-async function fetchHermesMemory(): Promise<string> {
+async function fetchHermesMemory(cwd: string): Promise<string> {
   const backend = getBackendState();
   if (!backend.healthy || !backend.baseUrl) return "";
 
   try {
-    const response = await fetch(`${backend.baseUrl}/memory/hermes?limit=1000`);
+    const params = new URLSearchParams({ project_dir: cwd, limit: "10" });
+    const response = await fetch(`${backend.baseUrl}/memory/hermes/project?${params.toString()}`);
     if (!response.ok) return "";
     return await response.text();
   } catch {
@@ -293,6 +296,26 @@ function quoteShell(value: string): string {
 
 function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+function resolveOpenCodeBaselineBinary(): string | null {
+  if (process.platform !== "win32") return null;
+
+  const candidates = [
+    path.join(
+      process.env.APPDATA ?? "",
+      "npm",
+      "node_modules",
+      "opencode-ai",
+      "node_modules",
+      "opencode-windows-x64-baseline",
+      "bin",
+      "opencode.exe",
+    ),
+    "C:\\Users\\alanq\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64-baseline\\bin\\opencode.exe",
+  ];
+
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) ?? null;
 }
 
 function selectOpenCodeBaselinePowerShell(): string {

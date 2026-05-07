@@ -134,6 +134,22 @@ def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     assert recent.json()["entries"][-1] == "[agent] asked Hermes memory about: codex"
 
 
+def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post("/memory/store", json={"text": "Persephone project: /home/you/home_ai/projects/free-model-drops newsletter."})
+    client.post("/memory/store", json={"text": "Context Workspace project: C:/Users/you/context-workspace Electron shell."})
+
+    matched = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/you/context-workspace"})
+    missing = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/you/unknown-project"})
+
+    assert matched.status_code == 200
+    assert "Context Workspace project" in matched.text
+    assert "Persephone project" not in matched.text
+    assert missing.status_code == 200
+    assert missing.text == ""
+
+
 def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

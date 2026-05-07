@@ -365,7 +365,7 @@ function nativeTerminalLaunch(cwd: string, scriptPath: string): { command: strin
 }
 
 async function writeCodexMemoryPrompt(cwd: string, extraContext?: string): Promise<string> {
-  const memory = await fetchHermesMemory();
+  const memory = await fetchHermesMemory(cwd);
   const prompt = [
     "You are starting a Codex session launched by Context Workspace.",
     "",
@@ -416,14 +416,15 @@ function tmuxAttachScript(sessionName: string, cwd: string): string {
   return scriptPath;
 }
 
-async function fetchHermesMemory(): Promise<string> {
+async function fetchHermesMemory(cwd: string): Promise<string> {
   const backend = getBackendState();
   if (!backend.healthy || !backend.baseUrl) {
     return "";
   }
 
   try {
-    const response = await fetch(`${backend.baseUrl}/memory/hermes?limit=1000`);
+    const params = new URLSearchParams({ project_dir: cwd, limit: "10" });
+    const response = await fetch(`${backend.baseUrl}/memory/hermes/project?${params.toString()}`);
     if (!response.ok) return "";
     return await response.text();
   } catch {

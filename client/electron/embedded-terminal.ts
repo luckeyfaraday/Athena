@@ -30,7 +30,9 @@ const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
 
 export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
-  return Array.from(terminals.values()).map((entry) => ({ ...entry.session }));
+  return Array.from(terminals.values())
+    .filter((entry) => entry.session.status === "running")
+    .map((entry) => ({ ...entry.session }));
 }
 
 export function getEmbeddedTerminalBuffer(id: string): string {
@@ -93,6 +95,7 @@ export async function spawnEmbeddedTerminal(
       if (entry) {
         entry.session = { ...entry.session, status: "exited", exitCode };
         emit("embedded-terminal:exit", { id, exitCode });
+        terminals.delete(id);
       }
     });
 
@@ -112,7 +115,8 @@ export function writeEmbeddedTerminal(id: string, data: string): EmbeddedTermina
 }
 
 export function resizeEmbeddedTerminal(id: string, cols: number, rows: number): EmbeddedTerminalSession {
-  const entry = requireTerminal(id);
+  const entry = terminals.get(id);
+  if (!entry) return missingSession(id);
   entry.process.resize(Math.max(20, Math.floor(cols)), Math.max(6, Math.floor(rows)));
   return { ...entry.session };
 }
@@ -135,6 +139,21 @@ function requireTerminal(id: string): ManagedTerminal {
   const entry = terminals.get(id);
   if (!entry) throw new Error(`Embedded terminal not found: ${id}`);
   return entry;
+}
+
+function missingSession(id: string): EmbeddedTerminalSession {
+  return {
+    id,
+    title: "Unknown terminal",
+    kind: "shell",
+    workspace: "",
+    pid: null,
+    promptPath: null,
+    createdAt: new Date().toISOString(),
+    status: "exited",
+    exitCode: null,
+    error: "Embedded terminal not found.",
+  };
 }
 
 function terminalLaunch(

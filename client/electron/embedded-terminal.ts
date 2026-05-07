@@ -340,5 +340,5 @@ function selectOpenCodeBaselinePowerShell(): string {
     "  $env:OPENCODE_BIN_PATH = $baseline",
     "  Write-Host \"[Context Workspace] OpenCode baseline binary selected to avoid Bun AVX2 crash: $baseline\" -ForegroundColor Yellow",
     "}",
-  ].join(" ");
+  ].join("\n");
 }

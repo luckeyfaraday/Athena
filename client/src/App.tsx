@@ -1,6 +1,7 @@
 import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  BookOpen,
   Bot,
   BrainCircuit,
   CheckCircle2,
@@ -10,10 +11,12 @@ import {
   Database,
   Eye,
   FileText,
+  FolderOpen,
   Layers3,
   Play,
   RefreshCw,
   Search,
+  Settings,
   ShieldCheck,
   Sparkles,
   Maximize2,
@@ -26,7 +29,6 @@ import {
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type Run } from "./api";
 import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "./electron";
-import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
 
 type LoadState = {
@@ -257,6 +259,7 @@ export function App() {
   const latestRun = state.runs.at(-1) ?? null;
   const memoryEntries = [...state.memory].reverse();
   const codexInstalled = Boolean(state.adapters.codex?.installed);
+  const installedAdapters = Object.values(state.adapters).filter((adapter) => adapter.installed).length;
 
   const agentRoles: AgentRole[] = [
     {
@@ -291,79 +294,56 @@ export function App() {
 
   return (
     <main className="workspaceSurface">
-      <aside className="roomRail" aria-label="Workspace rooms">
-        <div className="railMark" title="Context Workspace">
-          <BrainCircuit size={23} />
+      <aside className="appSidebar" aria-label="Workspace navigation">
+        <div className="brandGlyph">
+          <BrainCircuit size={18} />
         </div>
-        <RoomButton active={activeRoom === "command"} icon={<TerminalSquare size={19} />} label="Command" onClick={() => setActiveRoom("command")} />
-        <RoomButton active={activeRoom === "swarm"} icon={<Users size={19} />} label="Swarm" onClick={() => setActiveRoom("swarm")} />
-        <RoomButton active={activeRoom === "review"} icon={<ShieldCheck size={19} />} label="Review" onClick={() => setActiveRoom("review")} />
-        <RoomButton active={activeRoom === "memory"} icon={<Database size={19} />} label="Memory" onClick={() => setActiveRoom("memory")} />
-        <div className="railSpacer" />
-        <span className={backend?.healthy ? "railPulse ok" : "railPulse bad"} />
+        <nav className="sidebarNav">
+          <span>Workspace</span>
+          <SidebarButton active={activeRoom === "command"} icon={<TerminalSquare size={14} />} label="Command Room" onClick={() => setActiveRoom("command")} />
+          <SidebarButton active={activeRoom === "review"} icon={<CheckCircle2 size={14} />} label="Tasks" onClick={() => setActiveRoom("review")} />
+          <SidebarButton active={activeRoom === "swarm"} icon={<Users size={14} />} label="Agents" onClick={() => setActiveRoom("swarm")} />
+          <SidebarButton active={activeRoom === "memory"} icon={<Database size={14} />} label="Memory" onClick={() => setActiveRoom("memory")} />
+          <SidebarButton active={activeRoom === "review"} icon={<Eye size={14} />} label="Reviews" onClick={() => setActiveRoom("review")} />
+          <SidebarButton active={false} icon={<Settings size={14} />} label="Settings" onClick={restartBackend} />
+        </nav>
+        <div className="sidebarStatus">
+          <span>Status</span>
+          <StatusLine label="Backend" ok={Boolean(backend?.healthy)} />
+          <StatusLine label="Hermes" ok={Boolean(state.hermes?.installed)} />
+        </div>
+        <div className="sidebarUser">
+          <div className="avatar">A</div>
+          <div>
+            <strong>Alan</strong>
+            <span>Pro</span>
+          </div>
+          <ChevronRight size={14} />
+        </div>
       </aside>
 
-      <section className={terminalFocus && activeRoom === "command" ? "workspaceShell terminalFocusShell" : "workspaceShell"}>
-        <header className="heroTopbar">
-          <div className="brandLockup">
-            <span className="tinyLabel">Context Workspace</span>
-            <h1>A workroom where every agent remembers.</h1>
-            <p>Rooms with Hermes memory riding on top of terminals, swarms, and reviews.</p>
-          </div>
-          <div className="topbarActions">
-            <StatusPill tone={backend?.healthy ? "ok" : "bad"}>{backend?.healthy ? "Backend online" : "Backend offline"}</StatusPill>
-            <StatusPill tone={state.hermes?.installed ? "ok" : "warn"}>{state.hermes?.installed ? "Hermes attached" : "Hermes setup"}</StatusPill>
-            <button className="iconButton" onClick={restartBackend} disabled={busy} title="Restart backend">
-              <RefreshCw size={17} />
-            </button>
-          </div>
-        </header>
-
+      <section className={terminalFocus && activeRoom === "command" ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
         {(error || (!backend?.healthy && backend?.lastError)) && <div className="noticeBar">{error ?? backend?.lastError}</div>}
+        <section className="dashboardGrid">
+          <div className="commandColumn">
+            <header className="dashboardHeader">
+              <div>
+                <h1>{roomCopy[activeRoom].label}</h1>
+                <p>{roomCopy[activeRoom].description}</p>
+              </div>
+              <div className="topbarActions">
+                <button className="ghostButton" onClick={() => void desktop.selectWorkspace().then((selected) => selected && setWorkspace(selected))}>
+                  <FolderOpen size={14} /> Open Workspace
+                </button>
+                <button className="ghostButton" onClick={() => void launchEmbedded("shell", 1)} disabled={!workspace || busy}>
+                  <TerminalSquare size={14} /> Open in Terminal
+                </button>
+                <button className="primaryButton" onClick={() => void launchEmbedded("codex", 1)} disabled={!workspace || busy}>
+                  <Play size={14} /> New
+                </button>
+              </div>
+            </header>
 
-        <section className="controlBand">
-          <WorkspaceSelector workspace={workspace} onWorkspaceChange={setWorkspace} />
-          <div className="missionCard primaryMission">
-            <div>
-              <span className="tinyLabel">Live workflow map</span>
-              <strong>Task → context → agents → review → memory</strong>
-            </div>
-            <div className="flowSteps">
-              <FlowStep icon={<FileText size={14} />} label="Task" active />
-              <FlowStep icon={<BrainCircuit size={14} />} label="Hermes" active={Boolean(state.hermes?.installed)} />
-              <FlowStep icon={<Bot size={14} />} label="Agents" active={activeRuns.length > 0} />
-              <FlowStep icon={<ShieldCheck size={14} />} label="Review" active={completedRuns.length > 0} />
-            </div>
-          </div>
-          <div className="missionCard compactMetric">
-            <span>Active</span>
-            <strong>{activeRuns.length}</strong>
-            <small>running or pending</small>
-          </div>
-          <div className="missionCard compactMetric">
-            <span>Memory</span>
-            <strong>{state.memory.length}</strong>
-            <small>recent entries</small>
-          </div>
-        </section>
-
-        <section className="roomHeading">
-          <div>
-            <span className="tinyLabel">{roomCopy[activeRoom].eyebrow}</span>
-            <h2>{roomCopy[activeRoom].label}</h2>
-            <p>{roomCopy[activeRoom].description}</p>
-          </div>
-          <div className="roomTabs" role="tablist" aria-label="Room views">
-            {(Object.keys(roomCopy) as ActiveRoom[]).map((room) => (
-              <button key={room} className={activeRoom === room ? "active" : ""} onClick={() => setActiveRoom(room)}>
-                {roomCopy[room].label.replace(" Room", "")}
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className={terminalFocus && activeRoom === "command" ? "roomGrid terminalFocusGrid" : "roomGrid"}>
-          <div className="mainRoom">
             {activeRoom === "command" && (
               <CommandRoom
                 workspace={workspace}
@@ -379,19 +359,42 @@ export function App() {
             {activeRoom === "swarm" && <SwarmRoom roles={agentRoles} runs={activeRuns} adapters={state.adapters} />}
             {activeRoom === "review" && <ReviewRoom latestRun={latestRun} completedRuns={completedRuns} />}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} />}
+
+            <LiveWorkflow activeRuns={activeRuns.length} completedRuns={completedRuns.length} memoryCount={state.memory.length} />
+            <QuickActions workspace={workspace} busy={busy} onLaunch={launchEmbedded} onFocusChange={setTerminalFocus} />
           </div>
-          {!(terminalFocus && activeRoom === "command") && <HermesMemoryPanel entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />}
+
+          <aside className="glanceColumn">
+            <ContextGlance tasks={state.runs.length} active={activeRuns.length} agents={installedAdapters || agentRoles.length} memory={state.memory.length} reviews={completedRuns.length} />
+          </aside>
+
+          <aside className="rightColumn">
+            <ActiveAgents roles={agentRoles} runs={activeRuns} />
+            <MemoryTimeline entries={memoryEntries} runs={state.runs} />
+          </aside>
+
+          <SharedMemorySnapshot workspace={workspace} entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />
         </section>
       </section>
     </main>
   );
 }
 
-function RoomButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
+function SidebarButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
   return (
-    <button className={active ? "roomRailButton active" : "roomRailButton"} onClick={onClick} title={label}>
+    <button className={active ? "sidebarButton active" : "sidebarButton"} onClick={onClick}>
       {icon}
+      <span>{label}</span>
     </button>
+  );
+}
+
+function StatusLine({ label, ok }: { label: string; ok: boolean }) {
+  return (
+    <div className="statusLine">
+      <span><i className={ok ? "ok" : "bad"} />{label}</span>
+      <strong>{ok ? "Online" : "Offline"}</strong>
+    </div>
   );
 }
 
@@ -410,6 +413,183 @@ function FlowStep({ icon, label, active }: { icon: ReactNode; label: string; act
       {icon}
       <span>{label}</span>
     </div>
+  );
+}
+
+function ContextGlance({ tasks, active, agents, memory, reviews }: { tasks: number; active: number; agents: number; memory: number; reviews: number }) {
+  return (
+    <section className="dashboardCard contextGlance">
+      <div className="cardHeader">
+        <span>Context at a glance</span>
+      </div>
+      <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Tasks" value={tasks} detail={`${active} running`} />
+      <MetricRow icon={<Users size={15} />} tone="violet" label="Agents" value={agents} detail="All nominal" />
+      <MetricRow icon={<Database size={15} />} tone="blue" label="Memory Entries" value={memory} detail="Recent memory" />
+      <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Completed runs" />
+    </section>
+  );
+}
+
+function MetricRow({ icon, tone, label, value, detail }: { icon: ReactNode; tone: string; label: string; value: number; detail: string }) {
+  return (
+    <article className="metricRow">
+      <span className={`metricIcon ${tone}`}>{icon}</span>
+      <div>
+        <strong>{label}</strong>
+        <b>{value}</b>
+        <small>{detail}</small>
+      </div>
+      <ChevronRight size={15} />
+    </article>
+  );
+}
+
+function LiveWorkflow({ activeRuns, completedRuns, memoryCount }: { activeRuns: number; completedRuns: number; memoryCount: number }) {
+  return (
+    <section className="dashboardCard liveWorkflow">
+      <div className="cardHeader">
+        <span>Live Workflow</span>
+        <button>View full pipeline <ChevronRight size={13} /></button>
+      </div>
+      <div className="workflowTrack">
+        <FlowStep icon={<FileText size={14} />} label="Task" active />
+        <ChevronRight size={18} />
+        <FlowStep icon={<Users size={14} />} label="Agents" active={activeRuns > 0} />
+        <ChevronRight size={18} />
+        <FlowStep icon={<ShieldCheck size={14} />} label="Review" active={completedRuns > 0} />
+        <ChevronRight size={18} />
+        <FlowStep icon={<Database size={14} />} label="Memory" active={memoryCount > 0} />
+      </div>
+    </section>
+  );
+}
+
+function QuickActions({
+  workspace,
+  busy,
+  onLaunch,
+  onFocusChange,
+}: {
+  workspace: string;
+  busy: boolean;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+  onFocusChange: (focused: boolean) => void;
+}) {
+  return (
+    <section className="dashboardCard quickActions">
+      <div className="cardHeader">
+        <span>Quick Actions</span>
+      </div>
+      <div className="quickGrid">
+        <button onClick={() => void onLaunch("codex", 1)} disabled={!workspace || busy}>
+          <CheckCircle2 size={16} />
+          <span><strong>New Task</strong><small>Create a task</small></span>
+        </button>
+        <button onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
+          <TerminalSquare size={16} />
+          <span><strong>New Shell</strong><small>Open a terminal</small></span>
+        </button>
+        <button onClick={() => void onLaunch("codex", 4)} disabled={!workspace || busy}>
+          <Users size={16} />
+          <span><strong>Add Agent</strong><small>Invite an agent</small></span>
+        </button>
+        <button onClick={() => onFocusChange(true)}>
+          <Eye size={16} />
+          <span><strong>Open Review</strong><small>Review changes</small></span>
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ActiveAgents({ roles, runs }: { roles: AgentRole[]; runs: Run[] }) {
+  const liveByRole = new Set(runs.map((run) => run.agent_type));
+  return (
+    <section className="dashboardCard activeAgents">
+      <div className="cardHeader">
+        <span>Active Agents</span>
+        <button>View all</button>
+      </div>
+      <div className="agentRows">
+        {roles.map((role) => {
+          const busy = role.status === "running" || liveByRole.has(role.type);
+          return (
+            <article key={role.role}>
+              <span className={`agentBadge ${busy ? "busy" : role.status}`}>{role.icon}</span>
+              <div>
+                <strong>{role.role === "Builder" ? "Code Runner" : role.role === "Reviewer" ? "Review Agent" : role.role === "Scout" ? "Memory Manager" : "Hermes Orchestrator"}</strong>
+                <small>{role.brief}</small>
+              </div>
+              <em className={busy ? "busy" : role.status}>{busy ? "Busy" : role.status === "ready" ? "Online" : role.status}</em>
+              <ChevronRight size={14} />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MemoryTimeline({ entries, runs }: { entries: string[]; runs: Run[] }) {
+  const timeline = [
+    { time: "Now", label: "Context Workspace Updated", detail: entries[0] ?? "Shared context is ready", tone: "memory" },
+    { time: "Run", label: "Latest Agent Run", detail: runs.at(-1)?.task ?? "No run started yet", tone: "run" },
+    { time: "Agent", label: "Agent State", detail: `${runs.filter((run) => run.status === "running" || run.status === "pending").length} active runs`, tone: "agent" },
+    { time: "Memory", label: "Hermes Sync", detail: `${entries.length} memory entries available`, tone: "system" },
+  ];
+  return (
+    <section className="dashboardCard memoryTimeline">
+      <div className="cardHeader">
+        <span>Memory Timeline</span>
+        <button>View all</button>
+      </div>
+      <div className="timelineTabs">
+        <button className="active">All</button>
+        <button>Events</button>
+        <button>Agents</button>
+        <button>Memory</button>
+        <button>Runs</button>
+      </div>
+      <div className="timelineList">
+        {timeline.map((item) => (
+          <article key={item.label}>
+            <time>{item.time}</time>
+            <span className={`timelineDot ${item.tone}`}><Sparkles size={13} /></span>
+            <div>
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </div>
+            <em>{item.tone}</em>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SharedMemorySnapshot({ workspace, entries, hermes, latestRun }: { workspace: string; entries: string[]; hermes: HermesStatus | null; latestRun: Run | null }) {
+  const lines = [
+    "# Context Workspace",
+    `- Workspace: ${workspace || "not selected"}`,
+    `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
+    `- Latest run: ${latestRun ? `${latestRun.agent_id} / ${latestRun.status}` : "none"}`,
+    `- Memory entries: ${entries.length}`,
+    ...(entries[0] ? [`- Latest memory: ${entries[0]}`] : []),
+  ];
+  return (
+    <section className="dashboardCard sharedSnapshot">
+      <div className="cardHeader">
+        <span>Shared Memory Snapshot</span>
+        <button>2m ago</button>
+      </div>
+      <div className="snapshotBody">
+        <div className="snapshotTabs">
+          <button>Latest</button>
+          <button><BookOpen size={14} /> Bookmarks</button>
+        </div>
+        <pre>{lines.join("\n")}</pre>
+      </div>
+    </section>
   );
 }
 

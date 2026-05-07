@@ -29,6 +29,14 @@ def test_memory_store_appends_and_searches_entries(tmp_path: Path) -> None:
     assert "§" in (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
 
 
+def test_empty_query_does_not_return_recent_memory(tmp_path: Path) -> None:
+    store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    store.append("Persephone project: /home/alan/home_ai/projects/free-model-drops newsletter.")
+
+    assert store.search("") == []
+    assert store.format_query_response("") == ""
+
+
 def test_memory_store_defaults_to_current_hermes_memory_layout(tmp_path: Path) -> None:
     store = HermesMemoryStore(root=tmp_path / ".hermes" / "memories")
 
@@ -86,6 +94,25 @@ def test_project_context_is_empty_without_project_match(tmp_path: Path) -> None:
     store.append("Persephone project: /home/alan/home_ai/projects/free-model-drops newsletter.")
 
     assert store.format_project_context("C:/Users/alanq/context-workspace") == ""
+
+
+def test_project_context_ignores_context_workspace_tool_mentions(tmp_path: Path) -> None:
+    store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    store.append(
+        "Persephone project (Free Model Drops newsletter): "
+        "/home/alan/home_ai/projects/free-model-drops/ launched from Context Workspace."
+    )
+
+    assert store.format_project_context("C:/Users/alanq/context-workspace") == ""
+
+
+def test_project_context_matches_wsl_home_variant_for_project_path(tmp_path: Path) -> None:
+    store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    store.append("Persephone project: /home/alan/home_ai/projects/free-model-drops newsletter.")
+
+    context = store.format_project_context("C:/Users/alanq/home_ai/projects/free-model-drops")
+
+    assert "Persephone project" in context
 
 
 def test_sanitize_memory_text_redacts_secrets_and_injection_language() -> None:

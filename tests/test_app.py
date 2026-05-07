@@ -126,11 +126,14 @@ def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
 
     stored = client.post("/memory/store", json={"text": "Codex adapter verified."})
     queried = client.get("/memory/hermes", params={"q": "codex"})
+    empty = client.get("/memory/hermes")
     recent = client.get("/memory/recent", params={"limit": 2})
 
     assert stored.status_code == 200
     assert "Project context from Hermes memory" in queried.text
     assert "Codex adapter verified." in queried.text
+    assert empty.status_code == 200
+    assert empty.text == ""
     assert recent.json()["entries"][-1] == "[agent] asked Hermes memory about: codex"
 
 

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 
@@ -57,8 +58,10 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
 
   backendProcess.stderr.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf8").trim();
-    if (text) {
-      state = { ...state, lastError: text };
+    for (const line of text.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)) {
+      if (isBackendErrorLine(line)) {
+        state = { ...state, lastError: line };
+      }
     }
   });
 
@@ -118,8 +121,13 @@ export async function checkBackendHealth(): Promise<BackendState> {
     return getBackendState();
   }
   try {
-    const response = await fetch(`${state.baseUrl}/health`);
-    state = { ...state, healthy: response.ok };
+    const statusCode = await fetchHealthStatus(state.baseUrl);
+    const healthy = statusCode >= 200 && statusCode < 300;
+    state = {
+      ...state,
+      healthy,
+      lastError: healthy ? null : `Backend health returned HTTP ${statusCode}.`,
+    };
   } catch (error) {
     state = { ...state, healthy: false, lastError: String(error) };
   }
@@ -173,4 +181,22 @@ function resolveBackendParent(appRoot: string): string {
 
 function mergePythonPath(backendParent: string, existing: string | undefined): string {
   return existing ? `${backendParent}${path.delimiter}${existing}` : backendParent;
+}
+
+function fetchHealthStatus(baseUrl: string): Promise<number> {
+  const url = new URL("/health", baseUrl);
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode ?? 0));
+    });
+    request.setTimeout(2000, () => {
+      request.destroy(new Error("Backend health check timed out."));
+    });
+    request.on("error", reject);
+  });
+}
+
+function isBackendErrorLine(line: string): boolean {
+  return /^(ERROR|CRITICAL):/.test(line) || line.startsWith("Traceback ");
 }

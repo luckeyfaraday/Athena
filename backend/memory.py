@@ -162,9 +162,9 @@ def _project_needles(project_dir: str | Path) -> list[tuple[str, int]]:
     candidates: list[tuple[str, int]] = []
     if len(normalized_path) >= 6:
         candidates.append((normalized_path, 100))
-        windows_home_prefix = _normalize_for_project_match(str(Path.home()))
-        if normalized_path.startswith(f"{windows_home_prefix}/"):
-            relative = normalized_path.removeprefix(f"{windows_home_prefix}/")
+        home_prefix = _normalize_for_project_match(str(Path.home()))
+        for relative in _home_relative_variants(normalized_path, home_prefix):
+            candidates.append((f"{home_prefix}/{relative}", 95))
             candidates.append((f"/home/you/{relative}", 95))
             candidates.append((f"/home/youq/{relative}", 95))
 
@@ -179,6 +179,18 @@ def _project_needles(project_dir: str | Path) -> list[tuple[str, int]]:
 
 def _normalize_for_project_match(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\\", "/").strip().lower())
+
+
+def _home_relative_variants(normalized_path: str, home_prefix: str) -> list[str]:
+    variants: list[str] = []
+    if normalized_path.startswith(f"{home_prefix}/"):
+        variants.append(normalized_path.removeprefix(f"{home_prefix}/"))
+
+    windows_home_match = re.match(r"^[a-z]:/users/[^/]+/(.+)$", normalized_path)
+    if windows_home_match:
+        variants.append(windows_home_match.group(1))
+
+    return variants
 
 
 def _read_text(path: Path) -> str:

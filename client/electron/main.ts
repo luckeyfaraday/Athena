@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, Menu, type MenuItemConstructorOptions } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,7 +40,9 @@ function waitForVite(url: string, timeout = 15000): Promise<void> {
 }
 
 async function createWindow(): Promise<void> {
-  await startBackend(appRoot);
+  void startBackend(appRoot).catch((error) => {
+    console.error("Backend failed to start:", error);
+  });
 
   const inDev = !app.isPackaged && isDev;
   if (inDev) {
@@ -84,6 +86,7 @@ async function createWindow(): Promise<void> {
       sandbox: false,
     },
   });
+  installContextMenu(mainWindow);
 
   if (inDev) {
     await mainWindow.loadURL("http://127.0.0.1:5173");
@@ -106,6 +109,7 @@ app.commandLine.appendSwitch("disable-gpu-rasterization");
 app.disableHardwareAcceleration();
 
 app.whenReady().then(async () => {
+  installApplicationMenu();
   registerIpcHandlers(appRoot);
   await createWindow();
 
@@ -115,6 +119,53 @@ app.whenReady().then(async () => {
     }
   });
 });
+
+function installApplicationMenu(): void {
+  const editMenu: MenuItemConstructorOptions = {
+    label: "Edit",
+    submenu: [
+      { role: "undo" },
+      { role: "redo" },
+      { type: "separator" },
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+      { role: "selectAll" },
+    ],
+  };
+
+  const template: MenuItemConstructorOptions[] = process.platform === "darwin"
+    ? [
+        { role: "appMenu" },
+        editMenu,
+        { role: "viewMenu" },
+        { role: "windowMenu" },
+      ]
+    : [
+        editMenu,
+        { role: "viewMenu" },
+      ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function installContextMenu(window: BrowserWindow): void {
+  window.webContents.on("context-menu", (_event, params) => {
+    const template: MenuItemConstructorOptions[] = [];
+
+    if (params.editFlags.canUndo) template.push({ role: "undo" });
+    if (params.editFlags.canRedo) template.push({ role: "redo" });
+    if (template.length > 0) template.push({ type: "separator" });
+
+    if (params.editFlags.canCut) template.push({ role: "cut" });
+    if (params.editFlags.canCopy || params.selectionText.trim()) template.push({ role: "copy" });
+    if (params.editFlags.canPaste) template.push({ role: "paste" });
+    if (params.isEditable) template.push({ type: "separator" }, { role: "selectAll" });
+
+    if (template.length === 0) return;
+    Menu.buildFromTemplate(template).popup({ window });
+  });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {

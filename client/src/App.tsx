@@ -935,6 +935,9 @@ function CommandRoom({
   const visibleSessions = paneOrder
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
+  const displayedTerminalSessions = maximizedPaneId
+    ? visibleSessions.filter((session) => session.id === maximizedPaneId)
+    : visibleSessions;
   const visibleAgentSessions = agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session)));
   const shownCount = visibleSessions.length;
   const promptTargets = sessions.filter((session) => session.status === "running" && session.kind !== "shell");
@@ -1100,7 +1103,7 @@ function CommandRoom({
 
       {activeTab === "terminals" ? (
         <div className="terminalStage embeddedStage slotTerminalStage">
-          {visibleSessions.map((session) => (
+          {displayedTerminalSessions.map((session) => (
             <div
               key={session.id}
               data-pane-id={session.id}

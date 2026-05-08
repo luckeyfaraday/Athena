@@ -370,6 +370,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   align-items: center;
   gap: 4px;
 }
+.cardHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.cardHeaderActions button:disabled {
+  opacity: .55;
+  cursor: default;
+}
 
 .roomPanel {
   flex: 1;

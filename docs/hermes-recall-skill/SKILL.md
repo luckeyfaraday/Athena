@@ -72,6 +72,14 @@ CONTEXT_WORKSPACE_BACKEND_URL=<backend URL>
 
 The configured command should start Hermes with this skill or equivalent standing instruction. Hermes must run `session_search`, summarize useful prior context, call `context_workspace_write_recall_cache`, and exit nonzero if refresh fails.
 
+Context Workspace uses this hook in three places:
+
+- Manual `Refresh recall` action in the workspace UI.
+- Pre-launch refresh before non-shell agent terminals start when recall is missing or stale.
+- Background refresh after workspace selection when recall is missing or stale and the hook is configured.
+
+If pre-launch refresh fails or the hook is not configured, Context Workspace asks the user whether to proceed with stale or missing recall.
+
 ## Refresh Recall
 
 1. Run Hermes `session_search` for the current project, branch, task, or problem.

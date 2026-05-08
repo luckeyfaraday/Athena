@@ -31,6 +31,7 @@ export type RecallStatus = {
   age_seconds: number | null;
   stale_after_seconds: number;
   source: string | null;
+  refresh_configured: boolean;
 };
 
 export type RecallRefreshResult = {

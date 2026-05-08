@@ -383,6 +383,7 @@ def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
         "age_seconds": age_seconds,
         "stale_after_seconds": RECALL_STALE_AFTER_SECONDS,
         "source": metadata.get("source") if isinstance(metadata.get("source"), str) else None,
+        "refresh_configured": bool(os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()),
     }
 
 

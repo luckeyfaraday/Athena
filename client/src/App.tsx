@@ -124,6 +124,7 @@ export function App() {
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
+  const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const newMenuRef = useRef<HTMLDivElement | null>(null);
   const workspace = workspacePath?.nativePath ?? "";
   const workspaceDisplay = workspacePath?.displayPath ?? workspace;
@@ -233,6 +234,13 @@ export function App() {
   }, [workspace, embeddedSessions.length]);
 
   useEffect(() => {
+    if (!workspace || !state.recall?.stale || !state.recall.refresh_configured) return;
+    if (autoRecallRefreshWorkspace.current === workspace) return;
+    autoRecallRefreshWorkspace.current = workspace;
+    void refreshRecall("Workspace selected", { surfaceError: false });
+  }, [workspace, state.recall?.stale, state.recall?.refresh_configured]);
+
+  useEffect(() => {
     if (!newMenuOpen) return;
 
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -263,16 +271,17 @@ export function App() {
     }
   }
 
-  async function refreshRecall(taskHint = "Manual recall refresh") {
+  async function refreshRecall(taskHint = "Manual recall refresh", options: { surfaceError?: boolean } = {}) {
     if (!client || !workspace || recallRefreshing) return null;
+    const surfaceError = options.surfaceError ?? true;
     setRecallRefreshing(true);
-    setError(null);
+    if (surfaceError) setError(null);
     try {
       const result = await client.refreshRecall(workspace, taskHint);
       setState((current) => ({ ...current, recall: result.recall }));
       return result.recall;
     } catch (err) {
-      setError(String(err));
+      if (surfaceError) setError(String(err));
       return null;
     } finally {
       setRecallRefreshing(false);
@@ -285,7 +294,18 @@ export function App() {
     setError(null);
     try {
       if (kind !== "shell" && kind !== "hermes" && (!state.recall || state.recall.stale)) {
-        await refreshRecall(`Launching ${count > 1 ? `${count} ${kind} agents` : `${kind} agent`}`);
+        let recall = state.recall;
+        if (recall?.refresh_configured) {
+          recall = await refreshRecall(`Launching ${count > 1 ? `${count} ${kind} agents` : `${kind} agent`}`);
+        }
+        if (!recall || recall.stale) {
+          const proceed = window.confirm(
+            recall?.refresh_configured
+              ? "Hermes recall is still stale after refresh. Launch agents anyway?"
+              : "Hermes recall refresh is not configured. Launch agents with missing or stale recall?",
+          );
+          if (!proceed) return;
+        }
       }
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
@@ -751,6 +771,7 @@ function SharedMemorySnapshot({
     `- Workspace: ${workspace || "not selected"}`,
     `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
     `- Recall: ${recallLabel} (${recallAge})`,
+    `- Recall refresh: ${recall?.refresh_configured ? "configured" : "not configured"}`,
     `- Latest run: ${latestRun ? `${latestRun.agent_id} / ${latestRun.status}` : "none"}`,
     `- Memory entries: ${entries.length}`,
     ...(entries[0] ? [`- Latest memory: ${entries[0]}`] : []),

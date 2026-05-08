@@ -123,6 +123,7 @@ def test_hermes_recall_status_reports_missing_cache(tmp_path: Path) -> None:
     assert recall["stale"] is True
     assert recall["bytes"] == 0
     assert recall["refreshed_at"] is None
+    assert recall["refresh_configured"] is False
 
 
 def test_hermes_recall_status_reports_fresh_cache(tmp_path: Path) -> None:
@@ -152,6 +153,7 @@ def test_hermes_recall_status_reports_fresh_cache(tmp_path: Path) -> None:
     assert recall["stale"] is False
     assert recall["bytes"] == (recall_dir / "session-recall.md").stat().st_size
     assert recall["source"] == "hermes-session-search"
+    assert recall["refresh_configured"] is False
 
 
 def test_hermes_recall_refresh_requires_configured_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,6 +205,7 @@ def test_hermes_recall_refresh_runs_configured_command(tmp_path: Path, monkeypat
     assert "refreshed" in payload["refresh"]["stdout"]
     assert payload["recall"]["status"] == "fresh"
     assert payload["recall"]["source"] == "test-refresh-command"
+    assert payload["recall"]["refresh_configured"] is True
     assert "manual launch" in (tmp_path / ".context-workspace" / "hermes" / "session-recall.md").read_text(encoding="utf-8")
 
 

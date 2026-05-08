@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from client import ContextWorkspaceClient
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from backend.safety import SafetyError, resolve_project_dir
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -110,7 +117,7 @@ async def context_workspace_wait_for_run(
 
 async def context_workspace_write_recall_cache(project_dir: str, markdown: str) -> dict[str, Any]:
     """Write Hermes session recall into the project's local recall cache."""
-    project = Path(project_dir).resolve()
+    project = _resolve_recall_project(project_dir)
     cache_dir = _recall_cache_dir(project)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +137,7 @@ async def context_workspace_write_recall_cache(project_dir: str, markdown: str) 
 
 async def context_workspace_read_recall_cache(project_dir: str) -> dict[str, Any]:
     """Read the project's Hermes session recall cache."""
-    recall_path = _recall_cache_dir(Path(project_dir).resolve()) / "session-recall.md"
+    recall_path = _recall_cache_dir(_resolve_recall_project(project_dir)) / "session-recall.md"
     if not recall_path.exists():
         return {"exists": False, "path": str(recall_path), "markdown": ""}
     markdown = recall_path.read_text(encoding="utf-8")
@@ -144,7 +151,7 @@ async def context_workspace_read_recall_cache(project_dir: str) -> dict[str, Any
 
 async def context_workspace_clear_recall_cache(project_dir: str) -> dict[str, Any]:
     """Clear the project's Hermes session recall cache."""
-    cache_dir = _recall_cache_dir(Path(project_dir).resolve())
+    cache_dir = _recall_cache_dir(_resolve_recall_project(project_dir))
     removed: list[str] = []
     for name in ("session-recall.md", "last-refresh.json", "control-state.json"):
         path = cache_dir / name
@@ -177,4 +184,11 @@ def register_tools(mcp: Any) -> None:
 
 def _recall_cache_dir(project_dir: Path) -> Path:
     return project_dir / ".context-workspace" / "hermes"
+
+
+def _resolve_recall_project(project_dir: str) -> Path:
+    try:
+        return resolve_project_dir(project_dir)
+    except OSError as exc:
+        raise SafetyError(f"Project directory cannot be resolved: {project_dir}") from exc
 

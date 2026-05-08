@@ -48,6 +48,30 @@ If there are no useful prior-session results, write a short empty-state summary 
 - No relevant prior-session context found for this task.
 ```
 
+## Context Workspace Refresh Hook
+
+Context Workspace can request recall refresh through:
+
+```text
+POST /hermes/recall/refresh
+```
+
+The backend runs the command configured in:
+
+```text
+CONTEXT_WORKSPACE_HERMES_REFRESH_CMD
+```
+
+When invoked, the command receives:
+
+```text
+CONTEXT_WORKSPACE_PROJECT_DIR=<native project path>
+CONTEXT_WORKSPACE_TASK_HINT=<current task or launch hint>
+CONTEXT_WORKSPACE_BACKEND_URL=<backend URL>
+```
+
+The configured command should start Hermes with this skill or equivalent standing instruction. Hermes must run `session_search`, summarize useful prior context, call `context_workspace_write_recall_cache`, and exit nonzero if refresh fails.
+
 ## Refresh Recall
 
 1. Run Hermes `session_search` for the current project, branch, task, or problem.

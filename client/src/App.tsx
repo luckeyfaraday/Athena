@@ -120,6 +120,7 @@ export function App() {
   const [terminalFocus, setTerminalFocus] = useState(false);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
+  const [recallRefreshing, setRecallRefreshing] = useState(false);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
@@ -262,11 +263,30 @@ export function App() {
     }
   }
 
+  async function refreshRecall(taskHint = "Manual recall refresh") {
+    if (!client || !workspace || recallRefreshing) return null;
+    setRecallRefreshing(true);
+    setError(null);
+    try {
+      const result = await client.refreshRecall(workspace, taskHint);
+      setState((current) => ({ ...current, recall: result.recall }));
+      return result.recall;
+    } catch (err) {
+      setError(String(err));
+      return null;
+    } finally {
+      setRecallRefreshing(false);
+    }
+  }
+
   async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1) {
     if (!workspace || busy) return;
     setBusy(true);
     setError(null);
     try {
+      if (kind !== "shell" && kind !== "hermes" && (!state.recall || state.recall.stale)) {
+        await refreshRecall(`Launching ${count > 1 ? `${count} ${kind} agents` : `${kind} agent`}`);
+      }
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
         kind,
@@ -445,7 +465,15 @@ export function App() {
             <MemoryTimeline entries={memoryEntries} runs={state.runs} />
           </aside>
 
-          <SharedMemorySnapshot workspace={workspaceDisplay} entries={memoryEntries} hermes={state.hermes} recall={state.recall} latestRun={latestRun} />
+          <SharedMemorySnapshot
+            workspace={workspaceDisplay}
+            entries={memoryEntries}
+            hermes={state.hermes}
+            recall={state.recall}
+            latestRun={latestRun}
+            refreshing={recallRefreshing}
+            onRefresh={() => void refreshRecall(latestRun?.task ?? "Manual recall refresh")}
+          />
         </section>
       </section>
     </main>
@@ -705,12 +733,16 @@ function SharedMemorySnapshot({
   hermes,
   recall,
   latestRun,
+  refreshing,
+  onRefresh,
 }: {
   workspace: string;
   entries: string[];
   hermes: HermesStatus | null;
   recall: RecallStatus | null;
   latestRun: Run | null;
+  refreshing: boolean;
+  onRefresh: () => void;
 }) {
   const recallLabel = recall ? recall.status : "unknown";
   const recallAge = recall?.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds);
@@ -728,7 +760,12 @@ function SharedMemorySnapshot({
     <section className="dashboardCard sharedSnapshot">
       <div className="cardHeader">
         <span>Shared Memory Snapshot</span>
-        <StatusPill tone={recallTone}>Recall {recallLabel}</StatusPill>
+        <div className="cardHeaderActions">
+          <StatusPill tone={recallTone}>Recall {recallLabel}</StatusPill>
+          <button type="button" onClick={onRefresh} disabled={refreshing}>
+            <RefreshCw size={13} /> {refreshing ? "Refreshing" : "Refresh recall"}
+          </button>
+        </div>
       </div>
       <div className="snapshotBody">
         <div className="snapshotTabs">

@@ -2,6 +2,7 @@ import { BrowserWindow, dialog, ipcMain } from "electron";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
 import type { CodexTerminalState } from "./codex-terminal.js";
+import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import {
   getCodexTerminalState,
   getNativeTerminalSessions,
@@ -28,6 +29,8 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("backend:getState", (): BackendState => getBackendState());
   ipcMain.handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
   ipcMain.handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));
+  ipcMain.handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
+  ipcMain.handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
   ipcMain.handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());
   ipcMain.handle("codexTerminal:start", (event, workspace: string): Promise<CodexTerminalState> => {
     const window = BrowserWindow.fromWebContents(event.sender);
@@ -60,10 +63,11 @@ export function registerIpcHandlers(appRoot: string): void {
     resizeEmbeddedTerminal(id, cols, rows),
   );
   ipcMain.handle("embeddedTerminal:kill", (_event, id: string): EmbeddedTerminalSession => killEmbeddedTerminal(id));
-  ipcMain.handle("dialog:selectWorkspace", async (): Promise<string | null> => {
+  ipcMain.handle("dialog:selectWorkspace", async (): Promise<WorkspacePath | null> => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],
     });
-    return result.canceled ? null : result.filePaths[0] ?? null;
+    const selected = result.canceled ? null : result.filePaths[0] ?? null;
+    return selected ? toWorkspacePath(selected) : null;
   });
 }

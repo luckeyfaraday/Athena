@@ -2,11 +2,14 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { BackendState } from "./backend.js";
 import type { CodexTerminalState, NativeTerminalResult, NativeTerminalSession } from "./codex-terminal.js";
 import type { EmbeddedTerminalKind, EmbeddedTerminalSession } from "./embedded-terminal.js";
+import type { WorkspacePath } from "./platform.js";
 
 export type WorkspaceApi = {
   getBackendState: () => Promise<BackendState>;
   checkBackendHealth: () => Promise<BackendState>;
   restartBackend: () => Promise<BackendState>;
+  getDefaultWorkspace: () => Promise<WorkspacePath>;
+  toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalState>;
   startCodexTerminal: (workspace: string) => Promise<CodexTerminalState>;
   writeCodexTerminal: (data: string) => Promise<CodexTerminalState>;
@@ -28,13 +31,15 @@ export type WorkspaceApi = {
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalState) => void) => () => void;
-  selectWorkspace: () => Promise<string | null>;
+  selectWorkspace: () => Promise<WorkspacePath | null>;
 };
 
 const api: WorkspaceApi = {
   getBackendState: () => ipcRenderer.invoke("backend:getState"),
   checkBackendHealth: () => ipcRenderer.invoke("backend:checkHealth"),
   restartBackend: () => ipcRenderer.invoke("backend:restart"),
+  getDefaultWorkspace: () => ipcRenderer.invoke("workspace:getDefault"),
+  toWorkspacePath: (workspace: string) => ipcRenderer.invoke("workspace:toPath", workspace),
   getCodexTerminalState: () => ipcRenderer.invoke("codexTerminal:getState"),
   startCodexTerminal: (workspace: string) => ipcRenderer.invoke("codexTerminal:start", workspace),
   writeCodexTerminal: (data: string) => ipcRenderer.invoke("codexTerminal:write", data),

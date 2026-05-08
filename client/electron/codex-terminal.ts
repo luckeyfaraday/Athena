@@ -1,9 +1,18 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { getBackendState } from "./backend.js";
+import {
+  commandExists,
+  isWindows,
+  nativeTerminalLaunch,
+  quotePowerShell,
+  quoteShell,
+  scriptExtension,
+  tempWorkspaceDirectory,
+  windowsTerminalGridLaunch,
+} from "./platform.js";
 
 export type CodexTerminalState = {
   running: boolean;
@@ -66,9 +75,11 @@ export async function startCodexTerminal(workspace: string, window: BrowserWindo
     lastError: null,
   };
 
-  // `script` gives Codex a real pseudo-terminal while keeping the dependency
-  // surface small for this first interactive slice.
-  codexProcess = spawn("script", ["-qfec", "codex", "/dev/null"], {
+  const launch = isWindows
+    ? { command: "powershell.exe", args: ["-NoLogo", "-NoExit", "-Command", "codex"] }
+    : { command: "script", args: ["-qfec", "codex", "/dev/null"] };
+
+  codexProcess = spawn(launch.command, launch.args, {
     cwd,
     env: {
       ...process.env,
@@ -214,6 +225,66 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
     return { ok: false, command: null, pid: null, session: null, error: `Workspace does not exist: ${cwd}` };
   }
 
+  if (isWindows) {
+    const boundedPanes = Math.max(1, Math.min(panes, 8));
+    const scripts: string[] = [];
+    for (let index = 0; index < boundedPanes; index += 1) {
+      const promptPath = await writeCodexMemoryPrompt(cwd, `Pane: ${index + 1} of ${boundedPanes}`);
+      scripts.push(writeCodexLaunchScript(cwd, promptPath));
+    }
+
+    const launch = windowsTerminalGridLaunch(cwd, scripts);
+    if (!launch) {
+      const session = recordNativeSession({
+        workspace: cwd,
+        pid: null,
+        command: "wt.exe split-pane",
+        promptPath: null,
+        scriptPath: scripts[0] ?? null,
+        mode: "grid",
+        panes: boundedPanes,
+        status: "failed",
+        error: "Native grid mode on Windows requires Windows Terminal (wt.exe).",
+      });
+      return { ok: false, command: null, pid: null, session, error: session.error };
+    }
+
+    try {
+      const child = spawn(launch.command, launch.args, {
+        cwd,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false,
+      });
+      child.unref();
+      const session = recordNativeSession({
+        workspace: cwd,
+        pid: child.pid ?? null,
+        command: `${launch.command} ${launch.args.join(" ")}`,
+        promptPath: null,
+        scriptPath: scripts[0] ?? null,
+        mode: "grid",
+        panes: boundedPanes,
+        status: "launched",
+        error: null,
+      });
+      return { ok: true, command: launch.command, pid: child.pid ?? null, session, error: null };
+    } catch (error) {
+      const session = recordNativeSession({
+        workspace: cwd,
+        pid: null,
+        command: `${launch.command} ${launch.args.join(" ")}`,
+        promptPath: null,
+        scriptPath: scripts[0] ?? null,
+        mode: "grid",
+        panes: boundedPanes,
+        status: "failed",
+        error: String(error),
+      });
+      return { ok: false, command: launch.command, pid: null, session, error: String(error) };
+    }
+  }
+
   if (!commandExists("tmux")) {
     return {
       ok: false,
@@ -334,36 +405,6 @@ function send(window: BrowserWindow, channel: string, payload: unknown): void {
   }
 }
 
-function nativeTerminalLaunch(cwd: string, scriptPath: string): { command: string; args: string[] } | null {
-  if (process.platform === "win32") {
-    return { command: "wt.exe", args: ["-d", cwd, "cmd", "/k", scriptPath] };
-  }
-
-  if (process.platform === "darwin") {
-    const script = [
-      'tell application "Terminal"',
-      "activate",
-      `do script "${escapeAppleScript(`bash ${quoteShell(scriptPath)}`)}"`,
-      "end tell",
-    ].join("\n");
-    return { command: "osascript", args: ["-e", script] };
-  }
-
-  const command = `bash ${quoteShell(scriptPath)}`;
-  const terminalFromEnv = process.env.TERMINAL?.trim();
-  const candidates: Array<{ command: string; args: string[] }> = [
-    ...(terminalFromEnv ? [{ command: terminalFromEnv, args: ["-e", "bash", "-lc", command] }] : []),
-    { command: "gnome-terminal", args: ["--working-directory", cwd, "--", "bash", "-lc", command] },
-    { command: "konsole", args: ["--workdir", cwd, "-e", "bash", "-lc", command] },
-    { command: "xfce4-terminal", args: ["--working-directory", cwd, "--command", `bash -lc '${command}'`] },
-    { command: "alacritty", args: ["--working-directory", cwd, "-e", "bash", "-lc", command] },
-    { command: "kitty", args: ["--directory", cwd, "bash", "-lc", command] },
-    { command: "x-terminal-emulator", args: ["-e", "bash", "-lc", command] },
-  ];
-
-  return candidates.find((candidate) => commandExists(candidate.command)) ?? null;
-}
-
 async function writeCodexMemoryPrompt(cwd: string, extraContext?: string): Promise<string> {
   const memory = await fetchHermesMemory(cwd);
   const prompt = [
@@ -377,32 +418,38 @@ async function writeCodexMemoryPrompt(cwd: string, extraContext?: string): Promi
     memory || "No Hermes memory entries are available.",
   ].join("\n");
 
-  const directory = path.join(os.tmpdir(), "context-workspace");
-  fs.mkdirSync(directory, { recursive: true });
+  const directory = tempWorkspaceDirectory();
   const promptPath = path.join(directory, `codex-memory-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
   fs.writeFileSync(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
   return promptPath;
 }
 
 function writeCodexLaunchScript(cwd: string, promptPath: string): string {
-  const directory = path.join(os.tmpdir(), "context-workspace");
-  fs.mkdirSync(directory, { recursive: true });
-  const scriptPath = path.join(directory, `codex-launch-${Date.now()}-${Math.random().toString(16).slice(2)}.sh`);
-  const script = [
-    "#!/usr/bin/env bash",
-    "set -euo pipefail",
-    `cd ${quoteShell(cwd)}`,
-    `codex --cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
-    "exec bash",
-    "",
-  ].join("\n");
-  fs.writeFileSync(scriptPath, script, { encoding: "utf8", mode: 0o700 });
+  const directory = tempWorkspaceDirectory();
+  const scriptPath = path.join(directory, `codex-launch-${Date.now()}-${Math.random().toString(16).slice(2)}${scriptExtension()}`);
+  const script = isWindows
+    ? [
+        `$workspace = ${quotePowerShell(cwd)}`,
+        `$promptPath = ${quotePowerShell(promptPath)}`,
+        "Set-Location -LiteralPath $workspace",
+        "$prompt = Get-Content -LiteralPath $promptPath -Raw",
+        "& codex --cd $workspace $prompt",
+        "",
+      ].join("\r\n")
+    : [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        `cd ${quoteShell(cwd)}`,
+        `codex --cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
+        "exec bash",
+        "",
+      ].join("\n");
+  fs.writeFileSync(scriptPath, script, { encoding: "utf8", mode: isWindows ? 0o600 : 0o700 });
   return scriptPath;
 }
 
 function tmuxAttachScript(sessionName: string, cwd: string): string {
-  const directory = path.join(os.tmpdir(), "context-workspace");
-  fs.mkdirSync(directory, { recursive: true });
+  const directory = tempWorkspaceDirectory();
   const scriptPath = path.join(directory, `tmux-attach-${Date.now()}-${Math.random().toString(16).slice(2)}.sh`);
   const script = [
     "#!/usr/bin/env bash",
@@ -440,16 +487,4 @@ function recordNativeSession(session: Omit<NativeTerminalSession, "id" | "create
   };
   nativeSessions = [recorded, ...nativeSessions].slice(0, 50);
   return recorded;
-}
-
-function commandExists(command: string): boolean {
-  return spawnSync("which", [command], { stdio: "ignore" }).status === 0;
-}
-
-function escapeAppleScript(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/'/g, "'\\''");
-}
-
-function quoteShell(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
 }

@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from collections.abc import Callable
-from typing import Any, get_args, get_origin
+from typing import Any, get_args, get_origin, get_type_hints
 
 import tools
 
@@ -102,10 +102,12 @@ def _error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:
 
 def _tool_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     signature = inspect.signature(fn)
+    type_hints = get_type_hints(fn)
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, parameter in signature.parameters.items():
-        properties[name] = _json_schema_for_annotation(parameter.annotation)
+        annotation = type_hints.get(name, parameter.annotation)
+        properties[name] = _json_schema_for_annotation(annotation)
         if parameter.default is inspect.Parameter.empty:
             required.append(name)
     schema: dict[str, Any] = {"type": "object", "properties": properties}

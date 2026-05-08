@@ -19,6 +19,20 @@ export type HermesStatus = {
   message: string;
 };
 
+export type RecallStatus = {
+  project_dir: string;
+  exists: boolean;
+  status: "missing" | "stale" | "fresh";
+  stale: boolean;
+  path: string;
+  metadata_path: string;
+  bytes: number;
+  refreshed_at: string | null;
+  age_seconds: number | null;
+  stale_after_seconds: number;
+  source: string | null;
+};
+
 export type AdapterStatus = {
   agent_type: string;
   configured: boolean;
@@ -65,6 +79,11 @@ export class BackendClient {
   async hermesStatus(): Promise<HermesStatus> {
     const response = await this.json<{ hermes: HermesStatus }>("/hermes/status");
     return response.hermes;
+  }
+
+  async recallStatus(projectDir: string): Promise<RecallStatus> {
+    const response = await this.json<{ recall: RecallStatus }>(`/hermes/recall/status?project_dir=${encodeURIComponent(projectDir)}`);
+    return response.recall;
   }
 
   async adapters(): Promise<Record<string, AdapterStatus>> {

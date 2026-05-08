@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from .hermes import HermesManager
 from .memory import HermesMemoryStore
 from .runs import Run, RunRegistry, RunStatus
 from .runtime import RuntimeLimits, adapter_statuses, check_runtime_limits
+from .safety import resolve_project_dir
 
 
 class MemoryStoreRequest(BaseModel):
@@ -38,6 +40,9 @@ class SpawnAgentRequest(BaseModel):
 class HermesInstallRequest(BaseModel):
     confirm: bool = False
     timeout_seconds: float = Field(default=600, gt=0, le=3600)
+
+
+RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
 
 
 def create_app(
@@ -74,6 +79,14 @@ def create_app(
     @app.get("/hermes/status")
     def hermes_status() -> dict[str, Any]:
         return {"hermes": _hermes_status_payload(app.state.hermes.status())}
+
+    @app.get("/hermes/recall/status")
+    def hermes_recall_status(project_dir: str = Query(min_length=1)) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"recall": _recall_status_payload(project)}
 
     @app.post("/hermes/install")
     def install_hermes(request: HermesInstallRequest) -> dict[str, Any]:
@@ -306,3 +319,57 @@ def _hermes_status_payload(status: Any) -> dict[str, Any]:
         "setup_required": status.setup_required,
         "message": status.message,
     }
+
+
+def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
+    cache_dir = project_dir / ".context-workspace" / "hermes"
+    recall_path = cache_dir / "session-recall.md"
+    metadata_path = cache_dir / "last-refresh.json"
+    exists = recall_path.exists()
+    metadata = _read_json_object(metadata_path)
+    refreshed_at = _metadata_refreshed_at(metadata)
+    now = datetime.now(timezone.utc)
+    age_seconds = max(0.0, (now - refreshed_at).total_seconds()) if refreshed_at else None
+    stale = not exists or refreshed_at is None or (age_seconds is not None and age_seconds > RECALL_STALE_AFTER_SECONDS)
+    if not exists:
+        status = "missing"
+    elif stale:
+        status = "stale"
+    else:
+        status = "fresh"
+    return {
+        "project_dir": str(project_dir),
+        "exists": exists,
+        "status": status,
+        "stale": stale,
+        "path": str(recall_path),
+        "metadata_path": str(metadata_path),
+        "bytes": recall_path.stat().st_size if exists else 0,
+        "refreshed_at": refreshed_at.isoformat().replace("+00:00", "Z") if refreshed_at else None,
+        "age_seconds": age_seconds,
+        "stale_after_seconds": RECALL_STALE_AFTER_SECONDS,
+        "source": metadata.get("source") if isinstance(metadata.get("source"), str) else None,
+    }
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _metadata_refreshed_at(metadata: dict[str, Any]) -> datetime | None:
+    value = metadata.get("refreshed_at")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)

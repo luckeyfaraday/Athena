@@ -1,5 +1,5 @@
 import { BrowserWindow, dialog, ipcMain } from "electron";
-import { listAgentSessions, type AgentSession } from "./agent-sessions.js";
+import { listAgentSessionsCached, type AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
 import type { CodexTerminalState } from "./codex-terminal.js";
@@ -65,7 +65,9 @@ export function registerIpcHandlers(appRoot: string): void {
     resizeEmbeddedTerminal(id, cols, rows),
   );
   ipcMain.handle("embeddedTerminal:kill", (_event, id: string): EmbeddedTerminalSession => killEmbeddedTerminal(id));
-  ipcMain.handle("agentSessions:list", (_event, workspace: string): AgentSession[] => listAgentSessions(workspace, listEmbeddedTerminals()));
+  ipcMain.handle("agentSessions:list", (_event, workspace: string): Promise<AgentSession[]> =>
+    listAgentSessionsCached(workspace, listEmbeddedTerminals()),
+  );
   ipcMain.handle("dialog:selectWorkspace", async (): Promise<WorkspacePath | null> => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],

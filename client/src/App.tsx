@@ -354,6 +354,7 @@ export function App() {
         title: titles[index] ?? `${kind}-${index + 1}`,
         cols: 96,
         rows: 28,
+        sessionLabel: kind === "shell" || kind === "hermes" ? undefined : "New",
       }));
       const created: EmbeddedTerminalSession[] = [];
 
@@ -365,6 +366,7 @@ export function App() {
             title: options.title,
             cols: options.cols,
             rows: options.rows,
+            sessionLabel: options.sessionLabel,
           }),
         );
       }
@@ -388,6 +390,7 @@ export function App() {
         cols: 96,
         rows: 28,
         resumeSessionId: session.id,
+        sessionLabel: session.title,
       });
       setEmbeddedSessions((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       setTerminalFocus(true);
@@ -904,6 +907,8 @@ function CommandRoom({
   const [broadcasting, setBroadcasting] = useState(false);
   const [activeTab, setActiveTab] = useState<"terminals" | "sessions">("terminals");
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
+  const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
+  const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
 
@@ -921,6 +926,12 @@ function CommandRoom({
     setPaneOrder(sessions.map((session) => session.id));
   }, [layoutResetNonce, sessions]);
 
+  useEffect(() => {
+    const sessionIds = new Set(sessions.map((session) => session.id));
+    setCollapsedPaneIds((current) => new Set([...current].filter((id) => sessionIds.has(id))));
+    setMaximizedPaneId((current) => current && sessionIds.has(current) ? current : null);
+  }, [sessions]);
+
   const visibleSessions = paneOrder
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
@@ -936,6 +947,28 @@ function CommandRoom({
 
   function arrangeGrid() {
     setPaneOrder(sessions.map((session) => session.id));
+    setCollapsedPaneIds(new Set());
+    setMaximizedPaneId(null);
+  }
+
+  function togglePaneCollapsed(sessionId: string) {
+    setCollapsedPaneIds((current) => {
+      const next = new Set(current);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+    setMaximizedPaneId((current) => current === sessionId ? null : current);
+  }
+
+  function togglePaneMaximized(sessionId: string) {
+    setCollapsedPaneIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    setMaximizedPaneId((current) => current === sessionId ? null : sessionId);
   }
 
   function movePaneToSlot(sourceSessionId: string, targetSessionId: string) {
@@ -1075,6 +1108,8 @@ function CommandRoom({
                 "terminalPane liveTerminalPane slotPane",
                 dragState?.id === session.id ? "dragging" : "",
                 dragState?.targetId === session.id ? "dropTarget" : "",
+                collapsedPaneIds.has(session.id) ? "collapsed" : "",
+                maximizedPaneId === session.id ? "maximized" : "",
               ].filter(Boolean).join(" ")}
               style={
                 dragState?.id === session.id
@@ -1087,12 +1122,20 @@ function CommandRoom({
                 onPointerDown={(event) => startPaneDrag(event, session.id)}
               >
                 <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
-                <span className="dot amber" />
-                <span className="dot green" />
+                <button
+                  className="terminalControl amber"
+                  onClick={() => togglePaneCollapsed(session.id)}
+                  title={collapsedPaneIds.has(session.id) ? `Restore ${session.title}` : `Minimize ${session.title}`}
+                />
+                <button
+                  className="terminalControl green"
+                  onClick={() => togglePaneMaximized(session.id)}
+                  title={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
+                />
                 <strong>{session.title}</strong>
-                <em>{session.status}{session.pid ? ` · pid ${session.pid}` : ""}</em>
+                <em>{terminalPaneMeta(session)}</em>
               </div>
-              <EmbeddedTerminal session={session} />
+              {!collapsedPaneIds.has(session.id) && <EmbeddedTerminal session={session} />}
             </div>
           ))}
           {visibleSessions.length === 0 && (
@@ -1209,6 +1252,11 @@ function providerLabel(provider: AgentSession["provider"]): string {
 
 function agentSessionKey(session: AgentSession): string {
   return `${session.provider}:${session.id}`;
+}
+
+function terminalPaneMeta(session: EmbeddedTerminalSession): string {
+  if (session.kind === "shell") return `${session.status}${session.pid ? ` · pid ${session.pid}` : ""}`;
+  return session.sessionLabel ?? "New";
 }
 
 function formatSessionTime(value: string): string {

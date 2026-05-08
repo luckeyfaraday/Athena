@@ -521,6 +521,18 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   resize: vertical;
   transition: box-shadow 120ms ease, border-color 120ms ease, transform 90ms ease;
 }
+.slotPane.collapsed {
+  min-height: 28px;
+  height: 28px;
+  resize: none;
+}
+.slotPane.maximized {
+  grid-column: 1 / -1;
+  min-height: 520px;
+}
+.commandRoom.focused .slotPane.maximized {
+  min-height: 70vh;
+}
 .slotPane:hover,
 .slotPane.dragging {
   border-color: rgba(216, 194, 143, .28);
@@ -569,6 +581,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .terminalControl:hover {
   background: #e07060;
 }
+.terminalControl.amber { background: var(--orange); }
+.terminalControl.amber:hover { background: #f3b24c; }
+.terminalControl.green { background: var(--green); }
+.terminalControl.green:hover { background: #3ddc76; }
 .dot.amber { background: var(--orange); }
 .dot.green { background: var(--green); }
 .terminalChrome strong {

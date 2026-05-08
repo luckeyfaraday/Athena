@@ -30,6 +30,7 @@ export type NativeTerminalSession = {
 };
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
+export type AgentSessionProvider = "codex" | "opencode" | "claude";
 
 export type WorkspacePath = {
   nativePath: string;
@@ -50,6 +51,30 @@ export type EmbeddedTerminalSession = {
   error: string | null;
 };
 
+export type EmbeddedTerminalSpawnOptions = {
+  kind?: EmbeddedTerminalKind;
+  title?: string;
+  cols?: number;
+  rows?: number;
+  resumeSessionId?: string;
+};
+
+export type AgentSession = {
+  id: string;
+  provider: AgentSessionProvider;
+  title: string;
+  workspace: string;
+  branch: string | null;
+  model: string | null;
+  agent: string | null;
+  createdAt: string;
+  updatedAt: string;
+  status: "running" | "exited" | "historical";
+  terminalId: string | null;
+  pid: number | null;
+  resumeCommand: string | null;
+};
+
 type WorkspaceApi = {
   getBackendState: () => Promise<BackendStatus>;
   checkBackendHealth: () => Promise<BackendStatus>;
@@ -64,14 +89,12 @@ type WorkspaceApi = {
   openNativeCodexGrid: (workspace: string, panes?: number) => Promise<NativeTerminalResult>;
   getNativeTerminalSessions: () => Promise<NativeTerminalSession[]>;
   listEmbeddedTerminals: () => Promise<EmbeddedTerminalSession[]>;
-  spawnEmbeddedTerminal: (
-    workspace: string,
-    options?: { kind?: EmbeddedTerminalKind; title?: string; cols?: number; rows?: number },
-  ) => Promise<EmbeddedTerminalSession>;
+  spawnEmbeddedTerminal: (workspace: string, options?: EmbeddedTerminalSpawnOptions) => Promise<EmbeddedTerminalSession>;
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
+  listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -118,6 +141,25 @@ const browserFallback: WorkspaceApi = {
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async killEmbeddedTerminal() { return { ...(await this.spawnEmbeddedTerminal("/preview")), status: "exited" }; },
+  async listAgentSessions(workspace: string) {
+    return [
+      {
+        id: "preview-codex",
+        provider: "codex" as const,
+        title: "Preview Codex session",
+        workspace,
+        branch: "main",
+        model: "gpt-5.5",
+        agent: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: "historical" as const,
+        terminalId: null,
+        pid: null,
+        resumeCommand: "codex resume preview-codex",
+      },
+    ];
+  },
   onEmbeddedTerminalData() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },

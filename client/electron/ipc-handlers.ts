@@ -1,4 +1,5 @@
 import { BrowserWindow, dialog, ipcMain } from "electron";
+import { listAgentSessions, type AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
 import type { CodexTerminalState } from "./codex-terminal.js";
@@ -23,6 +24,7 @@ import {
   writeEmbeddedTerminal,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
+  type EmbeddedTerminalSpawnOptions,
 } from "./embedded-terminal.js";
 
 export function registerIpcHandlers(appRoot: string): void {
@@ -55,7 +57,7 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
   ipcMain.handle(
     "embeddedTerminal:spawn",
-    (_event, workspace: string, options?: { kind?: EmbeddedTerminalKind; title?: string; cols?: number; rows?: number }): Promise<EmbeddedTerminalSession> =>
+    (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> =>
       spawnEmbeddedTerminal(workspace, options),
   );
   ipcMain.handle("embeddedTerminal:write", (_event, id: string, data: string): EmbeddedTerminalSession => writeEmbeddedTerminal(id, data));
@@ -63,6 +65,7 @@ export function registerIpcHandlers(appRoot: string): void {
     resizeEmbeddedTerminal(id, cols, rows),
   );
   ipcMain.handle("embeddedTerminal:kill", (_event, id: string): EmbeddedTerminalSession => killEmbeddedTerminal(id));
+  ipcMain.handle("agentSessions:list", (_event, workspace: string): AgentSession[] => listAgentSessions(workspace, listEmbeddedTerminals()));
   ipcMain.handle("dialog:selectWorkspace", async (): Promise<WorkspacePath | null> => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],

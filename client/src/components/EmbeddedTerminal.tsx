@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { DragEvent, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
@@ -13,6 +13,8 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const dragDepthRef = useRef(0);
+  const [imageDropActive, setImageDropActive] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -91,5 +93,64 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     }, 30);
   }, [active]);
 
-  return <div className="embeddedTerminalMount" ref={containerRef} />;
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    if (!hasImageFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setImageDropActive(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (!hasImageFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setImageDropActive(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!hasImageFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setImageDropActive(false);
+  }
+
+  async function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (!hasImageFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setImageDropActive(false);
+
+    const images = Array.from(event.dataTransfer.files).filter(isImageFile);
+    if (images.length === 0) return;
+    const paths = await desktop.getDroppedFilePaths(images).catch(() => []);
+    const pasted = paths.filter(Boolean).map(quoteTerminalPath).join(" ");
+    if (!pasted) return;
+    terminalRef.current?.focus();
+    void desktop.writeEmbeddedTerminal(session.id, `${pasted} `).catch(() => undefined);
+  }
+
+  return (
+    <div
+      className={imageDropActive ? "embeddedTerminalMount imageDropActive" : "embeddedTerminalMount"}
+      ref={containerRef}
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    />
+  );
+}
+
+function hasImageFiles(dataTransfer: DataTransfer): boolean {
+  return Array.from(dataTransfer.items).some((item) => item.kind === "file" && item.type.startsWith("image/"))
+    || Array.from(dataTransfer.files).some(isImageFile);
+}
+
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith("image/")) return true;
+  return /\.(avif|bmp|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/i.test(file.name);
+}
+
+function quoteTerminalPath(path: string): string {
+  return `"${path.replace(/(["\\$`])/g, "\\$1")}"`;
 }

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.adapters.base import AdapterCommand
@@ -106,6 +109,104 @@ def test_hermes_install_endpoint_runs_manager(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["returncode"] == 0
     assert response.json()["hermes"]["installed"] is True
+
+
+def test_hermes_recall_status_reports_missing_cache(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    recall = response.json()["recall"]
+    assert recall["status"] == "missing"
+    assert recall["exists"] is False
+    assert recall["stale"] is True
+    assert recall["bytes"] == 0
+    assert recall["refreshed_at"] is None
+    assert recall["refresh_configured"] is False
+
+
+def test_hermes_recall_status_reports_fresh_cache(tmp_path: Path) -> None:
+    recall_dir = tmp_path / ".context-workspace" / "hermes"
+    recall_dir.mkdir(parents=True)
+    recall_text = "Fresh recall.\n"
+    refreshed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    (recall_dir / "session-recall.md").write_text(recall_text, encoding="utf-8")
+    (recall_dir / "last-refresh.json").write_text(
+        json.dumps(
+            {
+                "refreshed_at": refreshed_at,
+                "source": "hermes-session-search",
+                "bytes": len(recall_text.encode("utf-8")),
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _client(tmp_path)
+
+    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    recall = response.json()["recall"]
+    assert recall["status"] == "fresh"
+    assert recall["exists"] is True
+    assert recall["stale"] is False
+    assert recall["bytes"] == (recall_dir / "session-recall.md").stat().st_size
+    assert recall["source"] == "hermes-session-search"
+    assert recall["refresh_configured"] is False
+
+
+def test_hermes_recall_refresh_requires_configured_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", raising=False)
+    client = _client(tmp_path)
+
+    response = client.post("/hermes/recall/refresh", json={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 409
+    assert "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD" in response.json()["detail"]
+
+
+def test_hermes_recall_refresh_runs_configured_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    script = tmp_path / "refresh_recall.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "from datetime import UTC, datetime",
+                "from pathlib import Path",
+                "project = Path(os.environ['CONTEXT_WORKSPACE_PROJECT_DIR'])",
+                "task = os.environ.get('CONTEXT_WORKSPACE_TASK_HINT', '')",
+                "cache = project / '.context-workspace' / 'hermes'",
+                "cache.mkdir(parents=True, exist_ok=True)",
+                "text = f'## Recall\\n\\n- refreshed for {task}\\n'",
+                "(cache / 'session-recall.md').write_text(text, encoding='utf-8')",
+                "(cache / 'last-refresh.json').write_text(json.dumps({",
+                "    'refreshed_at': datetime.now(UTC).isoformat().replace('+00:00', 'Z'),",
+                "    'source': 'test-refresh-command',",
+                "    'bytes': len(text.encode('utf-8')),",
+                "}), encoding='utf-8')",
+                "print('refreshed')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", f'"{sys.executable}" "{script}"')
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/hermes/recall/refresh",
+        json={"project_dir": str(tmp_path), "task_hint": "manual launch"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["refresh"]["returncode"] == 0
+    assert "refreshed" in payload["refresh"]["stdout"]
+    assert payload["recall"]["status"] == "fresh"
+    assert payload["recall"]["source"] == "test-refresh-command"
+    assert payload["recall"]["refresh_configured"] is True
+    assert "manual launch" in (tmp_path / ".context-workspace" / "hermes" / "session-recall.md").read_text(encoding="utf-8")
 
 
 def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> None:

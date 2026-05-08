@@ -95,6 +95,7 @@ type WorkspaceApi = {
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
+  getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -160,6 +161,7 @@ const browserFallback: WorkspaceApi = {
       },
     ];
   },
+  async getDroppedFilePaths(files: File[]) { return files.map((file) => file.name).filter(Boolean); },
   onEmbeddedTerminalData() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },

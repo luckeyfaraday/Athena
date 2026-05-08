@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -42,7 +44,16 @@ class HermesInstallRequest(BaseModel):
     timeout_seconds: float = Field(default=600, gt=0, le=3600)
 
 
+class HermesRecallRefreshRequest(BaseModel):
+    project_dir: str
+    task_hint: str | None = None
+    timeout_seconds: float = Field(default=120, gt=0, le=600)
+
+
 RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
+HERMES_REFRESH_COMMAND_ENV = "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD"
+BACKEND_URL_ENV = "CONTEXT_WORKSPACE_BACKEND_URL"
+BACKEND_PORT_ENV = "CONTEXT_WORKSPACE_BACKEND_PORT"
 
 
 def create_app(
@@ -87,6 +98,29 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"recall": _recall_status_payload(project)}
+
+    @app.post("/hermes/recall/refresh")
+    def refresh_hermes_recall(request: HermesRecallRefreshRequest) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(request.project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        command = os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()
+        if not command:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Set {HERMES_REFRESH_COMMAND_ENV} to enable Hermes recall refresh.",
+            )
+
+        result = _run_recall_refresh_command(
+            command,
+            project_dir=project,
+            task_hint=request.task_hint or "",
+            timeout_seconds=request.timeout_seconds,
+        )
+        recall = _recall_status_payload(project)
+        return {"refresh": result, "recall": recall}
 
     @app.post("/hermes/install")
     def install_hermes(request: HermesInstallRequest) -> dict[str, Any]:
@@ -373,3 +407,45 @@ def _metadata_refreshed_at(metadata: dict[str, Any]) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _run_recall_refresh_command(
+    command: str,
+    *,
+    project_dir: Path,
+    task_hint: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    env = {
+        **os.environ,
+        "CONTEXT_WORKSPACE_PROJECT_DIR": str(project_dir),
+        "CONTEXT_WORKSPACE_TASK_HINT": task_hint,
+    }
+    if BACKEND_URL_ENV not in env:
+        port = env.get(BACKEND_PORT_ENV, "8000")
+        env[BACKEND_URL_ENV] = f"http://127.0.0.1:{port}"
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=project_dir,
+            env=env,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail=f"Hermes recall refresh timed out after {timeout_seconds:g}s.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=f"Hermes recall refresh failed to start: {exc}") from exc
+
+    payload = {
+        "configured": True,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+    if completed.returncode != 0:
+        raise HTTPException(status_code=502, detail=payload)
+    return payload

@@ -33,6 +33,16 @@ export type RecallStatus = {
   source: string | null;
 };
 
+export type RecallRefreshResult = {
+  refresh: {
+    configured: boolean;
+    returncode: number;
+    stdout: string;
+    stderr: string;
+  };
+  recall: RecallStatus;
+};
+
 export type AdapterStatus = {
   agent_type: string;
   configured: boolean;
@@ -84,6 +94,17 @@ export class BackendClient {
   async recallStatus(projectDir: string): Promise<RecallStatus> {
     const response = await this.json<{ recall: RecallStatus }>(`/hermes/recall/status?project_dir=${encodeURIComponent(projectDir)}`);
     return response.recall;
+  }
+
+  async refreshRecall(projectDir: string, taskHint?: string): Promise<RecallRefreshResult> {
+    return this.json("/hermes/recall/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_dir: projectDir,
+        task_hint: taskHint,
+      }),
+    });
   }
 
   async adapters(): Promise<Record<string, AdapterStatus>> {

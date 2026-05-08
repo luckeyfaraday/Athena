@@ -31,6 +31,12 @@ export type NativeTerminalSession = {
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 
+export type WorkspacePath = {
+  nativePath: string;
+  wslPath: string | null;
+  displayPath: string;
+};
+
 export type EmbeddedTerminalSession = {
   id: string;
   title: string;
@@ -48,6 +54,8 @@ type WorkspaceApi = {
   getBackendState: () => Promise<BackendStatus>;
   checkBackendHealth: () => Promise<BackendStatus>;
   restartBackend: () => Promise<BackendStatus>;
+  getDefaultWorkspace: () => Promise<WorkspacePath>;
+  toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalStatus>;
   startCodexTerminal: (workspace: string) => Promise<CodexTerminalStatus>;
   writeCodexTerminal: (data: string) => Promise<CodexTerminalStatus>;
@@ -69,7 +77,7 @@ type WorkspaceApi = {
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalStatus) => void) => () => void;
-  selectWorkspace: () => Promise<string | null>;
+  selectWorkspace: () => Promise<WorkspacePath | null>;
 };
 
 declare global {
@@ -82,6 +90,8 @@ const browserFallback: WorkspaceApi = {
   async getBackendState() { return fallbackBackendState(); },
   async checkBackendHealth() { return fallbackBackendState(); },
   async restartBackend() { return fallbackBackendState(); },
+  async getDefaultWorkspace() { return fallbackWorkspacePath(); },
+  async toWorkspacePath(workspace: string) { return toFallbackWorkspacePath(workspace); },
   async getCodexTerminalState() { return { running: false, workspace: null, pid: null, lastError: null }; },
   async startCodexTerminal(workspace: string) { return { running: true, workspace, pid: null, lastError: null }; },
   async writeCodexTerminal() { return { running: false, workspace: null, pid: null, lastError: null }; },
@@ -113,7 +123,7 @@ const browserFallback: WorkspaceApi = {
   onEmbeddedTerminalSession() { return () => undefined; },
   onCodexTerminalData() { return () => undefined; },
   onCodexTerminalState() { return () => undefined; },
-  async selectWorkspace() { return "/home/alan/home_ai/projects/context-workspace"; },
+  async selectWorkspace() { return fallbackWorkspacePath(); },
 };
 
 function fallbackBackendState(): BackendStatus {
@@ -144,6 +154,18 @@ function fallbackTerminalResult(workspace: string, mode: "single" | "grid", pane
 }
 
 export const desktop = window.contextWorkspace ?? browserFallback;
+
+function fallbackWorkspacePath(): WorkspacePath {
+  return toFallbackWorkspacePath("/preview/context-workspace");
+}
+
+function toFallbackWorkspacePath(workspace: string): WorkspacePath {
+  return {
+    nativePath: workspace,
+    wslPath: null,
+    displayPath: workspace,
+  };
+}
 
 function fallbackTerminalTitle(kind: EmbeddedTerminalKind): string {
   if (kind === "hermes") return "Hermes";

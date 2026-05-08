@@ -78,7 +78,7 @@ export function CodexTerminal({ workspace }: { workspace: string }) {
           <div>
             <strong>{workspace ? "Ready to launch native Codex" : "Select a workspace first"}</strong>
             <span>
-              Launch one session, or launch a native grid of Codex panes. Grid mode uses tmux so panes stay organized in one terminal window.
+              Launch one session, or launch a native grid of Codex panes. Grid mode uses Windows Terminal on Windows and tmux elsewhere.
             </span>
           </div>
         </div>

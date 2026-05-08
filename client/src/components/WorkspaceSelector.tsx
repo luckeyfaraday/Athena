@@ -10,7 +10,7 @@ export function WorkspaceSelector({ workspace, onWorkspaceChange }: Props) {
   async function chooseWorkspace() {
     const selected = await desktop.selectWorkspace();
     if (selected) {
-      onWorkspaceChange(selected);
+      onWorkspaceChange(selected.nativePath);
     }
   }
 

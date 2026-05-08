@@ -54,6 +54,7 @@ class ContextArtifactWriter:
 
 def _render_context(run: Run, memory_excerpt: str, dynamic_memory_url: str) -> str:
     memory = memory_excerpt.strip() or "No Hermes memory excerpt was provided."
+    recall = _read_recall_cache(run.project_dir)
     return "\n".join(
         [
             f"# Context Workspace Run: {run.run_id}",
@@ -69,6 +70,10 @@ def _render_context(run: Run, memory_excerpt: str, dynamic_memory_url: str) -> s
             "",
             memory,
             "",
+            "## Hermes Session Recall Cache",
+            "",
+            recall or "No Hermes session recall cache was provided.",
+            "",
             "## Dynamic Memory Lookup",
             "",
             "If more context is needed, query Hermes with a focused URL-encoded query:",
@@ -78,3 +83,9 @@ def _render_context(run: Run, memory_excerpt: str, dynamic_memory_url: str) -> s
         ]
     )
 
+
+def _read_recall_cache(project_dir: Path) -> str:
+    recall_path = project_dir.resolve() / ".context-workspace" / "hermes" / "session-recall.md"
+    if not recall_path.exists():
+        return ""
+    return recall_path.read_text(encoding="utf-8").strip()

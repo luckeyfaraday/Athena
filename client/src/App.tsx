@@ -24,13 +24,14 @@ import {
   Maximize2,
   Minimize2,
   TerminalSquare,
+  Trash2,
   Users,
   Workflow,
   Wrench,
   XCircle,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus, type Run } from "./api";
-import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
+import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
 
 type LoadState = {
@@ -90,6 +91,7 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
 };
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
+const deletedAgentSessionsStoragePrefix = "context-workspace:deleted-agent-sessions:";
 
 function storedWorkspaceValue(): string | null {
   try {
@@ -109,11 +111,33 @@ function parseStoredWorkspace(value: string | null): string | null {
   }
 }
 
+function deletedAgentSessionsStorageKey(workspace: string): string {
+  return `${deletedAgentSessionsStoragePrefix}${workspace || "none"}`;
+}
+
+function readDeletedAgentSessions(workspace: string): Set<string> {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(deletedAgentSessionsStorageKey(workspace)) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDeletedAgentSessions(workspace: string, sessions: Set<string>): void {
+  try {
+    window.localStorage.setItem(deletedAgentSessionsStorageKey(workspace), JSON.stringify([...sessions]));
+  } catch {
+    // Ignore storage failures; deleting still applies for the current render.
+  }
+}
+
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
   const [workspacePath, setWorkspacePath] = useState<WorkspacePath | null>(null);
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
+  const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
@@ -152,6 +176,18 @@ export function App() {
       setError(String(err));
     }
   }, []);
+
+  const refreshAgentSessions = useCallback(async () => {
+    if (!workspace) {
+      setAgentSessions([]);
+      return;
+    }
+    try {
+      setAgentSessions(await desktop.listAgentSessions(workspace));
+    } catch (err) {
+      setError(String(err));
+    }
+  }, [workspace]);
 
   const refreshData = useCallback(async () => {
     if (!client || dataRefreshInFlight.current) return;
@@ -199,6 +235,10 @@ export function App() {
   }, [refreshData, refreshSessions]);
 
   useEffect(() => {
+    void refreshAgentSessions();
+  }, [refreshAgentSessions, embeddedSessions]);
+
+  useEffect(() => {
     void refreshData();
   }, [refreshData]);
 
@@ -223,9 +263,10 @@ export function App() {
         if (status?.healthy) void refreshData();
       });
       void refreshSessions();
+      void refreshAgentSessions();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [refreshBackend, refreshData, refreshSessions]);
+  }, [refreshBackend, refreshData, refreshSessions, refreshAgentSessions]);
 
   useEffect(() => {
     if (autoStartedTerminals.current || !workspace || embeddedSessions.length > 0) return;
@@ -329,6 +370,28 @@ export function App() {
       }
       setEmbeddedSessions((current) => [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]);
       if (count > 1) setLayoutResetNonce((value) => value + 1);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resumeAgentSession(session: AgentSession) {
+    if (!workspace || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await desktop.spawnEmbeddedTerminal(workspace, {
+        kind: session.provider,
+        title: `${providerLabel(session.provider)} Resume`,
+        cols: 96,
+        rows: 28,
+        resumeSessionId: session.id,
+      });
+      setEmbeddedSessions((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setTerminalFocus(true);
+      setActiveRoom("command");
     } catch (err) {
       setError(String(err));
     } finally {
@@ -459,6 +522,7 @@ export function App() {
               <CommandRoom
                 workspace={workspace}
                 sessions={embeddedSessions}
+                agentSessions={agentSessions}
                 busy={busy}
                 focused={terminalFocus}
                 layoutResetNonce={layoutResetNonce}
@@ -466,6 +530,7 @@ export function App() {
                 onLaunch={launchEmbedded}
                 onClose={closeEmbeddedTerminal}
                 onBroadcastPrompt={broadcastPromptToAgents}
+                onResumeSession={resumeAgentSession}
               />
             )}
             {activeRoom === "swarm" && <SwarmRoom roles={agentRoles} runs={activeRuns} adapters={state.adapters} />}
@@ -811,6 +876,7 @@ function formatAge(ageSeconds: number): string {
 function CommandRoom({
   workspace,
   sessions,
+  agentSessions,
   busy,
   focused,
   layoutResetNonce,
@@ -818,9 +884,11 @@ function CommandRoom({
   onLaunch,
   onClose,
   onBroadcastPrompt,
+  onResumeSession,
 }: {
   workspace: string;
   sessions: EmbeddedTerminalSession[];
+  agentSessions: AgentSession[];
   busy: boolean;
   focused: boolean;
   layoutResetNonce: number;
@@ -828,11 +896,14 @@ function CommandRoom({
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
   onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
+  onResumeSession: (session: AgentSession) => Promise<void>;
 }) {
   const [paneOrder, setPaneOrder] = useState<string[]>([]);
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
   const [broadcastPrompt, setBroadcastPrompt] = useState("");
   const [broadcasting, setBroadcasting] = useState(false);
+  const [activeTab, setActiveTab] = useState<"terminals" | "sessions">("terminals");
+  const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
 
@@ -853,9 +924,15 @@ function CommandRoom({
   const visibleSessions = paneOrder
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
+  const visibleAgentSessions = agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session)));
   const shownCount = visibleSessions.length;
   const promptTargets = sessions.filter((session) => session.status === "running" && session.kind !== "shell");
   const canBroadcast = promptTargets.length > 0 && broadcastPrompt.trim().length > 0 && !broadcasting;
+  const runningAgentSessions = visibleAgentSessions.filter((session) => session.status === "running").length;
+
+  useEffect(() => {
+    setDeletedSessionKeys(readDeletedAgentSessions(workspace));
+  }, [workspace]);
 
   function arrangeGrid() {
     setPaneOrder(sessions.map((session) => session.id));
@@ -927,6 +1004,18 @@ function CommandRoom({
     }
   }
 
+  async function copySessionText(value: string | null) {
+    if (!value) return;
+    await navigator.clipboard?.writeText(value).catch(() => undefined);
+  }
+
+  function deleteAgentSession(session: AgentSession) {
+    const next = new Set(deletedSessionKeys);
+    next.add(agentSessionKey(session));
+    setDeletedSessionKeys(next);
+    writeDeletedAgentSessions(workspace, next);
+  }
+
   return (
     <div className={focused ? "roomPanel commandRoom focused" : "roomPanel commandRoom"}>
       <div className="roomPanelHeader">
@@ -954,43 +1043,120 @@ function CommandRoom({
         </div>
       </div>
 
-      <div className="terminalStage embeddedStage slotTerminalStage">
-        {visibleSessions.map((session) => (
-          <div
-            key={session.id}
-            data-pane-id={session.id}
-            className={[
-              "terminalPane liveTerminalPane slotPane",
-              dragState?.id === session.id ? "dragging" : "",
-              dragState?.targetId === session.id ? "dropTarget" : "",
-            ].filter(Boolean).join(" ")}
-            style={
-              dragState?.id === session.id
-                ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
-                : undefined
-            }
-          >
-            <div
-              className="terminalChrome draggableChrome"
-              onPointerDown={(event) => startPaneDrag(event, session.id)}
-            >
-              <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
-              <span className="dot amber" />
-              <span className="dot green" />
-              <strong>{session.title}</strong>
-              <em>{session.status}{session.pid ? ` · pid ${session.pid}` : ""}</em>
-            </div>
-            <EmbeddedTerminal session={session} />
-          </div>
-        ))}
-        {visibleSessions.length === 0 && (
-          <div className="terminalEmptyState">
-            <TerminalSquare size={34} />
-            <strong>No embedded terminals yet.</strong>
-            <span>Select a workspace, then start a shell or launch a four-pane Codex grid with Hermes memory attached.</span>
-          </div>
-        )}
+      <div className="commandRoomTabs" role="tablist" aria-label="Command room views">
+        <button
+          type="button"
+          className={activeTab === "terminals" ? "active" : ""}
+          onClick={() => setActiveTab("terminals")}
+          role="tab"
+          aria-selected={activeTab === "terminals"}
+        >
+          <TerminalSquare size={14} /> Terminals
+        </button>
+        <button
+          type="button"
+          className={activeTab === "sessions" ? "active" : ""}
+          onClick={() => setActiveTab("sessions")}
+          role="tab"
+          aria-selected={activeTab === "sessions"}
+        >
+          <Code2 size={14} /> Sessions
+          <span>{runningAgentSessions || visibleAgentSessions.length}</span>
+        </button>
       </div>
+
+      {activeTab === "terminals" ? (
+        <div className="terminalStage embeddedStage slotTerminalStage">
+          {visibleSessions.map((session) => (
+            <div
+              key={session.id}
+              data-pane-id={session.id}
+              className={[
+                "terminalPane liveTerminalPane slotPane",
+                dragState?.id === session.id ? "dragging" : "",
+                dragState?.targetId === session.id ? "dropTarget" : "",
+              ].filter(Boolean).join(" ")}
+              style={
+                dragState?.id === session.id
+                  ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
+                  : undefined
+              }
+            >
+              <div
+                className="terminalChrome draggableChrome"
+                onPointerDown={(event) => startPaneDrag(event, session.id)}
+              >
+                <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
+                <span className="dot amber" />
+                <span className="dot green" />
+                <strong>{session.title}</strong>
+                <em>{session.status}{session.pid ? ` · pid ${session.pid}` : ""}</em>
+              </div>
+              <EmbeddedTerminal session={session} />
+            </div>
+          ))}
+          {visibleSessions.length === 0 && (
+            <div className="terminalEmptyState">
+              <TerminalSquare size={34} />
+              <strong>No embedded terminals yet.</strong>
+              <span>Select a workspace, then start a shell or launch a four-pane Codex grid with Hermes memory attached.</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="agentSessionsPanel">
+          <div className="agentSessionsHeader">
+            <span>Provider</span>
+            <span>Session</span>
+            <span>Model / Agent</span>
+            <span>Updated</span>
+            <span>Status</span>
+            <span>Actions</span>
+          </div>
+          {visibleAgentSessions.map((session) => (
+            <div className="agentSessionRow" key={`${session.provider}:${session.id}`}>
+              <div className="agentSessionProvider">
+                <span className={`providerBadge ${session.provider}`}>{providerLabel(session.provider)}</span>
+              </div>
+              <div className="agentSessionTitle">
+                <strong>{session.title}</strong>
+                <span>{session.id}{session.branch ? ` · ${session.branch}` : ""}</span>
+              </div>
+              <div className="agentSessionMeta">
+                <strong>{session.model ?? "unknown model"}</strong>
+                <span>{session.agent ?? "default agent"}</span>
+              </div>
+              <span className="agentSessionTime">{formatSessionTime(session.updatedAt)}</span>
+              <span className={`agentSessionStatus ${session.status}`}>{session.status}</span>
+              <div className="agentSessionActions">
+                {session.terminalId && (
+                  <button type="button" onClick={() => setActiveTab("terminals")}>
+                    <TerminalSquare size={13} /> Focus
+                  </button>
+                )}
+                <button type="button" onClick={() => void copySessionText(session.id)}>
+                  <Code2 size={13} /> ID
+                </button>
+                {session.resumeCommand && (
+                  <button type="button" onClick={() => void onResumeSession(session)} disabled={busy}>
+                    <RefreshCw size={13} /> Resume
+                  </button>
+                )}
+                <button type="button" className="danger" onClick={() => deleteAgentSession(session)}>
+                  <Trash2 size={13} /> Delete
+                </button>
+              </div>
+            </div>
+          ))}
+          {visibleAgentSessions.length === 0 && (
+            <div className="agentSessionsEmpty">
+              <Code2 size={30} />
+              <strong>No agent sessions found.</strong>
+              <span>Launch Codex, OpenCode, or Claude from this workspace to track live and historical sessions here.</span>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="sessionStrip embeddedSessionStrip">
         {sessions.map((session) => (
@@ -1033,6 +1199,23 @@ function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
   if (kind === "opencode") return ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"];
   if (kind === "claude") return ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"];
   return ["Shell"];
+}
+
+function providerLabel(provider: AgentSession["provider"]): string {
+  if (provider === "opencode") return "OpenCode";
+  if (provider === "claude") return "Claude";
+  return "Codex";
+}
+
+function agentSessionKey(session: AgentSession): string {
+  return `${session.provider}:${session.id}`;
+}
+
+function formatSessionTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const ageSeconds = Math.max(0, (Date.now() - timestamp) / 1000);
+  return formatAge(ageSeconds);
 }
 
 function delay(ms: number): Promise<void> {

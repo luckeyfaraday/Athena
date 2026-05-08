@@ -147,6 +147,7 @@ export function App() {
   const [recallRefreshing, setRecallRefreshing] = useState(false);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
+  const agentSessionsRefreshInFlight = useRef(false);
   const autoStartedTerminals = useRef(false);
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const newMenuRef = useRef<HTMLDivElement | null>(null);
@@ -182,10 +183,14 @@ export function App() {
       setAgentSessions([]);
       return;
     }
+    if (agentSessionsRefreshInFlight.current) return;
+    agentSessionsRefreshInFlight.current = true;
     try {
       setAgentSessions(await desktop.listAgentSessions(workspace));
     } catch (err) {
       setError(String(err));
+    } finally {
+      agentSessionsRefreshInFlight.current = false;
     }
   }, [workspace]);
 

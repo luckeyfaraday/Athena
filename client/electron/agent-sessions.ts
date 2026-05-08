@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "claude";
@@ -24,16 +25,33 @@ export type AgentSession = {
 
 type SqliteValue = string | number | null;
 
-export function listAgentSessions(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): AgentSession[] {
+const execFileAsync = promisify(execFile);
+const CACHE_TTL_MS = 5000;
+const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
+
+export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {
+  const resolvedWorkspace = path.resolve(workspace);
+  const cached = sessionCache.get(resolvedWorkspace);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise.then((sessions) => mergeLiveSessions(sessions, liveTerminals, resolvedWorkspace));
+  const promise = listHistoricalAgentSessions(resolvedWorkspace);
+  sessionCache.set(resolvedWorkspace, { expiresAt: Date.now() + CACHE_TTL_MS, promise });
+  return promise.then((sessions) => mergeLiveSessions(sessions, liveTerminals, resolvedWorkspace));
+}
+
+async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
+  const [codex, opencode] = await Promise.all([
+    readCodexSessions(workspace),
+    readOpenCodeSessions(workspace),
+  ]);
+  const claude = readClaudeSessions(workspace);
+  return mergeSessions([...codex, ...opencode, ...claude]);
+}
+
+function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTerminalSession[], workspace: string): AgentSession[] {
   const resolvedWorkspace = path.resolve(workspace);
   const live = liveTerminals
     .filter((session) => isAgentKind(session.kind) && samePath(session.workspace, resolvedWorkspace))
     .map(liveTerminalSession);
-  const historical = [
-    ...readCodexSessions(resolvedWorkspace),
-    ...readOpenCodeSessions(resolvedWorkspace),
-    ...readClaudeSessions(resolvedWorkspace),
-  ];
   return mergeSessions([...live, ...historical]);
 }
 
@@ -56,10 +74,10 @@ function liveTerminalSession(session: EmbeddedTerminalSession): AgentSession {
   };
 }
 
-function readCodexSessions(workspace: string): AgentSession[] {
+async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
   const dbPath = path.join(os.homedir(), ".codex", "state_5.sqlite");
   if (!fs.existsSync(dbPath)) return [];
-  const rows = querySqlite(dbPath, [
+  const rows = await querySqlite(dbPath, [
     "select id, cwd, title, created_at_ms, updated_at_ms, git_branch, cli_version, first_user_message, model, agent_role",
     "from threads",
     "where cwd = ?",
@@ -87,10 +105,10 @@ function readCodexSessions(workspace: string): AgentSession[] {
   }).filter((session) => Boolean(session.id));
 }
 
-function readOpenCodeSessions(workspace: string): AgentSession[] {
+async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> {
   const dbPath = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
   if (!fs.existsSync(dbPath)) return [];
-  const rows = querySqlite(dbPath, [
+  const rows = await querySqlite(dbPath, [
     "select s.id, coalesce(s.directory, p.worktree), s.title, s.time_created, s.time_updated, s.agent, s.model, p.worktree",
     "from session s",
     "left join project p on s.project_id = p.id",
@@ -191,22 +209,22 @@ function readClaudeSessionFile(filePath: string, workspace: string): AgentSessio
   };
 }
 
-function querySqlite(dbPath: string, sql: string, params: string[]): SqliteValue[][] {
+async function querySqlite(dbPath: string, sql: string, params: string[]): Promise<SqliteValue[][]> {
   const script = [
     "import json, sqlite3, sys",
     "db, sql, params = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])",
-    "con = sqlite3.connect('file:' + db + '?mode=ro', uri=True)",
+    "con = sqlite3.connect('file:' + db + '?mode=ro', uri=True, timeout=0.25)",
     "con.row_factory = lambda cursor, row: list(row)",
     "print(json.dumps(con.execute(sql, params).fetchall()))",
   ].join("\n");
   for (const executable of ["python3", "python"]) {
     try {
-      const output = execFileSync(executable, ["-c", script, dbPath, sql, JSON.stringify(params)], {
+      const { stdout } = await execFileAsync(executable, ["-c", script, dbPath, sql, JSON.stringify(params)], {
         encoding: "utf8",
         timeout: 2500,
-        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
       });
-      const parsed = JSON.parse(output) as SqliteValue[][];
+      const parsed = JSON.parse(stdout) as SqliteValue[][];
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       // Try the next Python executable, then gracefully omit this provider.

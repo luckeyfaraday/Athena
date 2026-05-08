@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { BackendState } from "./backend.js";
 import type { CodexTerminalState, NativeTerminalResult, NativeTerminalSession } from "./codex-terminal.js";
 import type { EmbeddedTerminalKind, EmbeddedTerminalSession } from "./embedded-terminal.js";
@@ -26,6 +26,7 @@ export type WorkspaceApi = {
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
+  getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -53,6 +54,7 @@ const api: WorkspaceApi = {
   resizeEmbeddedTerminal: (id, cols, rows) => ipcRenderer.invoke("embeddedTerminal:resize", id, cols, rows),
   getEmbeddedTerminalBuffer: (id) => ipcRenderer.invoke("embeddedTerminal:buffer", id),
   killEmbeddedTerminal: (id) => ipcRenderer.invoke("embeddedTerminal:kill", id),
+  getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
   onEmbeddedTerminalData: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: { id: string; data: string }) => callback(payload);
     ipcRenderer.on("embedded-terminal:data", listener);

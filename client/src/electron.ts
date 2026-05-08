@@ -72,6 +72,7 @@ type WorkspaceApi = {
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
+  getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -118,6 +119,7 @@ const browserFallback: WorkspaceApi = {
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async killEmbeddedTerminal() { return { ...(await this.spawnEmbeddedTerminal("/preview")), status: "exited" }; },
+  async getDroppedFilePaths(files: File[]) { return files.map((file) => file.name).filter(Boolean); },
   onEmbeddedTerminalData() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },

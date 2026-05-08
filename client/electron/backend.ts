@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { defaultPythonExecutable } from "./platform.js";
 
@@ -13,6 +15,7 @@ export type BackendState = {
 };
 
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
+let startedAt: string | null = null;
 let state: BackendState = {
   baseUrl: null,
   healthy: false,
@@ -48,6 +51,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       windowsHide: true,
     },
   );
+  startedAt = new Date().toISOString();
 
   state = {
     baseUrl,
@@ -56,6 +60,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     port,
     lastError: null,
   };
+  writeBackendDiscovery();
 
   backendProcess.stderr.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf8").trim();
@@ -73,6 +78,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       running: false,
       lastError: `Backend failed to start with ${python}: ${error.message}`,
     };
+    writeBackendDiscovery();
     backendProcess = null;
   });
 
@@ -83,6 +89,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       running: false,
       lastError: `Backend exited: ${code ?? signal ?? "unknown"}`,
     };
+    writeBackendDiscovery();
     backendProcess = null;
   });
 
@@ -99,6 +106,7 @@ export async function stopBackend(): Promise<void> {
   backendProcess = null;
   if (!processToStop) {
     state = { ...state, healthy: false, running: false };
+    writeBackendDiscovery();
     return;
   }
 
@@ -115,6 +123,7 @@ export async function stopBackend(): Promise<void> {
   });
 
   state = { ...state, healthy: false, running: false };
+  writeBackendDiscovery();
 }
 
 export async function checkBackendHealth(): Promise<BackendState> {
@@ -132,6 +141,7 @@ export async function checkBackendHealth(): Promise<BackendState> {
   } catch (error) {
     state = { ...state, healthy: false, lastError: String(error) };
   }
+  writeBackendDiscovery();
   return getBackendState();
 }
 
@@ -148,6 +158,7 @@ async function waitForHealth(baseUrl: string): Promise<BackendState> {
     await delay(250);
   }
   state = { ...state, healthy: false, lastError: "Backend health check timed out." };
+  writeBackendDiscovery();
   return getBackendState();
 }
 
@@ -200,4 +211,31 @@ function fetchHealthStatus(baseUrl: string): Promise<number> {
 
 function isBackendErrorLine(line: string): boolean {
   return /^(ERROR|CRITICAL):/.test(line) || line.startsWith("Traceback ");
+}
+
+function writeBackendDiscovery(): void {
+  try {
+    const directory = path.join(os.homedir(), ".context-workspace");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, "backend.json"),
+      JSON.stringify(
+        {
+          baseUrl: state.baseUrl,
+          port: state.port,
+          pid: backendProcess?.pid ?? null,
+          healthy: state.healthy,
+          running: state.running,
+          startedAt,
+          lastError: state.lastError,
+          updatedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch {
+    // Discovery is best-effort; the in-app backend state remains authoritative.
+  }
 }

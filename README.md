@@ -198,6 +198,64 @@ GET /memory/hermes?q=<query>
 
 The response is plain text so CLI agents can consume it easily with tools like `curl`.
 
+## Hermes MCP Bridge
+
+Context Workspace also includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace. This bridge is intended for Hermes running in WSL while Context Workspace runs on Windows.
+
+Install the MCP server dependencies into the Python environment Hermes will use:
+
+```bash
+pip install -r /mnt/c/Users/you/context-workspace/mcp_server/requirements.txt
+```
+
+Add the bridge to the WSL Hermes config at `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  context_workspace:
+    command: "python"
+    args:
+      - "/mnt/c/Users/you/context-workspace/mcp_server/server.py"
+    timeout: 120
+    connect_timeout: 30
+    env:
+      CONTEXT_WORKSPACE_BACKEND_STATE: "/mnt/c/Users/you/.context-workspace/backend.json"
+```
+
+If Hermes uses its own virtual environment, set `command` to that interpreter, for example:
+
+```yaml
+command: "/home/you/.hermes/hermes-agent/venv/bin/python3"
+```
+
+The Electron app writes backend discovery state to:
+
+```text
+C:\Users\you\.context-workspace\backend.json
+```
+
+From WSL, that file is available at:
+
+```text
+/mnt/c/Users/you/.context-workspace/backend.json
+```
+
+Start the Context Workspace desktop app before starting Hermes so the backend state file exists. If you run the backend directly on a fixed port, you can use `CONTEXT_WORKSPACE_BACKEND_URL` instead:
+
+```yaml
+env:
+  CONTEXT_WORKSPACE_BACKEND_URL: "http://127.0.0.1:8000"
+```
+
+The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, agent run management, artifact reads, and project-local recall cache management.
+
+Recommended recall workflow:
+
+1. Hermes runs its own `session_search`.
+2. Hermes summarizes the relevant prior-session context.
+3. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
+4. Future Context Workspace agent runs include that cache in the generated `context.md`.
+
 ## Troubleshooting
 
 ### Backend does not start

@@ -28,6 +28,14 @@ export type EmbeddedTerminalSession = {
   error: string | null;
 };
 
+export type EmbeddedTerminalSpawnOptions = {
+  kind?: EmbeddedTerminalKind;
+  title?: string;
+  cols?: number;
+  rows?: number;
+  resumeSessionId?: string;
+};
+
 type ManagedTerminal = {
   session: EmbeddedTerminalSession;
   process: pty.IPty;
@@ -49,7 +57,7 @@ export function getEmbeddedTerminalBuffer(id: string): string {
 
 export async function spawnEmbeddedTerminal(
   workspace: string,
-  options: { kind?: EmbeddedTerminalKind; title?: string; cols?: number; rows?: number } = {},
+  options: EmbeddedTerminalSpawnOptions = {},
 ): Promise<EmbeddedTerminalSession> {
   const cwd = path.resolve(workspace);
   const stat = fs.existsSync(cwd) ? fs.statSync(cwd) : null;
@@ -59,8 +67,8 @@ export async function spawnEmbeddedTerminal(
 
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const promptPath = kind === "shell" || kind === "hermes" ? null : await writeHermesPrompt(cwd, kind, options.title);
-  const launch = terminalLaunch(kind, cwd, promptPath);
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId ? null : await writeHermesPrompt(cwd, kind, options.title);
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId);
 
   const session: EmbeddedTerminalSession = {
     id,
@@ -170,12 +178,19 @@ function terminalLaunch(
   kind: EmbeddedTerminalKind,
   cwd: string,
   promptPath: string | null,
+  resumeSessionId?: string,
 ): { command: string; args: string[] } {
   if (isWindows) {
     if (kind === "hermes") {
       return {
         command: "powershell.exe",
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchHermesPowerShellCommand(cwd)],
+      };
+    }
+    if (kind !== "shell" && resumeSessionId) {
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId)],
       };
     }
     if (kind !== "shell" && promptPath) {
@@ -187,7 +202,7 @@ function terminalLaunch(
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", launchCommand(kind, cwd, promptPath)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId) : launchCommand(kind, cwd, promptPath)] };
 }
 
 function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null): string {
@@ -232,6 +247,33 @@ function launchHermesPowerShellCommand(cwd: string): string {
     "$resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue",
     "if ($resolvedHermes) { & hermes; return }",
     "Write-Host \"wsl.exe is unavailable and native hermes is not on PATH.\" -ForegroundColor Red",
+  ].join("; ");
+}
+
+function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string): string {
+  const agent = agentConfig(kind);
+  return [
+    `cd ${quoteShell(cwd)}`,
+    `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
+    `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+    agent.resumeArgs(cwd, resumeSessionId, "bash"),
+    "exec bash -l",
+  ].join("; ");
+}
+
+function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string): string {
+  const agent = agentConfig(kind);
+  return [
+    `$workspace = ${quotePowerShell(cwd)}`,
+    `$sessionId = ${quotePowerShell(resumeSessionId)}`,
+    `$agentCommand = ${quotePowerShell(agent.executable)}`,
+    `$agentLabel = ${quotePowerShell(agent.label)}`,
+    "Set-Location -LiteralPath $workspace",
+    "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
+    "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
+    "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
+    agent.resumePowerShellCommand,
   ].join("; ");
 }
 
@@ -284,14 +326,18 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   label: string;
   executable: string;
   powerShellCommand: string;
+  resumePowerShellCommand: string;
   args: (cwd: string, promptPath: string, shell: "bash") => string;
+  resumeArgs: (cwd: string, sessionId: string, shell: "bash") => string;
 } {
   if (kind === "opencode") {
     return {
       label: "OpenCode",
       executable: "opencode",
       powerShellCommand: "& $agentCommand $workspace --prompt $prompt",
+      resumePowerShellCommand: "& $agentCommand $workspace --session $sessionId",
       args: (cwd, promptPath) => `${quoteShell(cwd)} --prompt "$(cat ${quoteShell(promptPath)})"`,
+      resumeArgs: (cwd, sessionId) => `opencode ${quoteShell(cwd)} --session ${quoteShell(sessionId)}`,
     };
   }
   if (kind === "claude") {
@@ -299,14 +345,18 @@ function agentConfig(kind: EmbeddedTerminalKind): {
       label: "Claude Code",
       executable: "claude",
       powerShellCommand: "& $agentCommand $prompt",
+      resumePowerShellCommand: "& $agentCommand --resume $sessionId",
       args: (_cwd, promptPath) => `"$(cat ${quoteShell(promptPath)})"`,
+      resumeArgs: (_cwd, sessionId) => `claude --resume ${quoteShell(sessionId)}`,
     };
   }
   return {
     label: "Codex",
     executable: "codex",
     powerShellCommand: "& $agentCommand --cd $workspace $prompt",
+    resumePowerShellCommand: "& $agentCommand resume --cd $workspace $sessionId",
     args: (cwd, promptPath) => `--cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
+    resumeArgs: (cwd, sessionId) => `codex resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };
 }
 

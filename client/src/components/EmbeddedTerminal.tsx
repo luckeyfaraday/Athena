@@ -51,6 +51,12 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     terminalRef.current = terminal;
     fitRef.current = fit;
 
+    void desktop.getEmbeddedTerminalBuffer(session.id)
+      .then((buffer) => {
+        if (buffer && terminalRef.current === terminal) terminal.write(buffer);
+      })
+      .catch(() => undefined);
+
     const dataDisposable = terminal.onData((data) => {
       void desktop.writeEmbeddedTerminal(session.id, data).catch(() => undefined);
     });

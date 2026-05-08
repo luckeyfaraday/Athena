@@ -409,6 +409,44 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .commandRoom .buttonRow .ghostButton:nth-child(3) {
   display: none;
 }
+.commandRoomTabs {
+  margin: 10px 12px;
+  padding: 3px;
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 3px;
+  border: 1px solid rgba(226,214,183,.1);
+  border-radius: 7px;
+  background: #061a15;
+}
+.commandRoomTabs button {
+  height: 28px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.commandRoomTabs button.active {
+  background: rgba(104, 196, 255, .12);
+  color: var(--text);
+}
+.commandRoomTabs button span {
+  min-width: 17px;
+  height: 17px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 99px;
+  background: rgba(226,214,183,.1);
+  color: var(--muted);
+  font-size: 9px;
+}
 
 .broadcastComposer {
   margin: 0 12px 10px;
@@ -610,6 +648,128 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .terminalEmptyState svg { color: var(--blue); }
 .terminalEmptyState strong { color: var(--text); font-size: 14px; }
 .terminalEmptyState span { max-width: 420px; font-size: 11px; line-height: 1.5; }
+.agentSessionsPanel {
+  flex: 1;
+  min-height: 0;
+  margin: 0 12px 12px;
+  overflow: auto;
+  border: 1px solid rgba(226,214,183,.1);
+  border-radius: 7px;
+  background: #03120f;
+}
+.agentSessionsHeader,
+.agentSessionRow {
+  display: grid;
+  grid-template-columns: 100px minmax(220px, 1.5fr) minmax(160px, 1fr) 80px 82px minmax(210px, auto);
+  gap: 10px;
+  align-items: center;
+}
+.agentSessionsHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 32px;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(226,214,183,.1);
+  background: #071d17;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.agentSessionRow {
+  min-height: 58px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(226,214,183,.07);
+}
+.agentSessionRow:last-child { border-bottom: 0; }
+.agentSessionTitle,
+.agentSessionMeta {
+  min-width: 0;
+}
+.agentSessionTitle strong,
+.agentSessionTitle span,
+.agentSessionMeta strong,
+.agentSessionMeta span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agentSessionTitle strong,
+.agentSessionMeta strong {
+  color: var(--text);
+  font-size: 11px;
+}
+.agentSessionTitle span,
+.agentSessionMeta span,
+.agentSessionTime {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.providerBadge,
+.agentSessionStatus {
+  min-width: 70px;
+  height: 22px;
+  padding: 0 8px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+.providerBadge.codex { background: rgba(104, 196, 255, .14); color: #a8ddff; }
+.providerBadge.opencode { background: rgba(34, 197, 94, .14); color: #99f6b5; }
+.providerBadge.claude { background: rgba(245, 158, 11, .16); color: #f8d58c; }
+.agentSessionStatus {
+  background: rgba(226,214,183,.08);
+  color: var(--muted);
+}
+.agentSessionStatus.running {
+  background: rgba(34, 197, 94, .14);
+  color: #99f6b5;
+}
+.agentSessionActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.agentSessionActions button {
+  height: 26px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(226,214,183,.1);
+  border-radius: 5px;
+  background: #071d17;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.agentSessionActions button.danger {
+  border-color: rgba(251, 113, 133, .22);
+  color: #fecdd3;
+}
+.agentSessionActions button.danger:hover {
+  background: rgba(251, 113, 133, .1);
+}
+.agentSessionsEmpty {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  color: var(--muted);
+  text-align: center;
+}
+.agentSessionsEmpty svg { color: var(--blue); }
+.agentSessionsEmpty strong { color: var(--text); font-size: 14px; }
+.agentSessionsEmpty span { max-width: 430px; font-size: 11px; line-height: 1.5; }
 .sessionStrip {
   min-height: 44px;
   max-height: 72px;

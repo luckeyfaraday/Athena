@@ -29,12 +29,13 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type Run } from "./api";
+import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus, type Run } from "./api";
 import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
 
 type LoadState = {
   hermes: HermesStatus | null;
+  recall: RecallStatus | null;
   adapters: Record<string, AdapterStatus>;
   memory: string[];
   runs: Run[];
@@ -59,6 +60,7 @@ type PaneDragState = {
 
 const emptyLoadState: LoadState = {
   hermes: null,
+  recall: null,
   adapters: {},
   memory: [],
   runs: [],
@@ -153,20 +155,21 @@ export function App() {
     if (!client || dataRefreshInFlight.current) return;
     dataRefreshInFlight.current = true;
     try {
-      const [hermes, adapters, memory, runs] = await Promise.all([
+      const [hermes, recall, adapters, memory, runs] = await Promise.all([
         client.hermesStatus(),
+        workspace ? client.recallStatus(workspace) : Promise.resolve(null),
         client.adapters(),
         client.recentMemory(30),
         client.runs(),
       ]);
-      setState({ hermes, adapters, memory, runs });
+      setState({ hermes, recall, adapters, memory, runs });
       setError(null);
     } catch (err) {
       setError(String(err));
     } finally {
       dataRefreshInFlight.current = false;
     }
-  }, [client]);
+  }, [client, workspace]);
 
   useEffect(() => {
     try {
@@ -442,7 +445,7 @@ export function App() {
             <MemoryTimeline entries={memoryEntries} runs={state.runs} />
           </aside>
 
-          <SharedMemorySnapshot workspace={workspaceDisplay} entries={memoryEntries} hermes={state.hermes} latestRun={latestRun} />
+          <SharedMemorySnapshot workspace={workspaceDisplay} entries={memoryEntries} hermes={state.hermes} recall={state.recall} latestRun={latestRun} />
         </section>
       </section>
     </main>
@@ -696,20 +699,36 @@ function MemoryTimeline({ entries, runs }: { entries: string[]; runs: Run[] }) {
   );
 }
 
-function SharedMemorySnapshot({ workspace, entries, hermes, latestRun }: { workspace: string; entries: string[]; hermes: HermesStatus | null; latestRun: Run | null }) {
+function SharedMemorySnapshot({
+  workspace,
+  entries,
+  hermes,
+  recall,
+  latestRun,
+}: {
+  workspace: string;
+  entries: string[];
+  hermes: HermesStatus | null;
+  recall: RecallStatus | null;
+  latestRun: Run | null;
+}) {
+  const recallLabel = recall ? recall.status : "unknown";
+  const recallAge = recall?.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds);
   const lines = [
     "# Context Workspace",
     `- Workspace: ${workspace || "not selected"}`,
     `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
+    `- Recall: ${recallLabel} (${recallAge})`,
     `- Latest run: ${latestRun ? `${latestRun.agent_id} / ${latestRun.status}` : "none"}`,
     `- Memory entries: ${entries.length}`,
     ...(entries[0] ? [`- Latest memory: ${entries[0]}`] : []),
   ];
+  const recallTone = !recall ? "warn" : recall.status === "fresh" ? "ok" : recall.status === "missing" ? "bad" : "warn";
   return (
     <section className="dashboardCard sharedSnapshot">
       <div className="cardHeader">
         <span>Shared Memory Snapshot</span>
-        <button>2m ago</button>
+        <StatusPill tone={recallTone}>Recall {recallLabel}</StatusPill>
       </div>
       <div className="snapshotBody">
         <div className="snapshotTabs">
@@ -720,6 +739,15 @@ function SharedMemorySnapshot({ workspace, entries, hermes, latestRun }: { works
       </div>
     </section>
   );
+}
+
+function formatAge(ageSeconds: number): string {
+  if (ageSeconds < 60) return "just now";
+  const minutes = Math.floor(ageSeconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 function CommandRoom({

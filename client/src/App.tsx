@@ -396,6 +396,7 @@ export function App() {
         rows: 28,
         resumeSessionId: session.id,
         sessionLabel: session.title,
+        providerSessionId: session.id,
       });
       setEmbeddedSessions((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       setTerminalFocus(true);
@@ -1003,10 +1004,7 @@ function CommandRoom({
     const move = (moveEvent: PointerEvent) => {
       const dragStart = dragStartRef.current;
       if (!dragStart) return;
-      const element = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY) as HTMLElement | null;
-      const targetPane = element?.closest<HTMLElement>("[data-pane-id]");
-      const targetId = targetPane?.dataset.paneId;
-      const nextTargetId = targetId && targetId !== dragStart.id ? targetId : null;
+      const nextTargetId = nearestPaneDropTarget(moveEvent.clientX, moveEvent.clientY, dragStart.id);
       dragTargetRef.current = nextTargetId;
       setDragState({
         id: dragStart.id,
@@ -1242,6 +1240,29 @@ function CommandRoom({
       </form>
     </div>
   );
+}
+
+function nearestPaneDropTarget(clientX: number, clientY: number, sourceSessionId: string): string | null {
+  const panes = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-id]"))
+    .filter((pane) => pane.dataset.paneId && pane.dataset.paneId !== sourceSessionId);
+  let best: { id: string; distance: number } | null = null;
+
+  for (const pane of panes) {
+    const rect = pane.getBoundingClientRect();
+    const inflated = 56;
+    const inside =
+      clientX >= rect.left - inflated &&
+      clientX <= rect.right + inflated &&
+      clientY >= rect.top - inflated &&
+      clientY <= rect.bottom + inflated;
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const distance = Math.hypot(clientX - centerX, clientY - centerY);
+    if (inside) return pane.dataset.paneId ?? null;
+    if (!best || distance < best.distance) best = { id: pane.dataset.paneId ?? "", distance };
+  }
+
+  return best && best.distance < 360 ? best.id : null;
 }
 
 function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {

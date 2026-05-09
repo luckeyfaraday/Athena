@@ -400,7 +400,7 @@ FastAPI Backend (backend/)
 
 Hermes MCP Server (mcp_server/)  ← PR #24
 ├── server.py                  Custom stdio JSON-RPC MCP server
-├── tools.py                   15 tools
+├── tools.py                   17 tools
 ├── client.py                 ContextWorkspaceClient
 └── config.py                 Settings
 
@@ -458,7 +458,7 @@ In 5 days of development (May 4–9, 2026):
 - **Hermes memory integration** — `MEMORY.md` read/write/search, project pathneedle matching
 - **Agent Instruction Adapter layer** — per-agent `AGENTS.md`/`CLAUDE.md` conventions corrected for Codex, OpenCode, Claude Code
 - **Recall cache** — session-derived context injected into `context.md` before agent spawn
-- **MCP bridge** — Context Workspace as MCP server (15 tools), Hermes connects as client
+- **MCP bridge** — Context Workspace as MCP server (17 tools), Hermes connects as client
 - **Native terminal grid** — tmux (Linux/macOS) and Windows Terminal split-pane spawning
 - **Session tracking** — reads Codex/OpenCode/Claude session state stores, surfaces in UI
 - **Image drag-and-drop** for terminals

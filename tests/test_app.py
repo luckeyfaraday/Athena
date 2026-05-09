@@ -222,6 +222,27 @@ def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> 
     assert adapters["claude"]["configured"] is False
 
 
+def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/agents/sessions", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project_dir"] == str(tmp_path)
+    assert body["sessions"] == []
+    assert body["summary"] == "No native agent sessions were found for this workspace."
+
+
+def test_agent_sessions_endpoint_rejects_unknown_provider(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/agents/sessions", params={"project_dir": str(tmp_path), "provider": "unknown"})
+
+    assert response.status_code == 400
+    assert "Unsupported session provider" in response.json()["detail"]
+
+
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

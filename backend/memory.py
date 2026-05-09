@@ -200,7 +200,10 @@ def _home_prefix_candidates(normalized_path: str, home_prefix: str) -> list[str]
 
     windows_home_match = re.match(r"^[a-z]:/users/([^/]+)/", normalized_path)
     if windows_home_match:
-        candidates.append(f"/home/{windows_home_match.group(1).lower()}")
+        windows_user = windows_home_match.group(1).lower()
+        candidates.append(f"/home/{windows_user}")
+        if windows_user.endswith("q") and len(windows_user) > 1:
+            candidates.append(f"/home/{windows_user[:-1]}")
 
     seen: set[str] = set()
     unique = []

@@ -26,10 +26,11 @@ Recall cache tools read and write project-local files and can operate even if th
 Before answering a substantive task about a Context Workspace project, and before spawning or coordinating agents:
 
 1. Run `session_search` for the current project, branch, task, PR, error, or investigation topic.
-2. Summarize only useful carry-forward context.
-3. Call `context_workspace_write_recall_cache`.
-4. Verify with `context_workspace_read_recall_cache`.
-5. Report the refresh result briefly before continuing.
+2. Call `context_workspace_summarize_agent_sessions` if native Codex/OpenCode/Claude session history may contain relevant current-state context.
+3. Summarize only useful carry-forward context.
+4. Call `context_workspace_write_recall_cache`.
+5. Verify with `context_workspace_read_recall_cache`.
+6. Report the refresh result briefly before continuing.
 
 Use this report shape:
 
@@ -83,13 +84,25 @@ If pre-launch refresh fails or the hook is not configured, Context Workspace ask
 ## Refresh Recall
 
 1. Run Hermes `session_search` for the current project, branch, task, or problem.
-2. Summarize only the useful carry-forward context:
+2. Inspect native agent session history when useful:
+
+```json
+{
+  "project_dir": "/mnt/c/Users/alanq/context-workspace",
+  "query": "recall Hermes sessions",
+  "limit": 25
+}
+```
+
+Use `context_workspace_summarize_agent_sessions` for a compact text result, or `context_workspace_list_agent_sessions` when exact session metadata is needed.
+
+3. Summarize only the useful carry-forward context:
    - current objective
    - important decisions
    - relevant PRs, branches, commits, and files
    - known failures or caveats
    - next steps future agents should inherit
-3. Call `context_workspace_write_recall_cache`:
+4. Call `context_workspace_write_recall_cache`:
 
 ```json
 {
@@ -160,8 +173,8 @@ Recall cleared:
 ## Responsibility Split
 
 ```text
-Hermes = search old sessions, summarize, refresh or clear recall
-Context Workspace = inject latest recall into future agent context
+Hermes = search old sessions, decide when to refresh, summarize, refresh or clear recall
+Context Workspace = expose app-side tools, inspect native agent sessions, inject latest recall into future agent context
 Agents = consume generated context.md
 ```
 

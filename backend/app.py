@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -17,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .adapters.base import AgentAdapter
+from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions
 from .adapters.codex import CodexAdapter
 from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
@@ -170,6 +172,25 @@ def create_app(
     @app.get("/agents/adapters")
     def get_agent_adapters() -> dict[str, Any]:
         return {"adapters": adapter_statuses(app.state.adapters)}
+
+    @app.get("/agents/sessions")
+    def list_agent_sessions(
+        project_dir: str = Query(min_length=1),
+        provider: str | None = Query(default=None),
+        q: str = Query(default=""),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        try:
+            project = _resolve_read_project_dir(project_dir)
+            session_provider = _session_provider(provider)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        sessions = list_native_agent_sessions(project, provider=session_provider, query=q, limit=limit)
+        return {
+            "project_dir": str(project),
+            "sessions": [session.payload() for session in sessions],
+            "summary": format_agent_sessions_summary(sessions),
+        }
 
     @app.post("/agents/spawn", status_code=202)
     def spawn_agent(request: SpawnAgentRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
@@ -338,6 +359,36 @@ def _read_bounded_text(path: Path, *, max_bytes: int, tail: bool) -> str:
             handle.seek(size - max_bytes)
         data = handle.read(max_bytes)
     return data.decode("utf-8", errors="replace")
+
+
+def _resolve_read_project_dir(project_dir: str) -> Path:
+    try:
+        return resolve_project_dir(project_dir)
+    except ValueError:
+        translated = _wsl_mount_to_windows_path(project_dir)
+        if translated == project_dir:
+            raise
+        return resolve_project_dir(translated)
+
+
+def _wsl_mount_to_windows_path(project_dir: str) -> str:
+    if os.name != "nt":
+        return project_dir
+    match = re.match(r"^/mnt/([a-zA-Z])/(.+)$", project_dir.strip())
+    if not match:
+        return project_dir
+    drive = match.group(1).upper()
+    rest = match.group(2).replace("/", "\\")
+    return f"{drive}:\\{rest}"
+
+
+def _session_provider(provider: str | None) -> Any:
+    if provider is None or not provider.strip():
+        return None
+    normalized = provider.strip().lower()
+    if normalized not in {"codex", "opencode", "claude"}:
+        raise ValueError(f"Unsupported session provider: {provider}")
+    return normalized
 
 
 def _hermes_status_payload(status: Any) -> dict[str, Any]:

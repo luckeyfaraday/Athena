@@ -1,4 +1,4 @@
-"""Native agent session discovery for Codex, OpenCode, and Claude Code."""
+"""Native agent session discovery for Codex, OpenCode, Claude Code, and Hermes."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-AgentSessionProvider = Literal["codex", "opencode", "claude"]
+AgentSessionProvider = Literal["codex", "opencode", "claude", "hermes"]
 AgentSessionStatus = Literal["historical"]
 
 
@@ -47,7 +47,7 @@ def list_native_agent_sessions(
     """Return historical native agent sessions for a project directory."""
     workspace = Path(project_dir).expanduser().resolve()
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
-    providers = [provider] if provider else ["codex", "opencode", "claude"]
+    providers = [provider] if provider else ["codex", "opencode", "claude", "hermes"]
 
     sessions: list[AgentSession] = []
     if "codex" in providers:
@@ -56,6 +56,8 @@ def list_native_agent_sessions(
         sessions.extend(_read_opencode_sessions(workspace, home))
     if "claude" in providers:
         sessions.extend(_read_claude_sessions(workspace, home))
+    if "hermes" in providers:
+        sessions.extend(_read_hermes_sessions(workspace, home))
 
     matches = [_session for _session in _merge_sessions(sessions) if _matches_query(_session, query)]
     return matches[: max(1, min(limit, 500))]
@@ -236,6 +238,146 @@ def _read_claude_session_file(file_path: Path, workspace: Path) -> AgentSession 
         pid=None,
         resume_command=f"claude --resume {_quote_shell_arg(session_id)}",
     )
+
+
+def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
+    hermes_dir = home / ".hermes"
+    sessions_dir = hermes_dir / "sessions"
+    db_path = hermes_dir / "state.db"
+    manifest = _read_hermes_manifest(sessions_dir / "sessions.json")
+    sessions_by_id: dict[str, AgentSession] = {}
+
+    if db_path.exists():
+        rows = _query_sqlite(
+            db_path,
+            """
+            select id, source, model, started_at, ended_at, message_count, title
+            from sessions
+            order by coalesce(ended_at, started_at) desc
+            limit 250
+            """,
+        )
+        for row in rows:
+            session_id = _string_value(row[0])
+            if not session_id:
+                continue
+            file_metadata = (
+                {}
+                if _nullable_string(row[2]) and _nullable_string(row[6]) and row[4]
+                else _read_hermes_session_file(sessions_dir / f"session_{session_id}.json")
+            )
+            manifest_entry = manifest.get(session_id, {})
+            created_at = _from_epoch(row[3])
+            updated_at = _from_epoch(row[4]) if row[4] else file_metadata.get("updated_at") or manifest_entry.get("updated_at") or created_at
+            sessions_by_id[session_id] = AgentSession(
+                id=session_id,
+                provider="hermes",
+                title=_clean_session_title(_nullable_string(row[6]) or file_metadata.get("title") or manifest_entry.get("title")) or "Hermes session",
+                workspace=str(workspace),
+                branch=None,
+                model=_nullable_string(row[2]) or file_metadata.get("model"),
+                agent=_hermes_agent_label(_nullable_string(row[1]), manifest_entry, file_metadata),
+                created_at=file_metadata.get("created_at") or manifest_entry.get("created_at") or created_at,
+                updated_at=updated_at,
+                status="historical",
+                terminal_id=None,
+                pid=None,
+                resume_command=f"hermes --resume {_quote_shell_arg(session_id)}",
+            )
+
+    if not sessions_by_id and sessions_dir.exists():
+        for file_path in sessions_dir.glob("session_*.json"):
+            match = re.match(r"^session_(.+)\.json$", file_path.name)
+            if not match:
+                continue
+            session_id = match.group(1)
+            if session_id in sessions_by_id:
+                continue
+            file_metadata = _read_hermes_session_file(file_path)
+            if not file_metadata:
+                continue
+            manifest_entry = manifest.get(session_id, {})
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+            sessions_by_id[session_id] = AgentSession(
+                id=session_id,
+                provider="hermes",
+                title=_clean_session_title(file_metadata.get("title") or manifest_entry.get("title")) or "Hermes session",
+                workspace=str(workspace),
+                branch=None,
+                model=file_metadata.get("model"),
+                agent=_hermes_agent_label(file_metadata.get("platform"), manifest_entry, file_metadata),
+                created_at=file_metadata.get("created_at") or manifest_entry.get("created_at") or _from_epoch(stat.st_ctime_ns // 1_000_000),
+                updated_at=file_metadata.get("updated_at") or manifest_entry.get("updated_at") or _from_epoch(stat.st_mtime_ns // 1_000_000),
+                status="historical",
+                terminal_id=None,
+                pid=None,
+                resume_command=f"hermes --resume {_quote_shell_arg(session_id)}",
+            )
+
+    return sorted(sessions_by_id.values(), key=lambda session: _date_sort_key(session.updated_at), reverse=True)[:100]
+
+
+def _read_hermes_manifest(file_path: Path) -> dict[str, dict[str, str | None]]:
+    parsed = _read_json_object(file_path)
+    if not parsed:
+        return {}
+    manifest: dict[str, dict[str, str | None]] = {}
+    for value in parsed.values():
+        if not isinstance(value, dict):
+            continue
+        session_id = _string_property(value, "session_id")
+        if not session_id:
+            continue
+        origin = _object_property(value, "origin")
+        manifest[session_id] = {
+            "title": _string_property(value, "display_name") or _string_property(origin, "chat_name") or _string_property(value, "session_key"),
+            "created_at": _string_property(value, "created_at"),
+            "updated_at": _string_property(value, "updated_at"),
+            "platform": _string_property(value, "platform") or _string_property(origin, "platform"),
+            "chat_type": _string_property(value, "chat_type") or _string_property(origin, "chat_type"),
+        }
+    return manifest
+
+
+def _read_hermes_session_file(file_path: Path) -> dict[str, str | None]:
+    parsed = _read_json_object(file_path)
+    if not parsed:
+        return {}
+    return {
+        "title": _first_hermes_user_message(parsed),
+        "model": _string_property(parsed, "model"),
+        "platform": _string_property(parsed, "platform"),
+        "created_at": _string_property(parsed, "session_start"),
+        "updated_at": _string_property(parsed, "last_updated"),
+    }
+
+
+def _read_json_object(file_path: Path) -> dict[str, Any] | None:
+    try:
+        return _parse_json_object(file_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+
+
+def _first_hermes_user_message(session: dict[str, Any]) -> str | None:
+    messages = session.get("messages")
+    if not isinstance(messages, list):
+        return None
+    for item in messages:
+        if not isinstance(item, dict) or _string_property(item, "role") != "user":
+            continue
+        return _clean_session_title(_message_content(item))
+    return None
+
+
+def _hermes_agent_label(source: str | None, manifest_entry: dict[str, str | None], file_metadata: dict[str, str | None]) -> str | None:
+    platform = manifest_entry.get("platform") or file_metadata.get("platform") or source
+    chat_type = manifest_entry.get("chat_type")
+    parts = [part for part in (platform, chat_type) if part]
+    return " / ".join(parts) if parts else None
 
 
 def _query_sqlite(db_path: Path, sql: str) -> list[tuple[Any, ...]]:

@@ -43,6 +43,7 @@ type LoadState = {
 };
 
 type ActiveRoom = "command" | "swarm" | "review" | "memory";
+type SessionProviderFilter = AgentSession["provider"] | "all";
 
 type AgentRole = {
   role: string;
@@ -912,6 +913,7 @@ function CommandRoom({
   const [broadcastPrompt, setBroadcastPrompt] = useState("");
   const [broadcasting, setBroadcasting] = useState(false);
   const [activeTab, setActiveTab] = useState<"terminals" | "sessions">("terminals");
+  const [activeSessionProvider, setActiveSessionProvider] = useState<SessionProviderFilter>("all");
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
@@ -945,6 +947,20 @@ function CommandRoom({
     ? visibleSessions.filter((session) => session.id === maximizedPaneId)
     : visibleSessions;
   const visibleAgentSessions = agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session)));
+  const providerTabs = useMemo(() => {
+    const counts = new Map<SessionProviderFilter, number>([["all", visibleAgentSessions.length]]);
+    for (const session of visibleAgentSessions) {
+      counts.set(session.provider, (counts.get(session.provider) ?? 0) + 1);
+    }
+    return (["all", "codex", "opencode", "claude", "hermes"] as SessionProviderFilter[]).map((provider) => ({
+      provider,
+      label: provider === "all" ? "All" : providerLabel(provider),
+      count: counts.get(provider) ?? 0,
+    }));
+  }, [visibleAgentSessions]);
+  const filteredAgentSessions = activeSessionProvider === "all"
+    ? visibleAgentSessions
+    : visibleAgentSessions.filter((session) => session.provider === activeSessionProvider);
   const shownCount = visibleSessions.length;
   const promptTargets = sessions.filter((session) => session.status === "running" && session.kind !== "shell");
   const canBroadcast = promptTargets.length > 0 && broadcastPrompt.trim().length > 0 && !broadcasting;
@@ -1154,6 +1170,21 @@ function CommandRoom({
         </div>
       ) : (
         <div className="agentSessionsPanel">
+          <div className="agentProviderTabs" role="tablist" aria-label="Session providers">
+            {providerTabs.map((tab) => (
+              <button
+                key={tab.provider}
+                type="button"
+                className={activeSessionProvider === tab.provider ? "active" : ""}
+                onClick={() => setActiveSessionProvider(tab.provider)}
+                role="tab"
+                aria-selected={activeSessionProvider === tab.provider}
+              >
+                {tab.label}
+                <span>{tab.count}</span>
+              </button>
+            ))}
+          </div>
           <div className="agentSessionsHeader">
             <span>Provider</span>
             <span>Session</span>
@@ -1162,7 +1193,7 @@ function CommandRoom({
             <span>Status</span>
             <span>Actions</span>
           </div>
-          {visibleAgentSessions.map((session) => (
+          {filteredAgentSessions.map((session) => (
             <div className="agentSessionRow" key={`${session.provider}:${session.id}`}>
               <div className="agentSessionProvider">
                 <span className={`providerBadge ${session.provider}`}>{providerLabel(session.provider)}</span>
@@ -1197,11 +1228,11 @@ function CommandRoom({
               </div>
             </div>
           ))}
-          {visibleAgentSessions.length === 0 && (
+          {filteredAgentSessions.length === 0 && (
             <div className="agentSessionsEmpty">
               <Code2 size={30} />
               <strong>No agent sessions found.</strong>
-              <span>Launch Codex, OpenCode, or Claude from this workspace to track live and historical sessions here.</span>
+              <span>Launch Codex, OpenCode, Claude, or Hermes from this workspace to track live and historical sessions here.</span>
             </div>
           )}
         </div>
@@ -1274,6 +1305,7 @@ function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
 }
 
 function providerLabel(provider: AgentSession["provider"]): string {
+  if (provider === "hermes") return "Hermes";
   if (provider === "opencode") return "OpenCode";
   if (provider === "claude") return "Claude";
   return "Codex";

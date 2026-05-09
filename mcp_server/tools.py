@@ -44,6 +44,11 @@ async def context_workspace_store_memory(text: str) -> dict[str, Any]:
     return await ContextWorkspaceClient().post("/memory/store", {"text": text})
 
 
+async def context_workspace_delete_memory(text: str) -> dict[str, Any]:
+    """Delete exact matching text from Hermes memory through Context Workspace."""
+    return await ContextWorkspaceClient().post("/memory/delete", {"text": text})
+
+
 async def context_workspace_recent_memory(limit: int = 10) -> dict[str, Any]:
     """Return recent Hermes memory entries."""
     return await ContextWorkspaceClient().get("/memory/recent", limit=limit)
@@ -201,6 +206,7 @@ def register_tools(mcp: Any) -> None:
         context_workspace_query_memory,
         context_workspace_query_project_memory,
         context_workspace_store_memory,
+        context_workspace_delete_memory,
         context_workspace_recent_memory,
         context_workspace_list_agent_sessions,
         context_workspace_summarize_agent_sessions,
@@ -226,4 +232,3 @@ def _resolve_recall_project(project_dir: str) -> Path:
         return resolve_project_dir(project_dir)
     except OSError as exc:
         raise SafetyError(f"Project directory cannot be resolved: {project_dir}") from exc
-

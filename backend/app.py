@@ -33,6 +33,10 @@ class MemoryStoreRequest(BaseModel):
     text: str = Field(min_length=1)
 
 
+class MemoryDeleteRequest(BaseModel):
+    text: str = Field(min_length=1)
+
+
 class SpawnAgentRequest(BaseModel):
     agent_type: str = "codex"
     project_dir: str
@@ -168,6 +172,11 @@ def create_app(
     def store_memory(request: MemoryStoreRequest) -> dict[str, Any]:
         entry = app.state.memory.append(request.text)
         return {"stored": True, "entry": entry.text}
+
+    @app.post("/memory/delete")
+    def delete_memory(request: MemoryDeleteRequest) -> dict[str, Any]:
+        removed = app.state.memory.remove_exact(request.text)
+        return {"deleted": removed > 0, "removed": removed}
 
     @app.get("/agents/adapters")
     def get_agent_adapters() -> dict[str, Any]:

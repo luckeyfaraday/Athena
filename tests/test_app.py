@@ -126,6 +126,16 @@ def test_hermes_recall_status_reports_missing_cache(tmp_path: Path) -> None:
     assert recall["refresh_configured"] is False
 
 
+def test_hermes_recall_status_reports_configured_refresh_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", "python scripts/hermes-refresh-recall.py")
+    client = _client(tmp_path)
+
+    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    assert response.json()["recall"]["refresh_configured"] is True
+
+
 def test_hermes_recall_status_reports_fresh_cache(tmp_path: Path) -> None:
     recall_dir = tmp_path / ".context-workspace" / "hermes"
     recall_dir.mkdir(parents=True)
@@ -220,6 +230,27 @@ def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> 
     assert adapters["codex"]["executable"] == sys.executable
     assert adapters["opencode"]["configured"] is False
     assert adapters["claude"]["configured"] is False
+
+
+def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/agents/sessions", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["project_dir"] == str(tmp_path)
+    assert body["sessions"] == []
+    assert body["summary"] == "No native agent sessions were found for this workspace."
+
+
+def test_agent_sessions_endpoint_rejects_unknown_provider(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/agents/sessions", params={"project_dir": str(tmp_path), "provider": "unknown"})
+
+    assert response.status_code == 400
+    assert "Unsupported session provider" in response.json()["detail"]
 
 
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:

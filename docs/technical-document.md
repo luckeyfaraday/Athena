@@ -503,13 +503,14 @@ def _render_prompt(run: Run, artifacts: RunArtifacts) -> str:
 | `GET` | `/health` | `health` | Returns `{"status": "ok"}` |
 | `GET` | `/hermes/status` | `hermes_status` | Returns `HermesStatus` |
 | `GET` | `/hermes/recall/status` | `hermes_recall_status` | Recall cache freshness |
-| `POST` | `/hermes/recall/refresh` | `refresh_hermes_recall` | Runs `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD` |
+| `POST` | `/hermes/recall/refresh` | `refresh_hermes_recall` | Runs `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`; Electron defaults it to `python scripts/hermes-refresh-recall.py` |
 | `POST` | `/hermes/install` | `install_hermes` | Requires `confirm=true` |
 | `GET` | `/memory/hermes` | `hermes_memory` | Queries MEMORY.md |
 | `GET` | `/memory/hermes/project` | `hermes_project_memory` | Project-context memory |
 | `GET` | `/memory/recent` | `recent_memory` | Recent entries |
 | `POST` | `/memory/store` | `store_memory` | Append to MEMORY.md |
 | `GET` | `/agents/adapters` | `get_agent_adapters` | Adapter status |
+| `GET` | `/agents/sessions` | `list_agent_sessions` | Native Codex/OpenCode/Claude session history |
 | `POST` | `/agents/spawn` | `spawn_agent` | **Primary** — 202 Accepted, background |
 | `GET` | `/agents/runs` | `list_runs` | All runs |
 | `GET` | `/agents/runs/{run_id}` | `get_run` | Run + artifact metadata |
@@ -896,7 +897,7 @@ Memory entries for context-workspace **must** contain the literal local filesyst
 
 ### Recall Cache
 
-Session recall lives in `.context-workspace/hermes/session-recall.md` — project-local, separate from Hermes `MEMORY.md`. Refreshed via `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD` environment variable or MCP `context_workspace_write_recall_cache`.
+Session recall lives in `.context-workspace/hermes/session-recall.md` — project-local, separate from Hermes `MEMORY.md`. Refreshed via `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`, the default `scripts/hermes-refresh-recall.py` fallback, or MCP `context_workspace_write_recall_cache`.
 
 Injected into `context.md` under `## Hermes Session Recall Cache` section. **Not sanitized** before injection — see Security Considerations.
 
@@ -953,7 +954,7 @@ Originally conceived as Tauri + Rust + PTY. Corrected to **Electron + React + Fa
 - **Open PR:** none reflected in the current local `origin/main` snapshot
 - **Tech stack:** Electron + React + FastAPI
 - **Agents:** codex, opencode, claude-code
-- **MCP server:** `mcp_server/` — custom stdio JSON-RPC MCP server with 15 tools for Hermes integration
+- **MCP server:** `mcp_server/` — custom stdio JSON-RPC MCP server with 17 tools for Hermes integration
 - **Recall cache:** `.context-workspace/hermes/session-recall.md` — project-local, Hermes session-derived
 
 **Missing:**

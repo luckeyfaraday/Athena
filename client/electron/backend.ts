@@ -37,15 +37,18 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
   const baseUrl = `http://127.0.0.1:${port}`;
   const python = defaultPythonExecutable();
   const backendParent = resolveBackendParent(appRoot);
+  const hermesRefreshCommand = process.env.CONTEXT_WORKSPACE_HERMES_REFRESH_CMD?.trim()
+    || defaultHermesRefreshCommand(appRoot, python);
 
   backendProcess = spawn(
     python,
-    ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port)],
+    ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
     {
       cwd: backendParent,
       env: {
         ...process.env,
         CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
+        CONTEXT_WORKSPACE_HERMES_REFRESH_CMD: hermesRefreshCommand,
         PYTHONPATH: mergePythonPath(backendParent, process.env.PYTHONPATH),
       },
       windowsHide: true,
@@ -61,6 +64,10 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     lastError: null,
   };
   writeBackendDiscovery();
+
+  backendProcess.stdout.on("data", () => {
+    // Drain stdout so a verbose backend cannot block on pipe backpressure.
+  });
 
   backendProcess.stderr.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf8").trim();
@@ -193,6 +200,23 @@ function resolveBackendParent(appRoot: string): string {
 
 function mergePythonPath(backendParent: string, existing: string | undefined): string {
   return existing ? `${backendParent}${path.delimiter}${existing}` : backendParent;
+}
+
+function defaultHermesRefreshCommand(appRoot: string, python: string): string {
+  const scriptPath = resolveRefreshScriptPath(appRoot);
+  return `${quoteCommandArg(python)} ${quoteCommandArg(scriptPath)}`;
+}
+
+function resolveRefreshScriptPath(appRoot: string): string {
+  const candidates = [
+    path.resolve(appRoot, "..", "scripts", "hermes-refresh-recall.py"),
+    path.resolve(resolveBackendParent(appRoot), "scripts", "hermes-refresh-recall.py"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
+
+function quoteCommandArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
 }
 
 function fetchHealthStatus(baseUrl: string): Promise<number> {

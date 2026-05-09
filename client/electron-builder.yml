@@ -13,6 +13,10 @@ extraResources:
       - "**/*"
       - "!**/__pycache__/**"
       - "!**/*.pyc"
+  - from: ../scripts
+    to: scripts
+    filter:
+      - "**/*"
 asar: true
 asarUnpack:
   - node_modules/node-pty/**

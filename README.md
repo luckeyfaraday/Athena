@@ -249,6 +249,14 @@ env:
 
 The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, agent run management, artifact reads, and project-local recall cache management.
 
+When Electron starts the backend, it configures a default recall refresh command:
+
+```text
+python scripts/hermes-refresh-recall.py
+```
+
+You can override it with `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`. The default script writes a short project-local recall cache and uses native Codex/OpenCode/Claude session discovery as fallback context, which keeps recall refresh working even when Hermes in WSL cannot reach the Windows backend loopback URL.
+
 Recommended recall workflow:
 
 1. Hermes runs its own `session_search`.

@@ -126,6 +126,16 @@ def test_hermes_recall_status_reports_missing_cache(tmp_path: Path) -> None:
     assert recall["refresh_configured"] is False
 
 
+def test_hermes_recall_status_reports_configured_refresh_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", "python scripts/hermes-refresh-recall.py")
+    client = _client(tmp_path)
+
+    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    assert response.json()["recall"]["refresh_configured"] is True
+
+
 def test_hermes_recall_status_reports_fresh_cache(tmp_path: Path) -> None:
     recall_dir = tmp_path / ".context-workspace" / "hermes"
     recall_dir.mkdir(parents=True)

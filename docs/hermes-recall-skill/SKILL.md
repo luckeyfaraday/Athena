@@ -63,6 +63,14 @@ The backend runs the command configured in:
 CONTEXT_WORKSPACE_HERMES_REFRESH_CMD
 ```
 
+The Electron launcher sets a default command when the user has not provided one:
+
+```text
+python scripts/hermes-refresh-recall.py
+```
+
+That script writes the project-local recall cache directly and includes native Codex/OpenCode/Claude session discovery as fallback context. Use a custom `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD` when Hermes should run a fuller `session_search` refresh before writing recall.
+
 When invoked, the command receives:
 
 ```text

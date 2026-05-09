@@ -683,6 +683,48 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 7px;
   background: #03120f;
 }
+.agentProviderTabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  min-height: 38px;
+  padding: 6px 8px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border-bottom: 1px solid rgba(226,214,183,.1);
+  background: #071d17;
+}
+.agentProviderTabs button {
+  height: 26px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(226,214,183,.1);
+  border-radius: 5px;
+  background: rgba(226,214,183,.04);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.agentProviderTabs button.active {
+  border-color: rgba(104,196,255,.32);
+  background: rgba(104,196,255,.12);
+  color: var(--text);
+}
+.agentProviderTabs button span {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 99px;
+  background: rgba(0,0,0,.22);
+  color: inherit;
+  font-size: 9px;
+}
 .agentSessionsHeader,
 .agentSessionRow {
   display: grid;
@@ -692,7 +734,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .agentSessionsHeader {
   position: sticky;
-  top: 0;
+  top: 38px;
   z-index: 1;
   min-height: 32px;
   padding: 0 10px;
@@ -750,6 +792,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .providerBadge.codex { background: rgba(104, 196, 255, .14); color: #a8ddff; }
 .providerBadge.opencode { background: rgba(34, 197, 94, .14); color: #99f6b5; }
 .providerBadge.claude { background: rgba(245, 158, 11, .16); color: #f8d58c; }
+.providerBadge.hermes { background: rgba(232, 121, 249, .14); color: #f0abfc; }
 .agentSessionStatus {
   background: rgba(226,214,183,.08);
   color: var(--muted);

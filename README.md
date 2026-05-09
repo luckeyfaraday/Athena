@@ -247,14 +247,35 @@ env:
   CONTEXT_WORKSPACE_BACKEND_URL: "http://127.0.0.1:8000"
 ```
 
-The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, agent run management, artifact reads, and project-local recall cache management.
+The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, agent run management, artifact reads, and project-local recall cache management.
+
+When Electron starts the backend, it configures a default recall refresh command:
+
+```text
+python scripts/hermes-refresh-recall.py
+```
+
+You can override it with `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`. The default script writes a short project-local recall cache and uses native Codex/OpenCode/Claude session discovery as fallback context, which keeps recall refresh working even when Hermes in WSL cannot reach the Windows backend loopback URL.
 
 Recommended recall workflow:
 
 1. Hermes runs its own `session_search`.
-2. Hermes summarizes the relevant prior-session context.
-3. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
-4. Future Context Workspace agent runs include that cache in the generated `context.md`.
+2. Hermes calls `context_workspace_summarize_agent_sessions` when it needs native Codex/OpenCode/Claude session history for the selected workspace.
+3. Hermes summarizes the relevant prior-session context.
+4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
+5. Future Context Workspace agent runs include that cache in the generated `context.md`.
+
+Useful MCP tools for this workflow:
+
+```text
+context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
+context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
+context_workspace_write_recall_cache(project_dir, markdown)
+context_workspace_read_recall_cache(project_dir)
+context_workspace_clear_recall_cache(project_dir)
+```
+
+Context Workspace owns these app-side tools. Hermes still owns its own config, `session_search`, long-term memory writes, and the decision about when to refresh or clear recall.
 
 ## Troubleshooting
 

@@ -191,6 +191,12 @@ function terminalLaunch(
   resumeSessionId?: string,
 ): { command: string; args: string[] } {
   if (isWindows) {
+    if (kind === "hermes" && resumeSessionId) {
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchHermesPowerShellCommand(cwd, resumeSessionId)],
+      };
+    }
     if (kind === "hermes") {
       return {
         command: "powershell.exe",
@@ -244,23 +250,36 @@ function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: stri
   ].join("; ");
 }
 
-function launchHermesPowerShellCommand(cwd: string): string {
+function launchHermesPowerShellCommand(cwd: string, resumeSessionId?: string): string {
   const wslCwd = windowsPathToWslPath(cwd) ?? cwd.replace(/\\/g, "/");
-  const wslCommand = `cd ${quoteShell(wslCwd)} && hermes`;
+  const hermesCommand = resumeSessionId ? `hermes --resume ${quoteShell(resumeSessionId)}` : "hermes";
+  const wslCommand = `cd ${quoteShell(wslCwd)} && ${hermesCommand}`;
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
     `$wslCommand = ${quotePowerShell(wslCommand)}`,
     "Set-Location -LiteralPath $workspace",
-    "Write-Host \"[Context Workspace] Hermes ready.\" -ForegroundColor Cyan",
+    resumeSessionId
+      ? `Write-Host ${quotePowerShell(`[Context Workspace] Resuming Hermes session: ${resumeSessionId}`)} -ForegroundColor Cyan`
+      : "Write-Host \"[Context Workspace] Hermes ready.\" -ForegroundColor Cyan",
     "$resolvedWsl = Get-Command wsl.exe -ErrorAction SilentlyContinue",
     "if ($resolvedWsl) { & wsl.exe -e sh -lc $wslCommand; return }",
     "$resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue",
-    "if ($resolvedHermes) { & hermes; return }",
+    resumeSessionId ? `$sessionId = ${quotePowerShell(resumeSessionId)}` : "",
+    resumeSessionId ? "if ($resolvedHermes) { & hermes --resume $sessionId; return }" : "if ($resolvedHermes) { & hermes; return }",
     "Write-Host \"wsl.exe is unavailable and native hermes is not on PATH.\" -ForegroundColor Red",
-  ].join("; ");
+  ].filter(Boolean).join("; ");
 }
 
 function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string): string {
+  if (kind === "hermes") {
+    return [
+      `cd ${quoteShell(cwd)}`,
+      `printf '\\033[36m[Context Workspace] Resuming Hermes session: %s\\033[0m\\n' ${quoteShell(resumeSessionId)}`,
+      "if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31mhermes is not installed or not on PATH.\\033[0m\\n'; exec bash -l; fi",
+      `hermes --resume ${quoteShell(resumeSessionId)}`,
+      "exec bash -l",
+    ].join("; ");
+  }
   const agent = agentConfig(kind);
   return [
     `cd ${quoteShell(cwd)}`,
@@ -354,12 +373,13 @@ function defaultTitle(kind: EmbeddedTerminalKind): string {
 }
 
 function defaultSessionLabel(kind: EmbeddedTerminalKind, resumeSessionId?: string): string | null {
-  if (kind === "shell" || kind === "hermes") return null;
+  if (kind === "shell") return null;
+  if (kind === "hermes") return resumeSessionId ? resumeSessionId : null;
   return resumeSessionId ? resumeSessionId : "New";
 }
 
 function isAgentKind(kind: EmbeddedTerminalKind): boolean {
-  return kind === "codex" || kind === "opencode" || kind === "claude";
+  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes";
 }
 
 function agentConfig(kind: EmbeddedTerminalKind): {

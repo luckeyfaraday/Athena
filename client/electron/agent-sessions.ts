@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 
-export type AgentSessionProvider = "codex" | "opencode" | "claude";
+export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
 
 export type AgentSession = {
   id: string;
@@ -39,12 +39,13 @@ export function listAgentSessionsCached(workspace: string, liveTerminals: Embedd
 }
 
 async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
-  const [codex, opencode] = await Promise.all([
+  const [codex, opencode, hermes] = await Promise.all([
     readCodexSessions(workspace),
     readOpenCodeSessions(workspace),
+    readHermesSessions(workspace),
   ]);
   const claude = readClaudeSessions(workspace);
-  return mergeSessions([...codex, ...opencode, ...claude]);
+  return mergeSessions([...codex, ...opencode, ...claude, ...hermes]);
 }
 
 function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTerminalSession[], workspace: string): AgentSession[] {
@@ -210,6 +211,166 @@ function readClaudeSessionFile(filePath: string, workspace: string): AgentSessio
   };
 }
 
+async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
+  const hermesDir = path.join(os.homedir(), ".hermes");
+  const dbPath = path.join(hermesDir, "state.db");
+  const sessionsDir = path.join(hermesDir, "sessions");
+  const manifest = readHermesManifest(path.join(sessionsDir, "sessions.json"));
+  const sessionsById = new Map<string, AgentSession>();
+
+  if (fs.existsSync(dbPath)) {
+    const rows = await querySqlite(dbPath, [
+      "select id, source, model, started_at, ended_at, message_count, title",
+      "from sessions",
+      "order by coalesce(ended_at, started_at) desc",
+      "limit 250",
+    ].join(" "), []);
+    for (const row of rows) {
+      const id = stringValue(row[0]);
+      if (!id) continue;
+      const metadata = nullableString(row[2]) && nullableString(row[6]) && row[4]
+        ? null
+        : readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
+      const manifestEntry = manifest.get(id);
+      const agent = hermesAgentLabel(nullableString(row[1]), manifestEntry, metadata);
+      const createdAt = fromEpoch(row[3]);
+      const updatedAt = row[4] ? fromEpoch(row[4]) : metadata?.updatedAt ?? manifestEntry?.updatedAt ?? createdAt;
+      sessionsById.set(id, {
+        id,
+        provider: "hermes",
+        title: cleanSessionTitle(nullableString(row[6]) || metadata?.title || manifestEntry?.title || null) || "Hermes session",
+        workspace,
+        branch: null,
+        model: nullableString(row[2]) || metadata?.model || null,
+        agent,
+        createdAt: metadata?.createdAt || manifestEntry?.createdAt || createdAt,
+        updatedAt,
+        status: "historical",
+        terminalId: null,
+        pid: null,
+        resumeCommand: `hermes --resume ${quoteShellArg(id)}`,
+      });
+    }
+  }
+
+  if (sessionsById.size === 0 && fs.existsSync(sessionsDir)) {
+    for (const name of safeReadDir(sessionsDir)) {
+      const match = name.match(/^session_(.+)\.json$/);
+      if (!match || sessionsById.has(match[1])) continue;
+      const filePath = path.join(sessionsDir, name);
+      const metadata = readHermesSessionFile(filePath);
+      if (!metadata) continue;
+      const stat = fs.statSync(filePath);
+      const manifestEntry = manifest.get(match[1]);
+      sessionsById.set(match[1], {
+        id: match[1],
+        provider: "hermes",
+        title: cleanSessionTitle(metadata.title || manifestEntry?.title || null) || "Hermes session",
+        workspace,
+        branch: null,
+        model: metadata.model,
+        agent: hermesAgentLabel(metadata.platform, manifestEntry, metadata),
+        createdAt: metadata.createdAt || manifestEntry?.createdAt || stat.birthtime.toISOString(),
+        updatedAt: metadata.updatedAt || manifestEntry?.updatedAt || stat.mtime.toISOString(),
+        status: "historical",
+        terminalId: null,
+        pid: null,
+        resumeCommand: `hermes --resume ${quoteShellArg(match[1])}`,
+      });
+    }
+  }
+
+  return Array.from(sessionsById.values())
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, 100);
+}
+
+type HermesManifestEntry = {
+  title: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  platform: string | null;
+  chatType: string | null;
+};
+
+type HermesSessionFileMetadata = {
+  title: string | null;
+  model: string | null;
+  platform: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+function readHermesManifest(filePath: string): Map<string, HermesManifestEntry> {
+  const manifest = new Map<string, HermesManifestEntry>();
+  const parsed = readJsonObject(filePath);
+  if (!parsed) return manifest;
+  for (const value of Object.values(parsed)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const sessionId = stringProperty(entry, "session_id");
+    if (!sessionId) continue;
+    const origin = objectProperty(entry, "origin");
+    manifest.set(sessionId, {
+      title: stringProperty(entry, "display_name") || stringProperty(origin, "chat_name") || stringProperty(entry, "session_key"),
+      createdAt: stringProperty(entry, "created_at"),
+      updatedAt: stringProperty(entry, "updated_at"),
+      platform: stringProperty(entry, "platform") || stringProperty(origin, "platform"),
+      chatType: stringProperty(entry, "chat_type") || stringProperty(origin, "chat_type"),
+    });
+  }
+  return manifest;
+}
+
+function readHermesSessionFile(filePath: string): HermesSessionFileMetadata | null {
+  const parsed = readJsonObject(filePath);
+  if (!parsed) return null;
+  return {
+    title: firstHermesUserMessage(parsed),
+    model: stringProperty(parsed, "model"),
+    platform: stringProperty(parsed, "platform"),
+    createdAt: stringProperty(parsed, "session_start"),
+    updatedAt: stringProperty(parsed, "last_updated"),
+  };
+}
+
+function readJsonObject(filePath: string): Record<string, unknown> | null {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return parseJsonObject(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function firstHermesUserMessage(session: Record<string, unknown>): string | null {
+  const messages = session.messages;
+  if (!Array.isArray(messages)) return null;
+  for (const item of messages) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const message = item as Record<string, unknown>;
+    if (stringProperty(message, "role") !== "user") continue;
+    return cleanSessionTitle(messageText(message));
+  }
+  return null;
+}
+
+function messageText(message: Record<string, unknown>): string | null {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  return content
+    .map((item) => item && typeof item === "object" && !Array.isArray(item) ? stringProperty(item as Record<string, unknown>, "text") : null)
+    .filter(Boolean)
+    .join("\n");
+}
+
+function hermesAgentLabel(source: string | null, manifestEntry?: HermesManifestEntry, metadata?: HermesSessionFileMetadata | null): string | null {
+  const platform = manifestEntry?.platform || metadata?.platform || source;
+  const chatType = manifestEntry?.chatType;
+  return [platform, chatType].filter(Boolean).join(" / ") || null;
+}
+
 async function querySqlite(dbPath: string, sql: string, params: string[]): Promise<SqliteValue[][]> {
   const script = [
     "import json, sqlite3, sys",
@@ -269,7 +430,7 @@ function mergeSessions(sessions: AgentSession[]): AgentSession[] {
 }
 
 function isAgentKind(kind: string): kind is AgentSessionProvider {
-  return kind === "codex" || kind === "opencode" || kind === "claude";
+  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes";
 }
 
 function samePath(left: string, right: string): boolean {

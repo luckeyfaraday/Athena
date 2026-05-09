@@ -46,6 +46,7 @@ export type EmbeddedTerminalSession = {
   pid: number | null;
   promptPath: string | null;
   sessionLabel: string | null;
+  providerSessionId: string | null;
   createdAt: string;
   status: "running" | "exited" | "failed";
   exitCode: number | null;
@@ -59,6 +60,7 @@ export type EmbeddedTerminalSpawnOptions = {
   rows?: number;
   resumeSessionId?: string;
   sessionLabel?: string;
+  providerSessionId?: string;
 };
 
 export type AgentSession = {
@@ -135,6 +137,7 @@ const browserFallback: WorkspaceApi = {
       pid: null,
       promptPath: null,
       sessionLabel: options.sessionLabel ?? (options.kind && options.kind !== "shell" && options.kind !== "hermes" ? "New" : null),
+      providerSessionId: options.providerSessionId ?? options.resumeSessionId ?? null,
       createdAt: new Date().toISOString(),
       status: "running",
       exitCode: null,

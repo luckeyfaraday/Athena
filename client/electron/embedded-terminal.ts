@@ -23,6 +23,7 @@ export type EmbeddedTerminalSession = {
   pid: number | null;
   promptPath: string | null;
   sessionLabel: string | null;
+  providerSessionId: string | null;
   createdAt: string;
   status: "running" | "exited" | "failed";
   exitCode: number | null;
@@ -36,6 +37,7 @@ export type EmbeddedTerminalSpawnOptions = {
   rows?: number;
   resumeSessionId?: string;
   sessionLabel?: string;
+  providerSessionId?: string;
 };
 
 type ManagedTerminal = {
@@ -72,6 +74,7 @@ export async function spawnEmbeddedTerminal(
   const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId ? null : await writeHermesPrompt(cwd, kind, options.title);
   const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
+  const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
 
   const session: EmbeddedTerminalSession = {
     id,
@@ -81,6 +84,7 @@ export async function spawnEmbeddedTerminal(
     pid: null,
     promptPath,
     sessionLabel,
+    providerSessionId,
     createdAt: new Date().toISOString(),
     status: "running",
     exitCode: null,
@@ -172,6 +176,7 @@ function missingSession(id: string): EmbeddedTerminalSession {
     pid: null,
     promptPath: null,
     sessionLabel: null,
+    providerSessionId: null,
     createdAt: new Date().toISOString(),
     status: "exited",
     exitCode: null,
@@ -351,6 +356,10 @@ function defaultTitle(kind: EmbeddedTerminalKind): string {
 function defaultSessionLabel(kind: EmbeddedTerminalKind, resumeSessionId?: string): string | null {
   if (kind === "shell" || kind === "hermes") return null;
   return resumeSessionId ? resumeSessionId : "New";
+}
+
+function isAgentKind(kind: EmbeddedTerminalKind): boolean {
+  return kind === "codex" || kind === "opencode" || kind === "claude";
 }
 
 function agentConfig(kind: EmbeddedTerminalKind): {

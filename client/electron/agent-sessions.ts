@@ -57,8 +57,9 @@ function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTe
 
 function liveTerminalSession(session: EmbeddedTerminalSession): AgentSession {
   const provider = session.kind as AgentSessionProvider;
+  const providerSessionId = session.providerSessionId?.trim();
   return {
-    id: `terminal:${session.id}`,
+    id: providerSessionId || `terminal:${session.id}`,
     provider,
     title: session.title,
     workspace: session.workspace,
@@ -238,7 +239,25 @@ function mergeSessions(sessions: AgentSession[]): AgentSession[] {
   for (const session of sessions) {
     const key = `${session.provider}:${session.id}`;
     const existing = byKey.get(key);
-    if (!existing || session.status === "running") byKey.set(key, session);
+    if (!existing) {
+      byKey.set(key, session);
+      continue;
+    }
+    if (session.status === "running") {
+      byKey.set(key, {
+        ...existing,
+        ...session,
+        title: existing.title || session.title,
+        branch: existing.branch ?? session.branch,
+        model: existing.model ?? session.model,
+        agent: existing.agent ?? session.agent,
+        resumeCommand: existing.resumeCommand ?? session.resumeCommand,
+        status: "running",
+        terminalId: session.terminalId,
+        pid: session.pid,
+        updatedAt: session.updatedAt,
+      });
+    }
   }
   return Array.from(byKey.values())
     .sort((left, right) => {

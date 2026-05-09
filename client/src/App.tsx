@@ -33,6 +33,8 @@ import {
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus, type Run } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
+import athenaMarkUrl from "./assets/athena-mark.png";
+import athenaWordmarkUrl from "./assets/athena-wordmark.png";
 
 type LoadState = {
   hermes: HermesStatus | null;
@@ -72,7 +74,7 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
   command: {
     label: "Command Room",
     eyebrow: "01 · Native work",
-    description: "Terminals, repo state, and Hermes context open in one controlled workspace.",
+    description: "Terminals, repo state, and agent context open in one controlled workspace.",
   },
   swarm: {
     label: "Swarm Room",
@@ -87,7 +89,7 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
   memory: {
     label: "Memory Room",
     eyebrow: "04 · Persistent context",
-    description: "Inspect what Hermes knows, what agents asked, and what future runs inherit.",
+    description: "Inspect what ATHENA knows, what agents asked, and what future runs inherit.",
   },
 };
 
@@ -474,8 +476,9 @@ export function App() {
   return (
     <main className="workspaceSurface">
       <aside className="appSidebar" aria-label="Workspace navigation">
-        <div className="brandGlyph">
-          <BrainCircuit size={18} />
+        <div className="brandLockup">
+          <AthenaMark />
+          <img className="athenaWordmark" src={athenaWordmarkUrl} alt="ATHENA" />
         </div>
         <nav className="sidebarNav">
           <span>Workspace</span>
@@ -584,6 +587,14 @@ function SidebarButton({ active, icon, label, onClick }: { active: boolean; icon
   );
 }
 
+function AthenaMark({ small = false }: { small?: boolean }) {
+  return (
+    <span className={small ? "athenaMark small" : "athenaMark"} aria-hidden="true">
+      <img src={athenaMarkUrl} alt="" />
+    </span>
+  );
+}
+
 function StatusLine({ label, ok }: { label: string; ok: boolean }) {
   return (
     <div className="statusLine">
@@ -675,7 +686,7 @@ function ContextGlance({ tasks, active, agents, memory, reviews }: { tasks: numb
   return (
     <section className="dashboardCard contextGlance">
       <div className="cardHeader">
-        <span>Context at a glance</span>
+        <span>ATHENA at a glance</span>
       </div>
       <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Tasks" value={tasks} detail={`${active} running`} />
       <MetricRow icon={<Users size={15} />} tone="violet" label="Agents" value={agents} detail="All nominal" />
@@ -787,7 +798,7 @@ function ActiveAgents({ roles, runs }: { roles: AgentRole[]; runs: Run[] }) {
 
 function MemoryTimeline({ entries, runs }: { entries: string[]; runs: Run[] }) {
   const timeline = [
-    { time: "Now", label: "Context Workspace Updated", detail: entries[0] ?? "Shared context is ready", tone: "memory" },
+    { time: "Now", label: "ATHENA Updated", detail: entries[0] ?? "Shared context is ready", tone: "memory" },
     { time: "Run", label: "Latest Agent Run", detail: runs.at(-1)?.task ?? "No run started yet", tone: "run" },
     { time: "Agent", label: "Agent State", detail: `${runs.filter((run) => run.status === "running" || run.status === "pending").length} active runs`, tone: "agent" },
     { time: "Memory", label: "Hermes Sync", detail: `${entries.length} memory entries available`, tone: "system" },
@@ -842,7 +853,7 @@ function SharedMemorySnapshot({
   const recallLabel = recall ? recall.status : "unknown";
   const recallAge = recall?.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds);
   const lines = [
-    "# Context Workspace",
+    "# ATHENA",
     `- Workspace: ${workspace || "not selected"}`,
     `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
     `- Recall: ${recallLabel} (${recallAge})`,
@@ -1162,7 +1173,7 @@ function CommandRoom({
           ))}
           {visibleSessions.length === 0 && (
             <div className="terminalEmptyState">
-              <TerminalSquare size={34} />
+              <AthenaMark />
               <strong>No embedded terminals yet.</strong>
               <span>Select a workspace, then start a shell or launch a four-pane Codex grid with Hermes memory attached.</span>
             </div>
@@ -1248,7 +1259,7 @@ function CommandRoom({
             </div>
           </div>
         ))}
-        {sessions.length === 0 &&            <p>Embedded terminals replace the old pop-out launcher. This is the Context Workspace surface.</p>}
+        {sessions.length === 0 && <p>Embedded terminals replace the old pop-out launcher. This is the ATHENA surface.</p>}
       </div>
 
       <form
@@ -1442,9 +1453,9 @@ function MemoryRoom({ entries }: { entries: string[] }) {
   return (
     <div className="roomPanel memoryRoomFull">
       <div className="memoryHero">
-        <BrainCircuit size={28} />
+        <AthenaMark />
         <div>
-          <span className="tinyLabel">Hermes source of truth</span>
+          <span className="tinyLabel">ATHENA source of truth</span>
           <h3>Every future agent inherits this trail.</h3>
           <p>Project decisions, agent questions, task outcomes, and user preferences stay available across sessions.</p>
         </div>
@@ -1467,10 +1478,10 @@ function HermesMemoryPanel({ entries, hermes, latestRun }: { entries: string[]; 
     <aside className="memorySidecar">
       <div className="sidecarHeader">
         <div>
-          <span className="tinyLabel">Hermes riding on top</span>
+          <span className="tinyLabel">ATHENA context layer</span>
           <h3>Shared Memory</h3>
         </div>
-        <BrainCircuit size={20} />
+        <AthenaMark small />
       </div>
       <div className="contextStack">
         <article className="contextCard highlighted">

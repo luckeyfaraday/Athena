@@ -1,0 +1,19 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ATHENA app icon">
+  <rect width="1024" height="1024" rx="190" fill="#0F1C16"/>
+  <rect x="1" y="1" width="1022" height="1022" rx="189" fill="url(#paint0_radial)" stroke="rgba(243,237,227,.12)" stroke-width="2"/>
+  <g transform="translate(232 232) scale(2.54545)" stroke="#F3EDE3" stroke-width="28" stroke-linecap="round">
+    <line x1="110" y1="76" x2="110" y2="24"/>
+    <line x1="110" y1="144" x2="110" y2="196"/>
+    <line x1="139.4" y1="93" x2="184.5" y2="67"/>
+    <line x1="139.4" y1="127" x2="184.5" y2="153"/>
+    <line x1="80.6" y1="93" x2="35.5" y2="67"/>
+    <line x1="80.6" y1="127" x2="35.5" y2="153"/>
+  </g>
+  <defs>
+    <radialGradient id="paint0_radial" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(320 180) rotate(48) scale(980)">
+      <stop stop-color="#1E3A2F"/>
+      <stop offset=".68" stop-color="#0F1C16"/>
+      <stop offset="1" stop-color="#07120F"/>
+    </radialGradient>
+  </defs>
+</svg>

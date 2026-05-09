@@ -1,27 +1,27 @@
 :root {
   color-scheme: dark;
-  --bg: #061814;
-  --sidebar: #071b16;
-  --panel: #092019;
-  --panel-2: #0d281f;
-  --panel-3: #123226;
-  --line: rgba(226, 214, 183, .14);
-  --line-strong: rgba(226, 214, 183, .24);
-  --text: #f3ead3;
-  --text-2: #c8bea2;
-  --muted: #8f886f;
-  --green: #58b783;
-  --green-soft: rgba(88, 183, 131, .12);
-  --blue: #2f8f73;
-  --blue-soft: rgba(47, 143, 115, .14);
-  --violet: #8da772;
-  --violet-soft: rgba(141, 167, 114, .13);
-  --orange: #d5aa67;
-  --orange-soft: rgba(213, 170, 103, .14);
+  --bg: #0f1c16;
+  --sidebar: #13261f;
+  --panel: #16261f;
+  --panel-2: #1e3a2f;
+  --panel-3: #2e5a46;
+  --line: rgba(243, 237, 227, .13);
+  --line-strong: rgba(243, 237, 227, .24);
+  --text: #f3ede3;
+  --text-2: #d7cfbd;
+  --muted: #9d9685;
+  --green: #4d9b75;
+  --green-soft: rgba(77, 155, 117, .13);
+  --blue: #2e5a46;
+  --blue-soft: rgba(46, 90, 70, .24);
+  --violet: #5f7d61;
+  --violet-soft: rgba(95, 125, 97, .16);
+  --orange: #d9c48a;
+  --orange-soft: rgba(217, 196, 138, .16);
   --red: #b85f50;
   --red-soft: rgba(184, 95, 80, .13);
-  --terminal: #03120f;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --terminal: #06110d;
+  font-family: Manrope, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   color: var(--text);
@@ -35,7 +35,7 @@ body {
   min-width: 1120px;
   min-height: 720px;
   overflow: hidden;
-  background: #041511;
+  background: #0f1c16;
 }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
@@ -48,7 +48,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   grid-template-columns: 146px minmax(0, 1fr);
   gap: 12px;
   color: var(--text);
-  background: #041511;
+  background:
+    radial-gradient(circle at 8% 8%, rgba(46, 90, 70, .28), transparent 34%),
+    linear-gradient(135deg, #0f1c16 0%, #07120f 100%);
 }
 
 .appSidebar,
@@ -66,20 +68,40 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   padding: 16px 12px;
   display: flex;
   flex-direction: column;
-  background: #061a15;
+  background: linear-gradient(180deg, #13261f 0%, #0b1713 100%);
 }
-.brandGlyph {
-  width: 30px;
-  height: 30px;
+.brandLockup {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+.athenaWordmark {
+  width: 104px;
+  height: auto;
+  display: block;
+}
+.athenaMark {
+  width: 38px;
+  height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
-  color: var(--text);
-  background: #102a21;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  border-radius: 9px;
+  background: linear-gradient(145deg, #0f1c16 0%, #13261f 100%);
+  box-shadow: inset 0 1px 0 rgba(243,237,227,.08), 0 18px 36px rgba(0,0,0,.3);
+}
+.athenaMark img {
+  width: 74%;
+  height: 74%;
+  object-fit: contain;
+  display: block;
+}
+.athenaMark.small {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
 }
 .sidebarNav {
-  margin-top: 24px;
+  margin-top: 28px;
   display: grid;
   gap: 5px;
 }
@@ -110,8 +132,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .sidebarButton:hover,
 .sidebarButton.active {
   color: var(--text);
-  background: #10281f;
-  box-shadow: inset 3px 0 0 #d8c28f;
+  background: rgba(46, 90, 70, .55);
+  box-shadow: inset 3px 0 0 #d9c48a;
 }
 .sidebarStatus {
   margin-top: auto;
@@ -150,7 +172,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   align-items: center;
   gap: 8px;
   border-radius: 7px;
-  background: #071d17;
+  background: rgba(15, 28, 22, .72);
 }
 .avatar {
   width: 24px;
@@ -158,8 +180,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color: #061711;
-  background: #f3e2bd;
+  color: #0f1c16;
+  background: #f3ede3;
   font-size: 11px;
   font-weight: 900;
 }
@@ -216,10 +238,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .dashboardHeader h1 {
   margin: 16px 0 3px;
-  color: #fff1d0;
+  color: #f3ede3;
   font-size: 23px;
   line-height: 1.05;
-  letter-spacing: 0;
+  letter-spacing: .01em;
 }
 .dashboardHeader p {
   margin: 0;
@@ -257,10 +279,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .iconButton:hover { color: var(--text); background: #10281f; }
 .primaryButton {
   padding: 0 12px;
-  color: white;
-  border-color: rgba(216, 194, 143, .52);
-  background: #d8c28f;
-  box-shadow: 0 10px 26px rgba(216, 194, 143, .18);
+  color: #0f1c16;
+  border-color: rgba(217, 196, 138, .58);
+  background: #d9c48a;
+  box-shadow: 0 10px 26px rgba(217, 196, 138, .16);
 }
 .ghostButton { padding: 0 11px; }
 .newMenu {
@@ -345,7 +367,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   overflow: hidden;
 }
 .dashboardCard {
-  background: #092019;
+  background: linear-gradient(180deg, rgba(22, 38, 31, .98), rgba(12, 25, 20, .98));
 }
 .cardHeader,
 .roomPanelHeader {
@@ -385,7 +407,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   display: flex;
   flex-direction: column;
   border-radius: 8px;
-  background: #092019;
+  background: linear-gradient(180deg, rgba(22, 38, 31, .98), rgba(9, 20, 16, .98));
 }
 .roomPanelHeader {
   min-height: 48px;
@@ -1295,14 +1317,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 
 .memoryHero { justify-content: flex-start; }
-.memoryHero > svg {
+.memoryHero > .athenaMark {
   flex: 0 0 auto;
   width: 44px;
   height: 44px;
-  padding: 10px;
-  color: var(--blue);
-  border-radius: 8px;
-  background: var(--blue-soft);
 }
 .memoryHero h3 { font-size: 20px; }
 .memoryGrid {

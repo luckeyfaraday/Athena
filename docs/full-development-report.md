@@ -1,7 +1,7 @@
 # Context Workspace — Full Development Report
 
 **Generated:** 2026-05-09
-**Compiled from:** GitHub (25 PRs), Native CLI sessions (Codex 25 sessions, OpenCode 26 sessions), Hermes session recall (8 sessions), full codebase review (13 Python + 14 TypeScript files)
+**Compiled from:** GitHub/local git history through PR #29, Native CLI sessions (Codex 25 sessions, OpenCode 26 sessions), Hermes session recall (8 sessions), full codebase review (13 Python + 14 TypeScript files)
 **Authors:** Hermes Agent (git history + GitHub PR analysis + CLI session mining + codebase review)
 
 ---
@@ -11,19 +11,20 @@
 ```
 https://github.com/robertopiqueras255/context-workspace
 Default branch: main (origin/main)
-Current HEAD: 0f0005f — "Merge pull request #27"
-Active branches: 22 (across local + remote)
+Current HEAD: 23a4409 — "Merge pull request #29"
+Active branches: 30 (across local + remote)
 Languages: TypeScript (Electron/React), Python (FastAPI backend)
 ```
 
-**Note on GitHub API:** The GitHub REST API returned HTTP 404 for this public repo — likely due to rate limiting or private repo visibility. All GitHub data below is reconstructed from local git remotes, commit history, and reflog.
+**Note on GitHub API:** The GitHub REST API may return HTTP 404 without authentication because this repo is private. GitHub data below is reconstructed from local git remotes, commit history, and reflog.
 
 ---
 
-## 2. Pull Request History (25 PRs, #1–#27)
+## 2. Pull Request History (through PR #29)
 
 | PR | Title | Date | Merged | Key Changes |
 |---|---|---|---|---|
+| #29 | docs/full-development-reports | 2026-05-09 | ✓ | Add technical document and full development report |
 | #27 | restore-terminal-controls | 2026-05-08 | ✓ | Avoid blocking session refreshes |
 | #26 | agent-sessions-tab | 2026-05-07 | ✓ | Add agent sessions tab |
 | #25 | terminal-image-drop | 2026-05-07 | ✓ | Add image drag and drop for terminals |
@@ -53,7 +54,7 @@ Languages: TypeScript (Electron/React), Python (FastAPI backend)
 | #1 | initial scaffolding | ~2026-05-01 | ✓ | Vite+React scaffold, HTTP+WS server, PTY manager |
 
 **Open PRs as of May 9:**
-- PR #21 (`native-terminal-grid-workspace` branch, commit `256f0d5`) — already merged into main per reflog, but local branch still references it
+- None reflected in the current local `origin/main` snapshot. Remote feature branches may still exist after merge.
 
 ---
 
@@ -304,7 +305,7 @@ task: embedded terminal configuration
 - **Key change:** `.context-workspace/hermes/session-recall.md` + MCP `write_recall_cache` tool
 - **Flow:** Hermes session_search → write_recall_cache → Context Workspace context.md includes recall → CLI starts with full prior context
 
-### Milestone 5: Agent Sessions Tab (Open PR #26)
+### Milestone 5: Agent Sessions Tab (PR #26, merged)
 - **Date:** May 7, 2026
 - **Evidence:** Codex session `019e09b6` — "I only see opencode sessions" + OpenCode session `ses_1f826ddc` — "Context Workspace initialization and setup"
 - **Key feature:** Sessions tab in UI tracking Codex/OpenCode/Claude Code sessions from their local state stores (SQLite + JSONL)
@@ -398,7 +399,7 @@ FastAPI Backend (backend/)
 └── adapters/codex.py          Codex CLI adapter
 
 Hermes MCP Server (mcp_server/)  ← PR #24
-├── server.py                  FastMCP server (stdio)
+├── server.py                  Custom stdio JSON-RPC MCP server
 ├── tools.py                   15 tools
 ├── client.py                 ContextWorkspaceClient
 └── config.py                 Settings
@@ -413,7 +414,7 @@ Recall Cache (.context-workspace/hermes/)
 ## 7. Branch Map
 
 ```
-main                ← 0f0005f — Merge #27 restore-terminal-controls (May 8)
+main                ← 23a4409 — Merge #29 docs/full-development-reports (May 9)
 ├── async-agent-session-refresh  ← 405b9d1 — Avoid blocking session refreshes
 ├── agent-sessions-tab           ← d6c6a8e — Hide inactive panes (ahead of main)
 ├── restore-terminal-controls    ← a9010ca — Avoid blocking session refreshes
@@ -465,4 +466,4 @@ In 5 days of development (May 4–9, 2026):
 
 ---
 
-*Report compiled from: git log (17 commits on main), git reflog (30 entries), git branches (22), Codex SQLite state store (25 sessions), OpenCode SQLite state store (26 sessions), full codebase review (27 files, ~15,000 lines of code).*
+*Report compiled from: git log (80 commits on main), git reflog (30 entries), git branches (30), Codex SQLite state store (25 sessions), OpenCode SQLite state store (26 sessions), full codebase review (27 files, ~15,000 lines of code).*

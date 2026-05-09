@@ -949,11 +949,11 @@ Originally conceived as Tauri + Rust + PTY. Corrected to **Electron + React + Fa
 **As of May 9, 2026:**
 
 - **Repo:** `robertopiqueras255/context-workspace`
-- **Main branch:** `5dbe20e`
-- **Open PR:** #21 (`native-terminal-grid-workspace` branch)
+- **Main branch:** `23a4409` — Merge pull request #29 (`docs/full-development-reports`)
+- **Open PR:** none reflected in the current local `origin/main` snapshot
 - **Tech stack:** Electron + React + FastAPI
 - **Agents:** codex, opencode, claude-code
-- **MCP server:** `mcp_server/` — 15 tools for Hermes integration (recently added)
+- **MCP server:** `mcp_server/` — custom stdio JSON-RPC MCP server with 15 tools for Hermes integration
 - **Recall cache:** `.context-workspace/hermes/session-recall.md` — project-local, Hermes session-derived
 
 **Missing:**
@@ -961,7 +961,7 @@ Originally conceived as Tauri + Rust + PTY. Corrected to **Electron + React + Fa
 - GitHub Actions CI for Windows distribution
 - Phase 0 CLI spike not run — no live verification of agent behavior post-PR changes
 
-**Known issues:**
+**Previously reported issues to re-verify:**
 - Hermes status shows "offline" in UI despite API responding (frontend/backend state sync)
 - Backend health offline in UI (desktop.checkBackendHealth() IPC problem)
 - Recall cache has no retention/cleanup policy

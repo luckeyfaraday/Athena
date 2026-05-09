@@ -22,9 +22,22 @@ mcp_servers:
     connect_timeout: 30
 ```
 
-Hermes owns `session_search`. The recall bridge workflow is:
+Hermes owns `session_search`, its own config, and durable memory writes. Context
+Workspace owns app-side tools such as backend health checks, native session
+discovery, recall cache files, and agent spawning.
+
+The recall bridge workflow is:
 
 1. Hermes runs `session_search(...)`.
-2. Hermes summarizes the result.
-3. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
-4. Context Workspace includes that cache in future run `context.md` files.
+2. Hermes calls `context_workspace_summarize_agent_sessions(...)` when native
+   Codex/OpenCode/Claude session history would help.
+3. Hermes summarizes the useful result.
+4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
+5. Context Workspace includes that cache in future run `context.md` files.
+
+Session discovery tools:
+
+```text
+context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
+context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
+```

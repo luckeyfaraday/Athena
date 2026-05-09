@@ -28,6 +28,18 @@ def test_tool_schema_resolves_future_annotations() -> None:
     assert schema["required"] == ["project_dir", "task"]
 
 
+def test_agent_session_tool_schema_includes_filters() -> None:
+    schema = server._tool_schema(tools.context_workspace_list_agent_sessions)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {"type": "string"}
+    assert schema["properties"]["provider"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert schema["properties"]["query"] == {"type": "string"}
+    assert schema["properties"]["limit"] == {"type": "integer"}
+    assert schema["required"] == ["project_dir"]
+
+
 def test_recall_cache_round_trip_uses_valid_project_dir(tmp_path: Path) -> None:
     result = asyncio.run(
         tools.context_workspace_write_recall_cache(

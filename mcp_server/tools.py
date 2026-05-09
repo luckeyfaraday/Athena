@@ -49,6 +49,39 @@ async def context_workspace_recent_memory(limit: int = 10) -> dict[str, Any]:
     return await ContextWorkspaceClient().get("/memory/recent", limit=limit)
 
 
+async def context_workspace_list_agent_sessions(
+    project_dir: str,
+    provider: str | None = None,
+    query: str = "",
+    limit: int = 100,
+) -> dict[str, Any]:
+    """List native Codex, OpenCode, and Claude Code sessions for a project."""
+    return await ContextWorkspaceClient().get(
+        "/agents/sessions",
+        project_dir=project_dir,
+        provider=provider,
+        q=query,
+        limit=limit,
+    )
+
+
+async def context_workspace_summarize_agent_sessions(
+    project_dir: str,
+    provider: str | None = None,
+    query: str = "",
+    limit: int = 25,
+) -> str:
+    """Return a compact text summary of native agent sessions for recall work."""
+    payload = await context_workspace_list_agent_sessions(
+        project_dir,
+        provider=provider,
+        query=query,
+        limit=limit,
+    )
+    summary = payload.get("summary") if isinstance(payload, dict) else None
+    return summary if isinstance(summary, str) else ""
+
+
 async def context_workspace_spawn_agent(
     project_dir: str,
     task: str,
@@ -169,6 +202,8 @@ def register_tools(mcp: Any) -> None:
         context_workspace_query_project_memory,
         context_workspace_store_memory,
         context_workspace_recent_memory,
+        context_workspace_list_agent_sessions,
+        context_workspace_summarize_agent_sessions,
         context_workspace_spawn_agent,
         context_workspace_list_runs,
         context_workspace_get_run,

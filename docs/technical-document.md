@@ -510,6 +510,7 @@ def _render_prompt(run: Run, artifacts: RunArtifacts) -> str:
 | `GET` | `/memory/recent` | `recent_memory` | Recent entries |
 | `POST` | `/memory/store` | `store_memory` | Append to MEMORY.md |
 | `GET` | `/agents/adapters` | `get_agent_adapters` | Adapter status |
+| `GET` | `/agents/sessions` | `list_agent_sessions` | Native Codex/OpenCode/Claude session history |
 | `POST` | `/agents/spawn` | `spawn_agent` | **Primary** — 202 Accepted, background |
 | `GET` | `/agents/runs` | `list_runs` | All runs |
 | `GET` | `/agents/runs/{run_id}` | `get_run` | Run + artifact metadata |
@@ -953,7 +954,7 @@ Originally conceived as Tauri + Rust + PTY. Corrected to **Electron + React + Fa
 - **Open PR:** none reflected in the current local `origin/main` snapshot
 - **Tech stack:** Electron + React + FastAPI
 - **Agents:** codex, opencode, claude-code
-- **MCP server:** `mcp_server/` — custom stdio JSON-RPC MCP server with 15 tools for Hermes integration
+- **MCP server:** `mcp_server/` — custom stdio JSON-RPC MCP server with 17 tools for Hermes integration
 - **Recall cache:** `.context-workspace/hermes/session-recall.md` — project-local, Hermes session-derived
 
 **Missing:**

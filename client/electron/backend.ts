@@ -40,7 +40,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
 
   backendProcess = spawn(
     python,
-    ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port)],
+    ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
     {
       cwd: backendParent,
       env: {
@@ -61,6 +61,10 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     lastError: null,
   };
   writeBackendDiscovery();
+
+  backendProcess.stdout.on("data", () => {
+    // Drain stdout so a verbose backend cannot block on pipe backpressure.
+  });
 
   backendProcess.stderr.on("data", (chunk: Buffer) => {
     const text = chunk.toString("utf8").trim();

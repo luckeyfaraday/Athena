@@ -522,8 +522,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   transition: box-shadow 120ms ease, border-color 120ms ease, transform 90ms ease;
 }
 .slotPane.collapsed {
-  min-height: 28px;
-  height: 28px;
+  min-height: 34px;
+  height: 34px;
   resize: none;
 }
 .slotPane.maximized {
@@ -549,8 +549,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-color: rgba(216, 194, 143, .5);
 }
 .terminalChrome {
-  height: 28px;
-  padding: 0 10px;
+  min-height: 34px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -561,8 +561,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   cursor: grab;
   user-select: none;
   touch-action: none;
+  position: relative;
 }
 .draggableChrome:active { cursor: grabbing; }
+.draggableChrome::after {
+  content: "";
+  position: absolute;
+  inset: -5px 0;
+  pointer-events: none;
+}
 .terminalControl,
 .dot {
   flex: 0 0 auto;
@@ -589,6 +596,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .dot.green { background: var(--green); }
 .terminalChrome strong {
   margin-left: 5px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
   color: #d7ccb0;
   font-size: 9px;
   letter-spacing: .08em;

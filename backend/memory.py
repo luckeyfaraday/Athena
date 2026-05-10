@@ -93,6 +93,21 @@ class HermesMemoryStore:
                 handle.write(f"{prefix}{ENTRY_SEPARATOR}\n{sanitized}\n")
         return MemoryEntry(text=sanitized)
 
+    def remove_exact(self, text: str) -> int:
+        target = text.strip()
+        sanitized = sanitize_memory_text(text)
+        if not target and not sanitized:
+            raise ValueError("Memory entry cannot be empty")
+
+        with exclusive_file_lock(self.lock_path):
+            entries = parse_memory_entries(_read_text(self.memory_path))
+            kept = [entry for entry in entries if entry != target and entry != sanitized]
+            removed = len(entries) - len(kept)
+            if removed:
+                self.memory_path.parent.mkdir(parents=True, exist_ok=True)
+                self.memory_path.write_text(_render_memory_entries(kept), encoding="utf-8", newline="\n")
+            return removed
+
     def format_query_response(self, query: str, *, limit: int = 10) -> str:
         matches = self.search(query, limit=limit)
         if not matches:
@@ -141,6 +156,12 @@ def parse_memory_entries(text: str) -> list[str]:
         if entry:
             entries.append(entry)
     return entries
+
+
+def _render_memory_entries(entries: list[str]) -> str:
+    if not entries:
+        return ""
+    return "\n".join(f"{ENTRY_SEPARATOR}\n{entry.strip()}\n" for entry in entries if entry.strip())
 
 
 def sanitize_memory_text(text: str) -> str:

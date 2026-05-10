@@ -78,6 +78,18 @@ def test_recent_memory_returns_latest_entries(tmp_path: Path) -> None:
     assert [entry.text for entry in store.recent(limit=2)] == ["Second", "Third"]
 
 
+def test_memory_store_removes_exact_entries(tmp_path: Path) -> None:
+    store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    store.append("Keep this.")
+    store.append("Remove this.")
+    store.append("Keep this too.")
+
+    removed = store.remove_exact("Remove this.")
+
+    assert removed == 1
+    assert [entry.text for entry in store.entries()] == ["Keep this.", "Keep this too."]
+
+
 def test_project_context_only_returns_project_specific_matches(tmp_path: Path) -> None:
     store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
     store.append("Persephone project: /home/alan/home_ai/projects/free-model-drops newsletter.")

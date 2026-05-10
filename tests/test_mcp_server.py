@@ -40,6 +40,13 @@ def test_agent_session_tool_schema_includes_filters() -> None:
     assert schema["required"] == ["project_dir"]
 
 
+def test_delete_memory_tool_schema_requires_text() -> None:
+    schema = server._tool_schema(tools.context_workspace_delete_memory)["inputSchema"]
+
+    assert schema["properties"]["text"] == {"type": "string"}
+    assert schema["required"] == ["text"]
+
+
 def test_recall_cache_round_trip_uses_valid_project_dir(tmp_path: Path) -> None:
     result = asyncio.run(
         tools.context_workspace_write_recall_cache(

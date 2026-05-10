@@ -1,0 +1,10 @@
+<svg width="420" height="70" viewBox="0 0 420 70" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ATHENA">
+  <g stroke="#F3EDE3" stroke-width="4" stroke-linecap="square" stroke-linejoin="miter" transform="translate(34 8)">
+    <path d="M0 52 L16 10 L32 52"/>
+    <path d="M64 10 H100 M82 10 V52"/>
+    <path d="M132 10 V52 M168 10 V52 M132 31 H168"/>
+    <path d="M204 10 H238 M204 31 H233 M204 52 H240 M204 10 V52"/>
+    <path d="M276 52 V10 L314 52 V10"/>
+    <path d="M348 52 L364 10 L380 52"/>
+  </g>
+</svg>

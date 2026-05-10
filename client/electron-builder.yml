@@ -1,5 +1,6 @@
-appId: com.contextworkspace.app
-productName: Context Workspace
+appId: app.athena.workspace
+productName: ATHENA
+icon: build/icon.png
 directories:
   output: release
 files:
@@ -22,12 +23,15 @@ asarUnpack:
   - node_modules/node-pty/**
 npmRebuild: false
 win:
+  icon: build/icon.ico
   signAndEditExecutable: false
   target:
     - nsis
 mac:
+  icon: build/icon.png
   target:
     - dmg
 linux:
+  icon: build/icon.png
   target:
     - AppImage

@@ -269,6 +269,19 @@ def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     assert recent.json()["entries"][-1] == "[agent] asked Hermes memory about: codex"
 
 
+def test_memory_delete_endpoint_removes_exact_entry(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    client.post("/memory/store", json={"text": "Keep this memory."})
+    client.post("/memory/store", json={"text": "Delete this memory."})
+    deleted = client.post("/memory/delete", json={"text": "Delete this memory."})
+    recent = client.get("/memory/recent", params={"limit": 10})
+
+    assert deleted.status_code == 200
+    assert deleted.json() == {"deleted": True, "removed": 1}
+    assert recent.json()["entries"] == ["Keep this memory."]
+
+
 def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

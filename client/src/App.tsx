@@ -1,7 +1,6 @@
 import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
-  BookOpen,
   Bot,
   BrainCircuit,
   CheckCircle2,
@@ -44,7 +43,7 @@ type LoadState = {
   runs: Run[];
 };
 
-type ActiveRoom = "command" | "swarm" | "review" | "memory";
+type ActiveRoom = "command" | "swarm" | "review" | "memory" | "settings";
 type SessionProviderFilter = AgentSession["provider"] | "all";
 
 type AgentRole = {
@@ -90,6 +89,11 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
     label: "Memory Room",
     eyebrow: "04 · Persistent context",
     description: "Inspect what ATHENA knows, what agents asked, and what future runs inherit.",
+  },
+  settings: {
+    label: "Settings",
+    eyebrow: "05 · Workspace control",
+    description: "Manage the active workspace, backend process, Hermes status, and recall refresh.",
   },
 };
 
@@ -320,6 +324,15 @@ export function App() {
     }
   }
 
+  async function selectWorkspace() {
+    try {
+      const selected = await desktop.selectWorkspace();
+      if (selected) setWorkspacePath(selected);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function refreshRecall(taskHint = "Manual recall refresh", options: { surfaceError?: boolean } = {}) {
     if (!client || !workspace || recallRefreshing) return null;
     const surfaceError = options.surfaceError ?? true;
@@ -483,11 +496,10 @@ export function App() {
         <nav className="sidebarNav">
           <span>Workspace</span>
           <SidebarButton active={activeRoom === "command"} icon={<TerminalSquare size={14} />} label="Command Room" onClick={() => setActiveRoom("command")} />
-          <SidebarButton active={activeRoom === "review"} icon={<CheckCircle2 size={14} />} label="Tasks" onClick={() => setActiveRoom("review")} />
           <SidebarButton active={activeRoom === "swarm"} icon={<Users size={14} />} label="Agents" onClick={() => setActiveRoom("swarm")} />
           <SidebarButton active={activeRoom === "memory"} icon={<Database size={14} />} label="Memory" onClick={() => setActiveRoom("memory")} />
           <SidebarButton active={activeRoom === "review"} icon={<Eye size={14} />} label="Reviews" onClick={() => setActiveRoom("review")} />
-          <SidebarButton active={false} icon={<Settings size={14} />} label="Settings" onClick={restartBackend} />
+          <SidebarButton active={activeRoom === "settings"} icon={<Settings size={14} />} label="Settings" onClick={() => setActiveRoom("settings")} />
         </nav>
         <div className="sidebarStatus">
           <span>Status</span>
@@ -514,7 +526,7 @@ export function App() {
                 <p>{roomCopy[activeRoom].description}</p>
               </div>
               <div className="topbarActions">
-                <button className="ghostButton" onClick={() => void desktop.selectWorkspace().then((selected) => selected && setWorkspacePath(selected))}>
+                <button className="ghostButton" onClick={() => void selectWorkspace()}>
                   <FolderOpen size={14} /> Open Workspace
                 </button>
                 <button className="ghostButton" onClick={() => void launchEmbedded("shell", 1)} disabled={!workspace || busy}>
@@ -549,9 +561,21 @@ export function App() {
             {activeRoom === "swarm" && <SwarmRoom roles={agentRoles} runs={activeRuns} adapters={state.adapters} />}
             {activeRoom === "review" && <ReviewRoom latestRun={latestRun} completedRuns={completedRuns} />}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} />}
+            {activeRoom === "settings" && (
+              <SettingsRoom
+                workspace={workspaceDisplay}
+                backend={backend}
+                hermes={state.hermes}
+                recall={state.recall}
+                busy={busy}
+                refreshing={recallRefreshing}
+                onSelectWorkspace={selectWorkspace}
+                onRestartBackend={restartBackend}
+                onRefreshRecall={() => void refreshRecall(latestRun?.task ?? "Manual recall refresh")}
+              />
+            )}
 
             <LiveWorkflow activeRuns={activeRuns.length} completedRuns={completedRuns.length} memoryCount={state.memory.length} />
-            <QuickActions workspace={workspace} busy={busy} onLaunch={launchEmbedded} onFocusChange={setTerminalFocus} />
           </div>
 
           <aside className="glanceColumn">
@@ -715,7 +739,6 @@ function LiveWorkflow({ activeRuns, completedRuns, memoryCount }: { activeRuns: 
     <section className="dashboardCard liveWorkflow">
       <div className="cardHeader">
         <span>Live Workflow</span>
-        <button>View full pipeline <ChevronRight size={13} /></button>
       </div>
       <div className="workflowTrack">
         <FlowStep icon={<FileText size={14} />} label="Task" active />
@@ -730,51 +753,12 @@ function LiveWorkflow({ activeRuns, completedRuns, memoryCount }: { activeRuns: 
   );
 }
 
-function QuickActions({
-  workspace,
-  busy,
-  onLaunch,
-  onFocusChange,
-}: {
-  workspace: string;
-  busy: boolean;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
-  onFocusChange: (focused: boolean) => void;
-}) {
-  return (
-    <section className="dashboardCard quickActions">
-      <div className="cardHeader">
-        <span>Quick Actions</span>
-      </div>
-      <div className="quickGrid">
-        <button onClick={() => void onLaunch("codex", 1)} disabled={!workspace || busy}>
-          <CheckCircle2 size={16} />
-          <span><strong>New Task</strong><small>Create a task</small></span>
-        </button>
-        <button onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
-          <TerminalSquare size={16} />
-          <span><strong>New Shell</strong><small>Open a terminal</small></span>
-        </button>
-        <button onClick={() => void onLaunch("codex", 4)} disabled={!workspace || busy}>
-          <Users size={16} />
-          <span><strong>Add Agent</strong><small>Invite an agent</small></span>
-        </button>
-        <button onClick={() => onFocusChange(true)}>
-          <Eye size={16} />
-          <span><strong>Open Review</strong><small>Review changes</small></span>
-        </button>
-      </div>
-    </section>
-  );
-}
-
 function ActiveAgents({ roles, runs }: { roles: AgentRole[]; runs: Run[] }) {
   const liveByRole = new Set(runs.map((run) => run.agent_type));
   return (
     <section className="dashboardCard activeAgents">
       <div className="cardHeader">
         <span>Active Agents</span>
-        <button>View all</button>
       </div>
       <div className="agentRows">
         {roles.map((role) => {
@@ -807,14 +791,6 @@ function MemoryTimeline({ entries, runs }: { entries: string[]; runs: Run[] }) {
     <section className="dashboardCard memoryTimeline">
       <div className="cardHeader">
         <span>Memory Timeline</span>
-        <button>View all</button>
-      </div>
-      <div className="timelineTabs">
-        <button className="active">All</button>
-        <button>Events</button>
-        <button>Agents</button>
-        <button>Memory</button>
-        <button>Runs</button>
       </div>
       <div className="timelineList">
         {timeline.map((item) => (
@@ -875,11 +851,82 @@ function SharedMemorySnapshot({
         </div>
       </div>
       <div className="snapshotBody">
-        <div className="snapshotTabs">
-          <button>Latest</button>
-          <button><BookOpen size={14} /> Bookmarks</button>
-        </div>
         <pre>{lines.join("\n")}</pre>
+      </div>
+    </section>
+  );
+}
+
+function SettingsRoom({
+  workspace,
+  backend,
+  hermes,
+  recall,
+  busy,
+  refreshing,
+  onSelectWorkspace,
+  onRestartBackend,
+  onRefreshRecall,
+}: {
+  workspace: string;
+  backend: BackendStatus | null;
+  hermes: HermesStatus | null;
+  recall: RecallStatus | null;
+  busy: boolean;
+  refreshing: boolean;
+  onSelectWorkspace: () => Promise<void>;
+  onRestartBackend: () => Promise<void>;
+  onRefreshRecall: () => void;
+}) {
+  const recallTone = !recall ? "warn" : recall.status === "fresh" ? "ok" : recall.status === "missing" ? "bad" : "warn";
+  const backendTone = backend?.healthy ? "ok" : backend?.running ? "warn" : "bad";
+  const hermesTone = hermes?.installed ? "ok" : "bad";
+
+  return (
+    <section className="roomPanel settingsRoom">
+      <div className="roomPanelHeader">
+        <div>
+          <span className="eyebrow">Workspace Settings</span>
+          <h3>Real controls for the active environment</h3>
+        </div>
+      </div>
+      <div className="settingsGrid">
+        <article className="settingsSection">
+          <div>
+            <strong>Workspace</strong>
+            <span>{workspace || "No workspace selected"}</span>
+          </div>
+          <button className="ghostButton" type="button" onClick={() => void onSelectWorkspace()}>
+            <FolderOpen size={14} /> Change
+          </button>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Backend</strong>
+            <span>{backend?.baseUrl ?? "Not connected"}</span>
+          </div>
+          <StatusPill tone={backendTone}>{backend?.healthy ? "Healthy" : backend?.running ? "Starting" : "Offline"}</StatusPill>
+          <button className="ghostButton" type="button" onClick={() => void onRestartBackend()} disabled={busy}>
+            <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
+          </button>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Hermes</strong>
+            <span>{hermes?.command_path ?? hermes?.message ?? "Status unavailable"}</span>
+          </div>
+          <StatusPill tone={hermesTone}>{hermes?.installed ? hermes.version ?? "Installed" : "Missing"}</StatusPill>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Recall</strong>
+            <span>{recall ? `${recall.path} · ${recall.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds)}` : "No recall status"}</span>
+          </div>
+          <StatusPill tone={recallTone}>{recall?.status ?? "Unknown"}</StatusPill>
+          <button className="ghostButton" type="button" onClick={onRefreshRecall} disabled={refreshing || !recall?.refresh_configured}>
+            <RefreshCw size={14} /> {refreshing ? "Refreshing" : "Refresh"}
+          </button>
+        </article>
       </div>
     </section>
   );

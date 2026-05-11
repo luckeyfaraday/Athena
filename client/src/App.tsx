@@ -448,6 +448,34 @@ export function App() {
     setError(null);
   }
 
+  async function cancelBackendRun(runId: string) {
+    if (!client || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await client.cancelRun(runId);
+      await refreshData();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMemoryEntry(entry: string) {
+    if (!client || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await client.deleteMemory(entry);
+      await refreshData();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const activeRuns = state.runs.filter((run) => run.status === "running" || run.status === "pending");
   const completedRuns = state.runs.filter((run) => run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
   const latestRun = state.runs.at(-1) ?? null;
@@ -558,9 +586,17 @@ export function App() {
                 onResumeSession={resumeAgentSession}
               />
             )}
-            {activeRoom === "swarm" && <SwarmRoom roles={agentRoles} runs={activeRuns} adapters={state.adapters} />}
+            {activeRoom === "swarm" && (
+              <SwarmRoom
+                roles={agentRoles}
+                runs={activeRuns}
+                adapters={state.adapters}
+                busy={busy}
+                onCancelRun={cancelBackendRun}
+              />
+            )}
             {activeRoom === "review" && <ReviewRoom latestRun={latestRun} completedRuns={completedRuns} />}
-            {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} />}
+            {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} />}
             {activeRoom === "settings" && (
               <SettingsRoom
                 workspace={workspaceDisplay}
@@ -579,7 +615,14 @@ export function App() {
           </div>
 
           <aside className="glanceColumn">
-            <ContextGlance tasks={state.runs.length} active={activeRuns.length} agents={installedAdapters || agentRoles.length} memory={state.memory.length} reviews={completedRuns.length} />
+            <ContextGlance
+              tasks={state.runs.length}
+              active={activeRuns.length}
+              agents={installedAdapters || agentRoles.length}
+              memory={state.memory.length}
+              reviews={completedRuns.length}
+              onNavigate={setActiveRoom}
+            />
           </aside>
 
           <aside className="rightColumn">
@@ -706,23 +749,37 @@ function NewLaunchMenu({
   );
 }
 
-function ContextGlance({ tasks, active, agents, memory, reviews }: { tasks: number; active: number; agents: number; memory: number; reviews: number }) {
+function ContextGlance({
+  tasks,
+  active,
+  agents,
+  memory,
+  reviews,
+  onNavigate,
+}: {
+  tasks: number;
+  active: number;
+  agents: number;
+  memory: number;
+  reviews: number;
+  onNavigate: (room: ActiveRoom) => void;
+}) {
   return (
     <section className="dashboardCard contextGlance">
       <div className="cardHeader">
         <span>ATHENA at a glance</span>
       </div>
-      <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Tasks" value={tasks} detail={`${active} running`} />
-      <MetricRow icon={<Users size={15} />} tone="violet" label="Agents" value={agents} detail="All nominal" />
-      <MetricRow icon={<Database size={15} />} tone="blue" label="Memory Entries" value={memory} detail="Recent memory" />
-      <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Completed runs" />
+      <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Tasks" value={tasks} detail={`${active} running`} onClick={() => onNavigate("swarm")} />
+      <MetricRow icon={<Users size={15} />} tone="violet" label="Agents" value={agents} detail="All nominal" onClick={() => onNavigate("swarm")} />
+      <MetricRow icon={<Database size={15} />} tone="blue" label="Memory Entries" value={memory} detail="Recent memory" onClick={() => onNavigate("memory")} />
+      <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Completed runs" onClick={() => onNavigate("review")} />
     </section>
   );
 }
 
-function MetricRow({ icon, tone, label, value, detail }: { icon: ReactNode; tone: string; label: string; value: number; detail: string }) {
+function MetricRow({ icon, tone, label, value, detail, onClick }: { icon: ReactNode; tone: string; label: string; value: number; detail: string; onClick: () => void }) {
   return (
-    <article className="metricRow">
+    <button type="button" className="metricRow" onClick={onClick}>
       <span className={`metricIcon ${tone}`}>{icon}</span>
       <div>
         <strong>{label}</strong>
@@ -730,7 +787,7 @@ function MetricRow({ icon, tone, label, value, detail }: { icon: ReactNode; tone
         <small>{detail}</small>
       </div>
       <ChevronRight size={15} />
-    </article>
+    </button>
   );
 }
 
@@ -1389,7 +1446,19 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function SwarmRoom({ roles, runs, adapters }: { roles: AgentRole[]; runs: Run[]; adapters: Record<string, AdapterStatus> }) {
+function SwarmRoom({
+  roles,
+  runs,
+  adapters,
+  busy,
+  onCancelRun,
+}: {
+  roles: AgentRole[];
+  runs: Run[];
+  adapters: Record<string, AdapterStatus>;
+  busy: boolean;
+  onCancelRun: (runId: string) => Promise<void>;
+}) {
   return (
     <div className="roomPanel swarmRoom">
       <div className="agentRoleGrid">
@@ -1427,6 +1496,9 @@ function SwarmRoom({ roles, runs, adapters }: { roles: AgentRole[]; runs: Run[];
                 <p>{run.task}</p>
               </div>
               <span>{run.status}</span>
+              <button type="button" className="dangerIconButton" onClick={() => void onCancelRun(run.run_id)} disabled={busy}>
+                <XCircle size={14} />
+              </button>
             </article>
           ))}
           {runs.length === 0 && (
@@ -1496,7 +1568,7 @@ function ReviewCard({ title, icon, items }: { title: string; icon: ReactNode; it
   );
 }
 
-function MemoryRoom({ entries }: { entries: string[] }) {
+function MemoryRoom({ entries, busy, onDelete }: { entries: string[]; busy: boolean; onDelete: (entry: string) => Promise<void> }) {
   return (
     <div className="roomPanel memoryRoomFull">
       <div className="memoryHero">
@@ -1510,7 +1582,12 @@ function MemoryRoom({ entries }: { entries: string[] }) {
       <div className="memoryGrid">
         {entries.map((entry, index) => (
           <article key={`${index}-${entry.slice(0, 24)}`} className="memoryCard">
-            <span>memory · {String(index + 1).padStart(2, "0")}</span>
+            <div className="memoryCardTop">
+              <span>memory · {String(index + 1).padStart(2, "0")}</span>
+              <button type="button" className="dangerIconButton" onClick={() => void onDelete(entry)} disabled={busy} title="Delete memory entry">
+                <Trash2 size={13} />
+              </button>
+            </div>
             <p>{entry}</p>
           </article>
         ))}

@@ -131,6 +131,14 @@ export class BackendClient {
     return response.entries;
   }
 
+  async deleteMemory(text: string): Promise<{ deleted: boolean; removed: number }> {
+    return this.json("/memory/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  }
+
   async spawnCodex(projectDir: string, task: string): Promise<Run> {
     const response = await this.json<{ run: Run }>("/agents/spawn", {
       method: "POST",

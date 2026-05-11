@@ -13,7 +13,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 - Terminal prompts include the refreshed recall cache path and contents.
 - Sessions tab tracks Codex, OpenCode, Claude, and Hermes sessions.
 - Backend exposes native session discovery through `/agents/sessions`.
-- MCP exposes Context Workspace tools for health, memory, runs, artifacts, recall cache, native sessions, and memory delete.
+- MCP exposes Context Workspace tools for health, memory, legacy backend runs/artifacts, recall cache, native sessions, and memory delete.
 - Memory Room can delete exact Hermes memory entries through `/memory/delete`.
 - Current UI is branded Athena.
 
@@ -33,9 +33,9 @@ Goal: every visible control either performs a real action, exposes accurate stat
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
 | Complete settings affordances | P0 | In progress: Settings now shows configured refresh command state, backend URL, Hermes home, memory path, adapter paths, and default workspace. |
-| Add actionable run detail view | P1 | Done: runs can be opened from Agents/Reviews to inspect context, stdout, stderr, and result artifacts. |
-| Make Review Room real | P1 | In progress: Review Room now has run artifact inspection; remaining work is replacing static summary cards with artifact-derived checks. |
-| Make Active Agents real | P1 | Agent status is derived from embedded sessions and backend runs, not role placeholder text. |
+| Add actionable session detail view | P1 | Done: embedded and native sessions can be opened from Command/Reviews to inspect metadata and live terminal buffers. |
+| Make Review Room real | P1 | In progress: Review Room is now session-focused; remaining work is deriving checks and summaries from terminal/session content. |
+| Make Active Agents real | P1 | Agent status is derived from embedded sessions and native session discovery. Backend runs remain legacy-only. |
 | Remove or relabel remaining decorative metrics | P2 | Dashboard metrics that cannot be traced to backend/Electron state are either wired or removed. |
 
 ## Milestone 2: Polish UI
@@ -118,5 +118,5 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 Start with Milestone 1:
 
 1. Add richer Settings state for refresh command/backend/Hermes/adapter paths.
-2. Add run detail viewing from Agents or Reviews.
-3. Replace static Review Room cards with data from run artifacts.
+2. Derive Review Room checks from embedded/native session content.
+3. Keep backend runs clearly labeled as legacy while native sessions remain the primary execution surface.

@@ -16,7 +16,6 @@ import {
   RefreshCw,
   Search,
   Send,
-  Settings,
   ShieldCheck,
   Sparkles,
   Maximize2,
@@ -30,6 +29,7 @@ import {
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
+import { roomRouteById, roomRoutes, type ActiveRoom } from "./routes";
 import athenaMarkUrl from "./assets/athena-mark.png";
 import athenaWordmarkUrl from "./assets/athena-wordmark.png";
 
@@ -40,7 +40,6 @@ type LoadState = {
   memory: string[];
 };
 
-type ActiveRoom = "command" | "swarm" | "review" | "memory" | "settings";
 type SessionProviderFilter = AgentSession["provider"] | "all";
 
 type AgentRole = {
@@ -63,34 +62,6 @@ const emptyLoadState: LoadState = {
   recall: null,
   adapters: {},
   memory: [],
-};
-
-const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description: string }> = {
-  command: {
-    label: "Command Room",
-    eyebrow: "01 · Native work",
-    description: "Terminals, repo state, and agent context open in one controlled workspace.",
-  },
-  swarm: {
-    label: "Swarm Room",
-    eyebrow: "02 · Parallel agents",
-    description: "Spin up builders, reviewers, scouts, and fixers with memory already attached.",
-  },
-  review: {
-    label: "Review Room",
-    eyebrow: "03 · Human control",
-    description: "Turn agent output into a clean ship, revise, or investigate decision.",
-  },
-  memory: {
-    label: "Memory Room",
-    eyebrow: "04 · Persistent context",
-    description: "Inspect what ATHENA knows, what agents asked, and what future sessions inherit.",
-  },
-  settings: {
-    label: "Settings",
-    eyebrow: "05 · Workspace control",
-    description: "Manage the active workspace, backend process, Hermes status, and recall refresh.",
-  },
 };
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
@@ -465,6 +436,7 @@ export function App() {
   const installedAdapters = Object.values(state.adapters).filter((adapter) => adapter.installed).length;
   const liveSessionCount = embeddedSessions.filter((session) => session.status === "running").length;
   const reviewSessionCount = embeddedSessions.length + agentSessions.length;
+  const activeRoute = roomRouteById[activeRoom];
 
   const agentRoles: AgentRole[] = [
     {
@@ -506,11 +478,15 @@ export function App() {
         </div>
         <nav className="sidebarNav">
           <span>Workspace</span>
-          <SidebarButton active={activeRoom === "command"} icon={<TerminalSquare size={14} />} label="Command Room" onClick={() => setActiveRoom("command")} />
-          <SidebarButton active={activeRoom === "swarm"} icon={<Users size={14} />} label="Agents" onClick={() => setActiveRoom("swarm")} />
-          <SidebarButton active={activeRoom === "memory"} icon={<Database size={14} />} label="Memory" onClick={() => setActiveRoom("memory")} />
-          <SidebarButton active={activeRoom === "review"} icon={<Eye size={14} />} label="Reviews" onClick={() => setActiveRoom("review")} />
-          <SidebarButton active={activeRoom === "settings"} icon={<Settings size={14} />} label="Settings" onClick={() => setActiveRoom("settings")} />
+          {roomRoutes.map((route) => (
+            <SidebarButton
+              key={route.id}
+              active={activeRoom === route.id}
+              icon={route.icon}
+              label={route.sidebarLabel}
+              onClick={() => setActiveRoom(route.id)}
+            />
+          ))}
         </nav>
         <div className="sidebarStatus">
           <span>Status</span>
@@ -533,8 +509,8 @@ export function App() {
           <div className="commandColumn">
             <header className="dashboardHeader">
               <div>
-                <h1>{roomCopy[activeRoom].label}</h1>
-                <p>{roomCopy[activeRoom].description}</p>
+                <h1>{activeRoute.label}</h1>
+                <p>{activeRoute.description}</p>
               </div>
               <div className="topbarActions">
                 <button className="ghostButton" onClick={() => void selectWorkspace()}>

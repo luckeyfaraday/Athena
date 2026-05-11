@@ -6,7 +6,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  CircleDot,
   Code2,
   Database,
   Eye,
@@ -25,11 +24,10 @@ import {
   TerminalSquare,
   Trash2,
   Users,
-  Workflow,
   Wrench,
   XCircle,
 } from "lucide-react";
-import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus, type Run } from "./api";
+import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
 import { EmbeddedTerminal } from "./components/EmbeddedTerminal";
 import athenaMarkUrl from "./assets/athena-mark.png";
@@ -40,7 +38,6 @@ type LoadState = {
   recall: RecallStatus | null;
   adapters: Record<string, AdapterStatus>;
   memory: string[];
-  runs: Run[];
 };
 
 type ActiveRoom = "command" | "swarm" | "review" | "memory" | "settings";
@@ -66,7 +63,6 @@ const emptyLoadState: LoadState = {
   recall: null,
   adapters: {},
   memory: [],
-  runs: [],
 };
 
 const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description: string }> = {
@@ -88,7 +84,7 @@ const roomCopy: Record<ActiveRoom, { label: string; eyebrow: string; description
   memory: {
     label: "Memory Room",
     eyebrow: "04 · Persistent context",
-    description: "Inspect what ATHENA knows, what agents asked, and what future runs inherit.",
+    description: "Inspect what ATHENA knows, what agents asked, and what future sessions inherit.",
   },
   settings: {
     label: "Settings",
@@ -206,14 +202,13 @@ export function App() {
     if (!client || dataRefreshInFlight.current) return;
     dataRefreshInFlight.current = true;
     try {
-      const [hermes, recall, adapters, memory, runs] = await Promise.all([
+      const [hermes, recall, adapters, memory] = await Promise.all([
         client.hermesStatus(),
         workspace ? client.recallStatus(workspace) : Promise.resolve(null),
         client.adapters(),
         client.recentMemory(30),
-        client.runs(),
       ]);
-      setState({ hermes, recall, adapters, memory, runs });
+      setState({ hermes, recall, adapters, memory });
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -449,20 +444,6 @@ export function App() {
     setError(null);
   }
 
-  async function cancelBackendRun(runId: string) {
-    if (!client || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await client.cancelRun(runId);
-      await refreshData();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function deleteMemoryEntry(entry: string) {
     if (!client || busy) return;
     setBusy(true);
@@ -477,8 +458,6 @@ export function App() {
     }
   }
 
-  const activeRuns = state.runs.filter((run) => run.status === "running" || run.status === "pending");
-  const latestRun = state.runs.at(-1) ?? null;
   const selectedEmbeddedSession = embeddedSessions.find((session) => embeddedSessionKey(session) === selectedSessionKey) ?? null;
   const selectedAgentSession = agentSessions.find((session) => selectedAgentSessionKey(session) === selectedSessionKey) ?? null;
   const memoryEntries = [...state.memory].reverse();
@@ -514,7 +493,7 @@ export function App() {
       type: "claude",
       icon: <ShieldCheck size={18} />,
       status: state.adapters.claude?.installed ? "ready" : "waiting",
-      brief: "Takes failed runs and drives them back to green.",
+      brief: "Takes failed sessions and drives them back to green.",
     },
   ];
 
@@ -601,10 +580,17 @@ export function App() {
             {activeRoom === "swarm" && (
               <SwarmRoom
                 roles={agentRoles}
-                runs={activeRuns}
-                adapters={state.adapters}
-                busy={busy}
-                onCancelRun={cancelBackendRun}
+                sessions={embeddedSessions}
+                agentSessions={agentSessions}
+                onOpenCommand={() => setActiveRoom("command")}
+                onInspectEmbeddedSession={(session) => {
+                  setSelectedSessionKey(embeddedSessionKey(session));
+                  setActiveRoom("review");
+                }}
+                onInspectAgentSession={(session) => {
+                  setSelectedSessionKey(selectedAgentSessionKey(session));
+                  setActiveRoom("review");
+                }}
               />
             )}
             {activeRoom === "review" && (
@@ -630,7 +616,7 @@ export function App() {
                 refreshing={recallRefreshing}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
-                onRefreshRecall={() => void refreshRecall(latestRun?.task ?? "Manual recall refresh")}
+                onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
               />
             )}
 
@@ -658,9 +644,10 @@ export function App() {
             entries={memoryEntries}
             hermes={state.hermes}
             recall={state.recall}
-            latestRun={latestRun}
+            embeddedSessions={embeddedSessions}
+            agentSessions={agentSessions}
             refreshing={recallRefreshing}
-            onRefresh={() => void refreshRecall(latestRun?.task ?? "Manual recall refresh")}
+            onRefresh={() => void refreshRecall("Manual recall refresh")}
           />
         </section>
       </section>
@@ -792,10 +779,10 @@ function ContextGlance({
       <div className="cardHeader">
         <span>ATHENA at a glance</span>
       </div>
-      <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Tasks" value={tasks} detail={`${active} running`} onClick={() => onNavigate("swarm")} />
+      <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Sessions" value={tasks} detail={`${active} running`} onClick={() => onNavigate("swarm")} />
       <MetricRow icon={<Users size={15} />} tone="violet" label="Agents" value={agents} detail="All nominal" onClick={() => onNavigate("swarm")} />
       <MetricRow icon={<Database size={15} />} tone="blue" label="Memory Entries" value={memory} detail="Recent memory" onClick={() => onNavigate("memory")} />
-      <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Completed runs" onClick={() => onNavigate("review")} />
+      <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Inspectable sessions" onClick={() => onNavigate("review")} />
     </section>
   );
 }
@@ -821,7 +808,7 @@ function LiveWorkflow({ activeSessions, reviewSessions, memoryCount }: { activeS
         <span>Live Workflow</span>
       </div>
       <div className="workflowTrack">
-        <FlowStep icon={<FileText size={14} />} label="Task" active />
+        <FlowStep icon={<FileText size={14} />} label="Session" active />
         <ChevronRight size={18} />
         <FlowStep icon={<Users size={14} />} label="Agents" active={activeSessions > 0} />
         <ChevronRight size={18} />
@@ -896,7 +883,8 @@ function SharedMemorySnapshot({
   entries,
   hermes,
   recall,
-  latestRun,
+  embeddedSessions,
+  agentSessions,
   refreshing,
   onRefresh,
 }: {
@@ -904,19 +892,23 @@ function SharedMemorySnapshot({
   entries: string[];
   hermes: HermesStatus | null;
   recall: RecallStatus | null;
-  latestRun: Run | null;
+  embeddedSessions: EmbeddedTerminalSession[];
+  agentSessions: AgentSession[];
   refreshing: boolean;
   onRefresh: () => void;
 }) {
   const recallLabel = recall ? recall.status : "unknown";
   const recallAge = recall?.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds);
+  const latestSession = embeddedSessions.at(-1) ?? agentSessions.at(0) ?? null;
+  const runningSessions = embeddedSessions.filter((session) => session.status === "running").length;
   const lines = [
     "# ATHENA",
     `- Workspace: ${workspace || "not selected"}`,
     `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
     `- Recall: ${recallLabel} (${recallAge})`,
     `- Recall refresh: ${recall?.refresh_configured ? "configured" : "not configured"}`,
-    `- Legacy backend run: ${latestRun ? `${latestRun.agent_id} / ${latestRun.status}` : "none"}`,
+    `- Live sessions: ${runningSessions}`,
+    `- Latest session: ${latestSession ? latestSession.title : "none"}`,
     `- Memory entries: ${entries.length}`,
     ...(entries[0] ? [`- Latest memory: ${entries[0]}`] : []),
   ];
@@ -1521,17 +1513,21 @@ function delay(ms: number): Promise<void> {
 
 function SwarmRoom({
   roles,
-  runs,
-  adapters,
-  busy,
-  onCancelRun,
+  sessions,
+  agentSessions,
+  onOpenCommand,
+  onInspectEmbeddedSession,
+  onInspectAgentSession,
 }: {
   roles: AgentRole[];
-  runs: Run[];
-  adapters: Record<string, AdapterStatus>;
-  busy: boolean;
-  onCancelRun: (runId: string) => Promise<void>;
+  sessions: EmbeddedTerminalSession[];
+  agentSessions: AgentSession[];
+  onOpenCommand: () => void;
+  onInspectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
+  onInspectAgentSession: (session: AgentSession) => void;
 }) {
+  const liveAgentSessions = sessions.filter((session) => session.kind !== "shell");
+  const recentHistoricalSessions = agentSessions.filter((session) => session.status === "historical").slice(0, 6);
   return (
     <div className="roomPanel swarmRoom">
       <div className="agentRoleGrid">
@@ -1552,33 +1548,66 @@ function SwarmRoom({
         ))}
       </div>
 
-      <div className="liveRunBoard">
+      <div className="liveAgentBoard">
         <div className="roomPanelHeader compact">
           <div>
-            <span className="tinyLabel">Legacy backend runs</span>
-            <h3>{runs.length ? "Work in motion" : "No backend runs"}</h3>
+            <span className="tinyLabel">Live agent sessions</span>
+            <h3>{liveAgentSessions.length ? "Work in motion" : "No live agents"}</h3>
           </div>
-          <StatusPill tone={adapters.codex?.installed ? "ok" : "warn"}>{adapters.codex?.installed ? "Codex installed" : "Codex missing"}</StatusPill>
+          <button type="button" className="ghostButton" onClick={onOpenCommand}>
+            <TerminalSquare size={14} /> Open Command
+          </button>
         </div>
-        <div className="runTimeline">
-          {runs.map((run) => (
-            <article key={run.run_id}>
-              <CircleDot size={16} />
+        <div className="agentSessionBoard">
+          {liveAgentSessions.map((session) => (
+            <article key={session.id}>
+              <StatusDot status={session.status === "running" ? "running" : "offline"} />
               <div>
-                <strong>{run.agent_id}</strong>
-                <p>{run.task}</p>
+                <strong>{session.title}</strong>
+                <p>{session.kind} · {session.status}{session.sessionLabel ? ` · ${session.sessionLabel}` : ""}</p>
               </div>
-              <span>{run.status}</span>
-              <button type="button" className="dangerIconButton" onClick={() => void onCancelRun(run.run_id)} disabled={busy}>
-                <XCircle size={14} />
+              <span>{session.pid ? `pid ${session.pid}` : "no pid"}</span>
+              <button type="button" className="ghostIconButton" onClick={() => onInspectEmbeddedSession(session)}>
+                <FileText size={14} />
               </button>
             </article>
           ))}
-          {runs.length === 0 && (
+          {liveAgentSessions.length === 0 && (
             <div className="emptyState">
-              <Workflow size={22} />
-              <strong>No backend runs.</strong>
-              <span>Current work happens in embedded terminals and native sessions in the Command Room.</span>
+              <TerminalSquare size={22} />
+              <strong>No live agents.</strong>
+              <span>Launch Codex, OpenCode, Claude, or Hermes from the Command Room to populate this board.</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="historicalAgentBoard">
+        <div className="roomPanelHeader compact">
+          <div>
+            <span className="tinyLabel">Recent native sessions</span>
+            <h3>{recentHistoricalSessions.length ? "Available to inspect or resume" : "No historical sessions"}</h3>
+          </div>
+        </div>
+        <div className="agentSessionBoard compact">
+          {recentHistoricalSessions.map((session) => (
+            <article key={selectedAgentSessionKey(session)}>
+              <StatusDot status="ready" />
+              <div>
+                <strong>{session.title}</strong>
+                <p>{providerLabel(session.provider)} · {formatSessionTime(session.updatedAt)}</p>
+              </div>
+              <span>{session.status}</span>
+              <button type="button" className="ghostIconButton" onClick={() => onInspectAgentSession(session)}>
+                <FileText size={14} />
+              </button>
+            </article>
+          ))}
+          {recentHistoricalSessions.length === 0 && (
+            <div className="emptyState compact">
+              <Code2 size={22} />
+              <strong>No native history yet.</strong>
+              <span>Sessions appear here after Codex, OpenCode, Claude, or Hermes writes history for this workspace.</span>
             </div>
           )}
         </div>
@@ -1772,47 +1801,6 @@ function MemoryRoom({ entries, busy, onDelete }: { entries: string[]; busy: bool
         {entries.length === 0 && <p className="emptyStateText">No memory entries loaded.</p>}
       </div>
     </div>
-  );
-}
-
-function HermesMemoryPanel({ entries, hermes, latestRun }: { entries: string[]; hermes: HermesStatus | null; latestRun: Run | null }) {
-  return (
-    <aside className="memorySidecar">
-      <div className="sidecarHeader">
-        <div>
-          <span className="tinyLabel">ATHENA context layer</span>
-          <h3>Shared Memory</h3>
-        </div>
-        <AthenaMark small />
-      </div>
-      <div className="contextStack">
-        <article className="contextCard highlighted">
-          <span>What agents receive</span>
-          <strong>Task context + relevant memory + dynamic lookup URL</strong>
-        </article>
-        <article className="contextCard">
-          <span>Hermes home</span>
-          <strong>{hermes?.hermes_home ?? "checking"}</strong>
-        </article>
-        <article className="contextCard">
-          <span>Legacy backend run</span>
-          <strong>{latestRun ? `${latestRun.agent_id} · ${latestRun.status}` : "none yet"}</strong>
-        </article>
-      </div>
-      <div className="memoryListHeader">
-        <span>Recent memory</span>
-        <Sparkles size={15} />
-      </div>
-      <div className="sideMemoryList">
-        {entries.slice(0, 8).map((entry, index) => (
-          <article key={`${index}-${entry.slice(0, 18)}`}>
-            <Layers3 size={14} />
-            <p>{entry}</p>
-          </article>
-        ))}
-        {entries.length === 0 && <p>No entries loaded.</p>}
-      </div>
-    </aside>
   );
 }
 

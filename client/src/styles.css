@@ -1195,7 +1195,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-weight: 800;
   text-transform: uppercase;
 }
-.liveRunBoard {
+.liveAgentBoard,
+.historicalAgentBoard {
   flex: 1;
   min-height: 0;
   margin: 0 12px 12px;
@@ -1204,19 +1205,22 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   overflow: hidden;
   background: #061a15;
 }
-.runTimeline {
+.agentSessionBoard {
   min-height: 0;
   max-height: 100%;
   padding: 8px 12px;
   overflow: auto;
 }
-.runTimeline article {
+.agentSessionBoard article {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid rgba(226,214,183,.09);
+}
+.agentSessionBoard.compact {
+  max-height: 210px;
 }
 .sessionReviewList article {
   display: grid;
@@ -1226,16 +1230,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   padding: 10px 0;
   border-bottom: 1px solid rgba(226,214,183,.09);
 }
-.runTimeline article.selected,
 .sessionReviewList article.selected {
   margin: 0 -8px;
   padding-inline: 8px;
   border-radius: 6px;
   background: rgba(94,167,184,.1);
 }
-.runTimeline article strong,
+.agentSessionBoard article strong,
 .sessionReviewList article strong { display: block; margin-bottom: 3px; font-size: 11px; }
-.runTimeline article p,
+.agentSessionBoard article p,
 .sessionReviewList article span {
   margin: 0;
   overflow: hidden;
@@ -1244,7 +1247,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.runTimeline article > span,
+.agentSessionBoard article > span,
 .sessionReviewList em {
   color: var(--blue);
   font-size: 9px;
@@ -1291,6 +1294,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .emptyState strong { color: var(--text); }
 .emptyState span { max-width: 320px; font-size: 11px; line-height: 1.5; }
+.emptyState.compact {
+  min-height: 96px;
+}
 
 .decisionHero,
 .memoryHero {

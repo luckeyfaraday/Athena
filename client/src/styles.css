@@ -214,8 +214,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .terminalFocusShell .glanceColumn,
 .terminalFocusShell .rightColumn,
 .terminalFocusShell .sharedSnapshot,
-.terminalFocusShell .liveWorkflow,
-.terminalFocusShell .quickActions {
+.terminalFocusShell .liveWorkflow {
   display: none;
 }
 .commandColumn,
@@ -378,9 +377,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   justify-content: space-between;
   gap: 12px;
 }
-.cardHeader button,
-.memoryTimeline button,
-.liveWorkflow button {
+.cardHeader button {
   border: 0;
   background: transparent;
   color: #beb497;
@@ -420,6 +417,47 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: .08em;
+}
+.settingsRoom {
+  min-height: 0;
+}
+.settingsGrid {
+  padding: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  overflow: auto;
+}
+.settingsSection {
+  min-width: 0;
+  min-height: 112px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #071d17;
+}
+.settingsSection strong,
+.settingsSection span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.settingsSection strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.settingsSection span {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.settingsSection .ghostButton {
+  grid-column: 2;
 }
 .panelMeta {
   display: block;
@@ -959,35 +997,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .flowStep.active { color: var(--text); border-color: rgba(216,194,143,.2); background: #0d281f; }
 .workflowTrack > svg { color: var(--muted); }
 
-.quickActions {
-  flex: 0 0 96px;
-}
-.quickGrid {
-  padding: 6px 14px 14px;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-.quickGrid button {
-  min-height: 44px;
-  padding: 8px 10px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #071d17;
-  color: var(--text);
-  text-align: left;
-}
-.quickGrid button svg { color: var(--green); }
-.quickGrid strong,
-.quickGrid small {
-  display: block;
-}
-.quickGrid strong { font-size: 11px; }
-.quickGrid small { margin-top: 3px; color: var(--muted); font-size: 10px; }
-
 .rightColumn .dashboardCard {
   flex: 1;
   min-height: 0;
@@ -1039,22 +1048,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .agentRows em.offline { color: var(--red); background: var(--red-soft); }
 .agentRows article > svg { color: var(--muted); }
 
-.timelineTabs {
-  padding: 0 14px 10px;
-  display: flex;
-  gap: 7px;
-}
-.timelineTabs button {
-  height: 24px;
-  padding: 0 13px;
-  border-radius: 6px;
-  background: #0d281f;
-  color: #c8bea2;
-}
-.timelineTabs button.active {
-  color: #061711;
-  background: #f3e2bd;
-}
 .timelineList article {
   display: grid;
   grid-template-columns: 42px auto minmax(0, 1fr) auto;
@@ -1101,27 +1094,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .snapshotBody {
   padding: 0 14px 14px;
-  display: grid;
-  grid-template-columns: 114px minmax(0, 1fr);
-  gap: 14px;
-}
-.snapshotTabs {
-  display: grid;
-  gap: 8px;
-}
-.snapshotTabs button {
-  min-height: 36px;
-  padding: 0 11px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #0d281f;
-  color: var(--text-2);
-  font-size: 10px;
-  font-weight: 800;
 }
 .sharedSnapshot pre {
   height: 76px;

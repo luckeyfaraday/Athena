@@ -33,8 +33,8 @@ Goal: every visible control either performs a real action, exposes accurate stat
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
 | Complete settings affordances | P0 | In progress: Settings now shows configured refresh command state, backend URL, Hermes home, memory path, adapter paths, and default workspace. |
-| Add actionable run detail view | P1 | A completed/failed run can be opened from Agents/Reviews to inspect context, stdout, stderr, and result artifacts. |
-| Make Review Room real | P1 | Review cards reflect actual run artifacts and provide actions to open logs/results instead of static copy. |
+| Add actionable run detail view | P1 | Done: runs can be opened from Agents/Reviews to inspect context, stdout, stderr, and result artifacts. |
+| Make Review Room real | P1 | In progress: Review Room now has run artifact inspection; remaining work is replacing static summary cards with artifact-derived checks. |
 | Make Active Agents real | P1 | Agent status is derived from embedded sessions and backend runs, not role placeholder text. |
 | Remove or relabel remaining decorative metrics | P2 | Dashboard metrics that cannot be traced to backend/Electron state are either wired or removed. |
 

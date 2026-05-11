@@ -45,6 +45,7 @@ type LoadState = {
 
 type ActiveRoom = "command" | "swarm" | "review" | "memory" | "settings";
 type SessionProviderFilter = AgentSession["provider"] | "all";
+type RunArtifactName = "context" | "stdout" | "stderr" | "result";
 
 type AgentRole = {
   role: string;
@@ -152,6 +153,7 @@ export function App() {
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef(false);
@@ -479,6 +481,7 @@ export function App() {
   const activeRuns = state.runs.filter((run) => run.status === "running" || run.status === "pending");
   const completedRuns = state.runs.filter((run) => run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
   const latestRun = state.runs.at(-1) ?? null;
+  const selectedRun = state.runs.find((run) => run.run_id === selectedRunId) ?? latestRun;
   const memoryEntries = [...state.memory].reverse();
   const codexInstalled = Boolean(state.adapters.codex?.installed);
   const installedAdapters = Object.values(state.adapters).filter((adapter) => adapter.installed).length;
@@ -592,10 +595,22 @@ export function App() {
                 runs={activeRuns}
                 adapters={state.adapters}
                 busy={busy}
+                selectedRunId={selectedRunId}
+                onOpenRun={(runId) => {
+                  setSelectedRunId(runId);
+                  setActiveRoom("review");
+                }}
                 onCancelRun={cancelBackendRun}
               />
             )}
-            {activeRoom === "review" && <ReviewRoom latestRun={latestRun} completedRuns={completedRuns} />}
+            {activeRoom === "review" && (
+              <ReviewRoom
+                client={client}
+                selectedRun={selectedRun}
+                completedRuns={completedRuns}
+                onSelectRun={setSelectedRunId}
+              />
+            )}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} />}
             {activeRoom === "settings" && (
               <SettingsRoom
@@ -1482,12 +1497,16 @@ function SwarmRoom({
   runs,
   adapters,
   busy,
+  selectedRunId,
+  onOpenRun,
   onCancelRun,
 }: {
   roles: AgentRole[];
   runs: Run[];
   adapters: Record<string, AdapterStatus>;
   busy: boolean;
+  selectedRunId: string | null;
+  onOpenRun: (runId: string) => void;
   onCancelRun: (runId: string) => Promise<void>;
 }) {
   return (
@@ -1520,13 +1539,16 @@ function SwarmRoom({
         </div>
         <div className="runTimeline">
           {runs.map((run) => (
-            <article key={run.run_id}>
+            <article key={run.run_id} className={selectedRunId === run.run_id ? "selected" : ""}>
               <CircleDot size={16} />
               <div>
                 <strong>{run.agent_id}</strong>
                 <p>{run.task}</p>
               </div>
               <span>{run.status}</span>
+              <button type="button" className="ghostIconButton" onClick={() => onOpenRun(run.run_id)}>
+                <FileText size={14} />
+              </button>
               <button type="button" className="dangerIconButton" onClick={() => void onCancelRun(run.run_id)} disabled={busy}>
                 <XCircle size={14} />
               </button>
@@ -1545,7 +1567,17 @@ function SwarmRoom({
   );
 }
 
-function ReviewRoom({ latestRun, completedRuns }: { latestRun: Run | null; completedRuns: Run[] }) {
+function ReviewRoom({
+  client,
+  selectedRun,
+  completedRuns,
+  onSelectRun,
+}: {
+  client: BackendClient | null;
+  selectedRun: Run | null;
+  completedRuns: Run[];
+  onSelectRun: (runId: string) => void;
+}) {
   const failed = completedRuns.filter((run) => run.status === "failed" || run.status === "cancelled");
   const passed = completedRuns.filter((run) => run.status === "succeeded");
   return (
@@ -1553,7 +1585,7 @@ function ReviewRoom({ latestRun, completedRuns }: { latestRun: Run | null; compl
       <div className="decisionHero">
         <div>
           <span className="tinyLabel">Decision point</span>
-          <h3>{latestRun ? latestRun.task : "No run selected yet"}</h3>
+          <h3>{selectedRun ? selectedRun.task : "No run selected yet"}</h3>
           <p>Hermes turns terminal noise into a concise review packet before anything ships.</p>
         </div>
         <div className={failed.length ? "decisionBadge risk" : passed.length ? "decisionBadge ship" : "decisionBadge idle"}>
@@ -1570,18 +1602,73 @@ function ReviewRoom({ latestRun, completedRuns }: { latestRun: Run | null; compl
 
       <div className="completedRuns">
         {completedRuns.slice(-6).reverse().map((run) => (
-          <article key={run.run_id}>
+          <article key={run.run_id} className={selectedRun?.run_id === run.run_id ? "selected" : ""}>
             <StatusDot status={run.status === "succeeded" ? "ready" : "offline"} />
             <div>
               <strong>{run.agent_id}</strong>
               <span>{run.task}</span>
             </div>
             <em>{run.status}</em>
+            <button type="button" className="ghostIconButton" onClick={() => onSelectRun(run.run_id)}>
+              <FileText size={14} />
+            </button>
           </article>
         ))}
         {completedRuns.length === 0 && <p>No completed runs yet. The first finished agent will produce the review packet.</p>}
       </div>
+      <RunArtifactViewer client={client} run={selectedRun} />
     </div>
+  );
+}
+
+function RunArtifactViewer({ client, run }: { client: BackendClient | null; run: Run | null }) {
+  const [artifact, setArtifact] = useState<RunArtifactName>("result");
+  const [text, setText] = useState("");
+
+  useEffect(() => {
+    if (!client || !run) {
+      setText("");
+      return;
+    }
+
+    let cancelled = false;
+    client
+      .artifact(run.run_id, artifact, 131072)
+      .then((content) => {
+        if (!cancelled) setText(content);
+      })
+      .catch((error) => {
+        if (!cancelled) setText(String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact, client, run]);
+
+  const artifacts: RunArtifactName[] = ["result", "stdout", "stderr", "context"];
+  return (
+    <section className="runArtifactViewer">
+      <div className="runArtifactHeader">
+        <div>
+          <span className="tinyLabel">Run artifact</span>
+          <strong>{run ? `${run.agent_id} · ${run.status}` : "No run selected"}</strong>
+        </div>
+        <div className="artifactTabs" role="tablist" aria-label="Run artifacts">
+          {artifacts.map((name) => (
+            <button
+              key={name}
+              type="button"
+              className={artifact === name ? "active" : ""}
+              onClick={() => setArtifact(name)}
+              disabled={!run}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      </div>
+      <pre>{run ? text || "Artifact is empty or still being written." : "Select a run to inspect context, stdout, stderr, and result artifacts."}</pre>
+    </section>
   );
 }
 

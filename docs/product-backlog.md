@@ -25,6 +25,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 | `#6011e0da` Hermes controls Context Workspace | Done | MCP bridge, recall cache tools, backend control paths, and Hermes-side config pattern exist. |
 | `#97d36054` agents know recall context at spawn | Done | Recall refresh runs before spawn, and prompt files include recall path plus contents. |
 | `#bee147fc` integrate functionality to UI | Mostly done | Core visible controls now perform real actions. Keep this open only for remaining gaps listed below. |
+| `#5596309f` audit current app | Done | See `docs/current-app-audit.md` for works/doesn't/needs/do-not-need breakdown. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -115,8 +116,8 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 
 ## Next Implementation Step
 
-Start with Milestone 1:
+Start with Milestone 1, using `docs/current-app-audit.md` as the current baseline:
 
-1. Add richer Settings state for refresh command/backend/Hermes/adapter paths.
-2. Derive Review Room checks from embedded/native session content.
-3. Keep backend runs clearly labeled as legacy while native sessions remain the primary execution surface.
+1. Move legacy backend runs out of the primary Agents room.
+2. Add `routes.ts` so room metadata has one typed source of truth.
+3. Derive Review Room summaries from embedded/native session content without claiming unavailable checks.

@@ -1624,7 +1624,7 @@ function ReviewRoom({
       <div className="reviewColumns">
         <ReviewCard title="Live buffers" icon={<TerminalSquare size={17} />} items={[`${embeddedSessions.length} embedded terminals`, `${liveAgentSessions.length} live agent panes`, "Terminal output captured from panes"]} />
         <ReviewCard title="Native history" icon={<Code2 size={17} />} items={[`${historicalAgentSessions.length} historical sessions`, "Codex/OpenCode/Claude/Hermes metadata", "Resume commands when available"]} />
-        <ReviewCard title="Next actions" icon={<Play size={17} />} items={["Inspect a live pane", "Copy provider session ID", "Resume historical session"]} />
+        <ReviewCard title="Inspector scope" icon={<Play size={17} />} items={["Inspect live pane output", "Inspect provider metadata", "Use Command Room for resume actions"]} />
       </div>
 
       <div className="sessionReviewList">
@@ -1683,6 +1683,14 @@ function SessionInspector({ embeddedSession, agentSession }: { embeddedSession: 
     return () => {
       cancelled = true;
     };
+  }, [terminalId]);
+
+  useEffect(() => {
+    if (!terminalId) return undefined;
+    return desktop.onEmbeddedTerminalData((payload) => {
+      if (payload.id !== terminalId) return;
+      setBuffer((current) => `${current}${payload.data}`);
+    });
   }, [terminalId]);
 
   const metadata = embeddedSession

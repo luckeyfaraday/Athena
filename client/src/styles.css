@@ -1198,7 +1198,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .runTimeline article {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
@@ -1206,11 +1206,18 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .completedRuns article {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid rgba(226,214,183,.09);
+}
+.runTimeline article.selected,
+.completedRuns article.selected {
+  margin: 0 -8px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  background: rgba(94,167,184,.1);
 }
 .runTimeline article strong,
 .completedRuns article strong { display: block; margin-bottom: 3px; font-size: 11px; }
@@ -1243,6 +1250,20 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .dangerIconButton:hover:not(:disabled) {
   background: rgba(251, 113, 133, .1);
+}
+.ghostIconButton {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.ghostIconButton:hover:not(:disabled) {
+  background: rgba(226,214,183,.08);
+  color: var(--text);
 }
 .emptyState,
 .emptyStateText {
@@ -1319,6 +1340,59 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 7px;
   overflow: hidden;
   background: #061a15;
+}
+.runArtifactViewer {
+  min-height: 280px;
+  margin: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: #061a15;
+}
+.runArtifactHeader {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.runArtifactHeader strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.artifactTabs {
+  display: flex;
+  gap: 6px;
+}
+.artifactTabs button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.artifactTabs button.active {
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-color: rgba(94,167,184,.32);
+}
+.runArtifactViewer pre {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  font: 11px/1.55 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
 }
 
 .memoryHero { justify-content: flex-start; }

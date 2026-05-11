@@ -440,11 +440,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 7px;
   background: #071d17;
 }
+.settingsSection.wide {
+  grid-column: 1 / -1;
+}
 .settingsSection strong,
 .settingsSection span {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: pre-line;
 }
 .settingsSection strong {
   color: var(--text);
@@ -671,6 +675,20 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-style: normal;
   font-weight: 700;
   text-transform: uppercase;
+}
+.terminalChromeAction {
+  width: 24px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(226,214,183,.12);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+.terminalChromeAction:hover {
+  background: rgba(226,214,183,.08);
+  color: var(--text);
 }
 .liveTerminalPane {
   min-width: 0;
@@ -909,7 +927,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   overflow-x: auto;
 }
 .sessionStrip > p,
-.completedRuns > p {
+.sessionReviewList > p {
   color: var(--muted);
   margin: 0;
   padding: 10px 0;
@@ -1200,18 +1218,25 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   padding: 10px 0;
   border-bottom: 1px solid rgba(226,214,183,.09);
 }
-.completedRuns article {
+.sessionReviewList article {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
   border-bottom: 1px solid rgba(226,214,183,.09);
 }
+.runTimeline article.selected,
+.sessionReviewList article.selected {
+  margin: 0 -8px;
+  padding-inline: 8px;
+  border-radius: 6px;
+  background: rgba(94,167,184,.1);
+}
 .runTimeline article strong,
-.completedRuns article strong { display: block; margin-bottom: 3px; font-size: 11px; }
+.sessionReviewList article strong { display: block; margin-bottom: 3px; font-size: 11px; }
 .runTimeline article p,
-.completedRuns article span {
+.sessionReviewList article span {
   margin: 0;
   overflow: hidden;
   color: var(--muted);
@@ -1220,7 +1245,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   white-space: nowrap;
 }
 .runTimeline article > span,
-.completedRuns em {
+.sessionReviewList em {
   color: var(--blue);
   font-size: 9px;
   font-style: normal;
@@ -1239,6 +1264,20 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .dangerIconButton:hover:not(:disabled) {
   background: rgba(251, 113, 133, .1);
+}
+.ghostIconButton {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+.ghostIconButton:hover:not(:disabled) {
+  background: rgba(226,214,183,.08);
+  color: var(--text);
 }
 .emptyState,
 .emptyStateText {
@@ -1309,12 +1348,59 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-size: 11px;
   line-height: 1.6;
 }
-.completedRuns {
+.sessionReviewList {
   margin: 0 12px 12px;
   border: 1px solid var(--line);
   border-radius: 7px;
   overflow: hidden;
   background: #061a15;
+}
+.sessionReviewList p {
+  margin: 0;
+  padding: 14px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.sessionInspector {
+  min-height: 280px;
+  margin: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+  background: #061a15;
+}
+.sessionInspectorHeader {
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.sessionInspectorHeader strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.sessionInspectorGrid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, .4fr) minmax(0, 1fr);
+}
+.sessionInspectorGrid pre {
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: var(--text);
+  font: 11px/1.55 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+}
+.sessionInspectorGrid pre + pre {
+  border-left: 1px solid var(--line);
 }
 
 .memoryHero { justify-content: flex-start; }

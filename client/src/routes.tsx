@@ -23,10 +23,10 @@ export const roomRoutes = [
   },
   {
     id: "swarm",
-    label: "Swarm Room",
+    label: "Agents",
     sidebarLabel: "Agents",
     eyebrow: "02 · Parallel agents",
-    description: "Spin up builders, reviewers, scouts, and fixers with memory already attached.",
+    description: "Track live embedded agents and recent native sessions for this workspace.",
     icon: <Users size={14} />,
   },
   {
@@ -42,7 +42,7 @@ export const roomRoutes = [
     label: "Review Room",
     sidebarLabel: "Reviews",
     eyebrow: "04 · Human control",
-    description: "Turn agent output into a clean ship, revise, or investigate decision.",
+    description: "Inspect terminal buffers, prompt paths, and native session metadata before deciding what to keep.",
     icon: <Eye size={14} />,
   },
   {

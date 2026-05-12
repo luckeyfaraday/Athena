@@ -1,6 +1,6 @@
 # Context Workspace Product Backlog
 
-Last verified: 2026-05-11 on `main`.
+Last verified: 2026-05-12 on `ui-polish-pass`.
 
 This backlog converts the raw task list into implementation milestones. It separates verified current behavior from proposed work so new features do not duplicate already-merged PRs.
 
@@ -24,8 +24,13 @@ This backlog converts the raw task list into implementation milestones. It separ
 | `#31eb0480` native Codex/OpenCode session memory layer | Done | Backend and MCP expose native session discovery. Hermes owns search policy. |
 | `#6011e0da` Hermes controls Context Workspace | Done | MCP bridge, recall cache tools, backend control paths, and Hermes-side config pattern exist. |
 | `#97d36054` agents know recall context at spawn | Done | Recall refresh runs before spawn, and prompt files include recall path plus contents. |
-| `#bee147fc` integrate functionality to UI | Mostly done | Core visible controls now perform real actions. Keep this open only for remaining gaps listed below. |
+| `#bee147fc` integrate functionality to UI | Done | Core visible controls perform real actions or expose accurate session-first state. |
+| `#fa84515` Hermes sessions in Sessions tab | Done | Codex, OpenCode, Claude, and Hermes session readers feed the shared Sessions tab with provider filters. |
+| `#453f21e2` Athena branding integrated | Done | Athena name, mark, icon assets, and app styling are integrated across the UI and packaged build assets. |
 | `#5596309f` audit current app | Done | See `docs/current-app-audit.md` for works/doesn't/needs/do-not-need breakdown. |
+| `#e24fce1a` add `routes.ts` | Done | Active room IDs, labels, icons, descriptions, and sidebar order come from `client/src/routes.tsx`. |
+| `#11d80e78` polish the UI | Done | Focused pass tightened session-first copy, terminal controls, overflow behavior, and responsive review/agent panels. |
+| MCP memory delete | Done | Backend and MCP expose exact Hermes memory delete; Memory Room can call it from the UI. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -33,11 +38,11 @@ Goal: every visible control either performs a real action, exposes accurate stat
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| Complete settings affordances | P0 | In progress: Settings now shows configured refresh command state, backend URL, Hermes home, memory path, adapter paths, and default workspace. |
+| `#ce14092c` settings chat/shell mode | P1 | Partial: Settings shows real environment/runtime state, but there is no persistent chat-vs-shell mode preference yet. |
 | Add actionable session detail view | P1 | Done: embedded and native sessions can be opened from Command/Reviews to inspect metadata and live terminal buffers. |
 | Make Review Room real | P1 | In progress: Review Room is now session-focused; remaining work is deriving checks and summaries from terminal/session content. |
-| Make Active Agents real | P1 | Agent status is derived from embedded sessions and native session discovery. Backend runs remain legacy-only. |
-| Remove or relabel remaining decorative metrics | P2 | Dashboard metrics that cannot be traced to backend/Electron state are either wired or removed. |
+| Make Active Agents real | P1 | Done: Agents is session-first; live embedded sessions and native session discovery drive the visible state. |
+| Remove or relabel remaining decorative metrics | P2 | Done: visible dashboard metrics now use session, adapter, memory, and review counts from app state. |
 
 ## Milestone 2: Polish UI
 
@@ -45,9 +50,8 @@ Goal: reduce friction in the existing workspace UI before adding new product sur
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#11d80e78` polish the UI | P1 | Dense operational layout, consistent spacing, no clipped labels, stable terminal layout, and clear empty/error states. |
 | `#9d14b31e` transparent shell focus mode | P2 | User can hide surrounding UI chrome while preserving shell panes and restore it predictably. |
-| Improve terminal focus ergonomics | P2 | Focus mode, maximize, minimize, drag, and grid arrange are visually obvious and reversible. |
+| Improve terminal focus ergonomics | P2 | Partial: focus, maximize, minimize, drag, and grid arrange work; true transparent app mode remains open. |
 
 ## Milestone 3: Architecture Cleanup
 
@@ -55,7 +59,6 @@ Goal: keep the growing frontend maintainable.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#e24fce1a` add `routes.ts` | P1 | Active room IDs, labels, icons, and sidebar metadata come from one typed source of truth. |
 | Split `App.tsx` rooms into modules | P2 | Command, Agents, Reviews, Memory, and Settings rooms live in separate components without behavior changes. |
 | Centralize status formatters | P2 | Age, provider labels, status tone mapping, and session labels are shared helpers. |
 
@@ -113,11 +116,14 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 | Task | Status | Notes |
 |---|---|---|
 | `#1fcdc98a` OpenClaw integration | Research only | Too vague for implementation. Define what OpenClaw contributes before adding code. |
+| `#078b61c7` open-source direction | Strategic | Needs licensing, repo hygiene, security review, contribution model, and public positioning before implementation. |
+| `#a0e82258` ACE, Agentic Collaboration Environment | Product concept | Keep as direction-level framing until concrete agent-to-agent workflows are defined. |
+| `#b2e7bca5` GitHub organization | Research | Decide naming, ownership, repo split, and release policy before creating an org. |
 
 ## Next Implementation Step
 
-Start with Milestone 1, using `docs/current-app-audit.md` as the current baseline:
+Start with Milestone 4, using `docs/current-app-audit.md` as the current baseline:
 
-1. Move legacy backend runs out of the primary Agents room.
-2. Add `routes.ts` so room metadata has one typed source of truth.
-3. Derive Review Room summaries from embedded/native session content without claiming unavailable checks.
+1. Build `#ec62ad60` session continuity: select sessions, generate a bounded handoff summary, and write it to recall.
+2. Finish `#ce14092c` only if chat-vs-shell mode has a clear product meaning.
+3. Treat `#9d14b31e` as a focused transparent-shell mode, not more general UI polish.

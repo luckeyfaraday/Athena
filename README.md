@@ -242,7 +242,21 @@ env:
   CONTEXT_WORKSPACE_BACKEND_URL: "http://127.0.0.1:8000"
 ```
 
-The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, legacy agent run management, artifact reads, and project-local recall cache management.
+The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, visible embedded terminal spawning, legacy agent run management, artifact reads, and project-local recall cache management.
+
+Visible terminal tools require the Electron app itself, not only the FastAPI backend. Electron writes control discovery state to:
+
+```text
+C:\Users\you\.context-workspace\electron-control.json
+```
+
+From WSL, that file is available at:
+
+```text
+/mnt/c/Users/you/.context-workspace/electron-control.json
+```
+
+Set `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL` only when you need to override this discovery file.
 
 When Electron starts the backend, it configures a default recall refresh command:
 
@@ -265,10 +279,13 @@ Useful MCP tools for this workflow:
 ```text
 context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
 context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
+context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?)
 context_workspace_write_recall_cache(project_dir, markdown)
 context_workspace_read_recall_cache(project_dir)
 context_workspace_clear_recall_cache(project_dir)
 ```
+
+Use `context_workspace_spawn_terminal` for visible Command Room sessions. Use `context_workspace_spawn_agent` only for the legacy backend run/artifact path.
 
 Athena owns these app-side tools. Hermes still owns its own config, `session_search`, long-term memory writes, and the decision about when to refresh or clear recall.
 
@@ -315,4 +332,3 @@ Electron asks the OS for a free backend port. Vite uses `127.0.0.1:5173` during 
 - Keep Hermes memory as the durable source of shared context.
 - Prefer adapter-specific behavior over assuming every agent CLI handles instructions the same way.
 - Run `pytest` and `npm run build` before opening a PR.
-

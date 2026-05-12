@@ -13,7 +13,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 - Terminal prompts include the refreshed recall cache path and contents.
 - Sessions tab tracks Codex, OpenCode, Claude, and Hermes sessions.
 - Backend exposes native session discovery through `/agents/sessions`.
-- MCP exposes Context Workspace tools for health, memory, legacy backend runs/artifacts, recall cache, native sessions, and memory delete.
+- MCP exposes Context Workspace tools for health, memory, visible embedded terminal spawning, legacy backend runs/artifacts, recall cache, native sessions, and memory delete.
 - Memory Room can delete exact Hermes memory entries through `/memory/delete`.
 - Current UI is branded Athena.
 
@@ -31,6 +31,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 | `#e24fce1a` add `routes.ts` | Done | Active room IDs, labels, icons, descriptions, and sidebar order come from `client/src/routes.tsx`. |
 | `#11d80e78` polish the UI | Done | Focused pass tightened session-first copy, terminal controls, overflow behavior, and responsive review/agent panels. |
 | MCP memory delete | Done | Backend and MCP expose exact Hermes memory delete; Memory Room can call it from the UI. |
+| MCP visible terminal spawn | Done | Hermes can spawn visible Command Room terminals through Electron control instead of the legacy backend run API. |
 
 ## Milestone 1: Finish UI Functionality
 

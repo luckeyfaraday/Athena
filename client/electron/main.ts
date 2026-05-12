@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 import { startBackend, stopBackend } from "./backend.js";
+import { startControlServer, stopControlServer } from "./control-server.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -111,6 +112,9 @@ app.disableHardwareAcceleration();
 app.whenReady().then(async () => {
   installApplicationMenu();
   registerIpcHandlers(appRoot);
+  void startControlServer().catch((error) => {
+    console.error("Electron control server failed to start:", error);
+  });
   await createWindow();
 
   app.on("activate", async () => {
@@ -175,6 +179,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   void stopBackend();
+  void stopControlServer();
   if (viteProc) {
     viteProc.kill();
     viteProc = null;

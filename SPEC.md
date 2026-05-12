@@ -420,7 +420,7 @@ Example:
 # Project: Codex CI Setup
 
 ## Context
-Working on setting up GitHub Actions CI for the Codex repo at /home/alan/codex.
+Working on setting up GitHub Actions CI for the Codex repo at /home/you/codex.
 Repo has Python backend + TypeScript frontend. Need to add test automation.
 
 ## Current Task

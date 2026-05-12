@@ -16,7 +16,7 @@ Hermes owns retrieval and summarization. Context Workspace owns injection into g
 - The project path is the WSL path to the Windows checkout, for example:
 
 ```text
-/mnt/c/Users/alanq/context-workspace
+/mnt/c/Users/you/context-workspace
 ```
 
 Recall cache tools read and write project-local files and can operate even if the backend is unavailable.
@@ -36,7 +36,7 @@ Use this report shape:
 
 ```text
 Recall refreshed:
-- project_dir: /mnt/c/Users/alanq/context-workspace
+- project_dir: /mnt/c/Users/you/context-workspace
 - query: <session_search query>
 - bytes: <bytes written>
 ```
@@ -96,7 +96,7 @@ If pre-launch refresh fails or the hook is not configured, Context Workspace ask
 
 ```json
 {
-  "project_dir": "/mnt/c/Users/alanq/context-workspace",
+  "project_dir": "/mnt/c/Users/you/context-workspace",
   "query": "recall Hermes sessions",
   "limit": 25
 }
@@ -114,7 +114,7 @@ Use `context_workspace_summarize_agent_sessions` for a compact text result, or `
 
 ```json
 {
-  "project_dir": "/mnt/c/Users/alanq/context-workspace",
+  "project_dir": "/mnt/c/Users/you/context-workspace",
   "markdown": "## Recall\n\n- Concise project/session context here.\n"
 }
 ```
@@ -129,7 +129,7 @@ Call `context_workspace_read_recall_cache`:
 
 ```json
 {
-  "project_dir": "/mnt/c/Users/alanq/context-workspace"
+  "project_dir": "/mnt/c/Users/you/context-workspace"
 }
 ```
 
@@ -153,7 +153,7 @@ If recall conflicts with current user instructions, points at the wrong branch/t
 
 ```json
 {
-  "project_dir": "/mnt/c/Users/alanq/context-workspace"
+  "project_dir": "/mnt/c/Users/you/context-workspace"
 }
 ```
 
@@ -163,7 +163,7 @@ When clearing, report it:
 
 ```text
 Recall cleared:
-- project_dir: /mnt/c/Users/alanq/context-workspace
+- project_dir: /mnt/c/Users/you/context-workspace
 - reason: <why the previous cache was stale or harmful>
 ```
 
@@ -193,7 +193,7 @@ If backend-dependent tools fail, check `context_workspace_health`.
 If health fails, start Context Workspace Electron first so this file exists:
 
 ```text
-/mnt/c/Users/alanq/.context-workspace/backend.json
+/mnt/c/Users/you/.context-workspace/backend.json
 ```
 
 Recall cache tools can still operate without the backend because they read and write project-local files.

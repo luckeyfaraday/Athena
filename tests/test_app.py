@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import backend.app as app_module
 from backend.adapters.base import AdapterCommand
 from backend.app import create_app
 from backend.context_artifacts import RunArtifacts
@@ -232,7 +233,8 @@ def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> 
     assert adapters["claude"]["configured"] is False
 
 
-def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path) -> None:
+def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module, "list_native_agent_sessions", lambda *args, **kwargs: [])
     client = _client(tmp_path)
 
     response = client.get("/agents/sessions", params={"project_dir": str(tmp_path)})
@@ -285,11 +287,11 @@ def test_memory_delete_endpoint_removes_exact_entry(tmp_path: Path) -> None:
 def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
-    client.post("/memory/store", json={"text": "Persephone project: /home/alan/home_ai/projects/free-model-drops newsletter."})
-    client.post("/memory/store", json={"text": "Context Workspace project: C:/Users/alanq/context-workspace Electron shell."})
+    client.post("/memory/store", json={"text": "Persephone project: /home/you/projects/free-model-drops newsletter."})
+    client.post("/memory/store", json={"text": "Context Workspace project: C:/Users/you/context-workspace Electron shell."})
 
-    matched = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/alanq/context-workspace"})
-    missing = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/alanq/unknown-project"})
+    matched = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/you/context-workspace"})
+    missing = client.get("/memory/hermes/project", params={"project_dir": "C:/Users/you/unknown-project"})
 
     assert matched.status_code == 200
     assert "Context Workspace project" in matched.text

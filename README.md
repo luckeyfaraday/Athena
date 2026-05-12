@@ -200,7 +200,7 @@ Athena includes an MCP server under `mcp_server/` so Hermes can call into the ru
 Install the MCP server dependencies into the Python environment Hermes will use:
 
 ```bash
-pip install -r /mnt/c/Users/alanq/context-workspace/mcp_server/requirements.txt
+pip install -r /mnt/c/Users/you/context-workspace/mcp_server/requirements.txt
 ```
 
 Add the bridge to the WSL Hermes config at `~/.hermes/config.yaml`:
@@ -210,29 +210,29 @@ mcp_servers:
   context_workspace:
     command: "python"
     args:
-      - "/mnt/c/Users/alanq/context-workspace/mcp_server/server.py"
+      - "/mnt/c/Users/you/context-workspace/mcp_server/server.py"
     timeout: 120
     connect_timeout: 30
     env:
-      CONTEXT_WORKSPACE_BACKEND_STATE: "/mnt/c/Users/alanq/.context-workspace/backend.json"
+      CONTEXT_WORKSPACE_BACKEND_STATE: "/mnt/c/Users/you/.context-workspace/backend.json"
 ```
 
 If Hermes uses its own virtual environment, set `command` to that interpreter, for example:
 
 ```yaml
-command: "/home/alan/.hermes/hermes-agent/venv/bin/python3"
+command: "/home/you/.hermes/hermes-agent/venv/bin/python3"
 ```
 
 The Electron app writes backend discovery state to:
 
 ```text
-C:\Users\alanq\.context-workspace\backend.json
+C:\Users\you\.context-workspace\backend.json
 ```
 
 From WSL, that file is available at:
 
 ```text
-/mnt/c/Users/alanq/.context-workspace/backend.json
+/mnt/c/Users/you/.context-workspace/backend.json
 ```
 
 Start the Athena desktop app before starting Hermes so the backend state file exists. If you run the backend directly on a fixed port, you can use `CONTEXT_WORKSPACE_BACKEND_URL` instead:
@@ -247,13 +247,13 @@ The bridge exposes tools for health checks, Hermes memory reads/writes through t
 Visible terminal tools require the Electron app itself, not only the FastAPI backend. Electron writes control discovery state to:
 
 ```text
-C:\Users\alanq\.context-workspace\electron-control.json
+C:\Users\you\.context-workspace\electron-control.json
 ```
 
 From WSL, that file is available at:
 
 ```text
-/mnt/c/Users/alanq/.context-workspace/electron-control.json
+/mnt/c/Users/you/.context-workspace/electron-control.json
 ```
 
 Set `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL` only when you need to override this discovery file.

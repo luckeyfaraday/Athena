@@ -52,6 +52,6 @@ macOS uses Terminal.app via `osascript` for native terminal launch.
 
 - Put OS checks in `client/electron/platform.ts` or code that delegates to it.
 - Do not store raw strings for new workspace state; use the workspace path model.
-- Do not add user-specific paths such as `/home/alan` or `C:\Users\...`.
+- Do not add user-specific paths such as `/home/you` or `C:\Users\...`.
 - Prefer structured spawn argument arrays over shell-concatenated command strings.
 - Add tests for pure path/launcher helpers when changing platform behavior.

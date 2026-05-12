@@ -279,13 +279,17 @@ Useful MCP tools for this workflow:
 ```text
 context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
 context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
+context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?)
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?)
+context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 context_workspace_write_recall_cache(project_dir, markdown)
 context_workspace_read_recall_cache(project_dir)
 context_workspace_clear_recall_cache(project_dir)
 ```
 
-Use `context_workspace_spawn_terminal` for visible Command Room sessions. Use `context_workspace_spawn_agent` only for the legacy backend run/artifact path.
+Use `context_workspace_spawn_agent` for user-requested Codex, OpenCode, or Claude work. It opens a visible Command Room PTY by default through Electron control, so Athena must be running. Use `context_workspace_spawn_terminal` for lower-level terminal control such as shells, grids, Hermes panes, or explicit resumes.
+
+Do not use the FastAPI backend `POST /agents/spawn` route for OpenCode or Claude visible terminals. That backend route is the legacy run/artifact path. If visible spawning fails with an Electron control error, check `~/.context-workspace/electron-control.json` and restart the Athena desktop app.
 
 Athena owns these app-side tools. Hermes still owns its own config, `session_search`, long-term memory writes, and the decision about when to refresh or clear recall.
 

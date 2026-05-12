@@ -511,7 +511,7 @@ def _render_prompt(run: Run, artifacts: RunArtifacts) -> str:
 | `POST` | `/memory/store` | `store_memory` | Append to MEMORY.md |
 | `GET` | `/agents/adapters` | `get_agent_adapters` | Adapter status |
 | `GET` | `/agents/sessions` | `list_agent_sessions` | Native Codex/OpenCode/Claude session history |
-| `POST` | `/agents/spawn` | `spawn_agent` | **Primary** — 202 Accepted, background |
+| `POST` | `/agents/spawn` | `spawn_agent` | Legacy backend run/artifact path; visible agent launches use MCP `context_workspace_spawn_agent` via Electron control |
 | `GET` | `/agents/runs` | `list_runs` | All runs |
 | `GET` | `/agents/runs/{run_id}` | `get_run` | Run + artifact metadata |
 | `POST` | `/agents/runs/{run_id}/cancel` | `cancel_run` | Cancel + kill process |
@@ -838,8 +838,10 @@ terminal.open(container);
 
 ## 5. Data Flow: Agent Spawn
 
+Legacy backend run flow:
+
 ```
-User / Hermes → POST /agents/spawn
+User / compatibility tool → POST /agents/spawn
   │
   ├─ check_runtime_limits()        runtime.py: enforces 4/2/2 limits
   │
@@ -871,6 +873,18 @@ User / Hermes → POST /agents/spawn
        ├─ registry.update_status(RUNNING→SUCCEEDED/FAILED)
        │
        └─ memory.append()           logs completion to MEMORY.md
+```
+
+Current visible-agent flow:
+
+```
+Hermes → MCP context_workspace_spawn_agent
+  │
+  ├─ visible_terminal=true by default
+  │
+  ├─ MCP discovers ~/.context-workspace/electron-control.json
+  │
+  └─ Electron control server → embedded PTY → Codex/OpenCode/Claude
 ```
 
 ---

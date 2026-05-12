@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from client import ContextWorkspaceClient
+from client import ContextWorkspaceClient, ContextWorkspaceElectronClient
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -103,6 +103,28 @@ async def context_workspace_spawn_agent(
             "agent_type": agent_type,
             "memory_query": memory_query,
             "timeout_seconds": timeout_seconds,
+        },
+    )
+
+
+async def context_workspace_spawn_terminal(
+    project_dir: str,
+    kind: str = "codex",
+    count: int = 1,
+    title: str | None = None,
+    resume_session_id: str | None = None,
+    session_label: str | None = None,
+) -> dict[str, Any]:
+    """Spawn visible embedded terminal session(s) in the Context Workspace desktop app."""
+    return await ContextWorkspaceElectronClient().post(
+        "/terminals/spawn",
+        {
+            "project_dir": project_dir,
+            "kind": kind,
+            "count": count,
+            "title": title,
+            "resume_session_id": resume_session_id,
+            "session_label": session_label,
         },
     )
 
@@ -211,6 +233,7 @@ def register_tools(mcp: Any) -> None:
         context_workspace_list_agent_sessions,
         context_workspace_summarize_agent_sessions,
         context_workspace_spawn_agent,
+        context_workspace_spawn_terminal,
         context_workspace_list_runs,
         context_workspace_get_run,
         context_workspace_cancel_run,

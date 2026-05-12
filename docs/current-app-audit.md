@@ -19,7 +19,7 @@ The weakest remaining area is session continuity: sessions can be found, opened,
 - Review Room can inspect live embedded terminal buffers and native session metadata.
 - Settings exposes real environment state: workspace, backend, Hermes paths, recall status, and adapter paths.
 - Memory Room shows recent Hermes memory and can delete exact entries.
-- MCP/backend coverage includes health, memory, recall, native sessions, legacy runs/artifacts, and memory delete.
+- MCP/backend coverage includes health, memory, recall, native sessions, visible terminal spawning, legacy runs/artifacts, and memory delete.
 - Athena branding is integrated across the app and packaged builds.
 - `npm run build` and `npm run test:electron` pass on the current frontend/electron path.
 

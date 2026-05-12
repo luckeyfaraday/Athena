@@ -1,25 +1,27 @@
-# Context Workspace
+# Athena
 
-Context Workspace is a desktop control surface for running AI coding agents with shared project context. It combines an Electron/React workspace UI, embedded PTY terminals, a FastAPI backend, Hermes memory integration, and one-shot CLI agent execution.
+Athena is a desktop control surface for running AI coding agents with shared project context. It combines an Electron/React workspace UI, embedded PTY terminals, native agent session discovery, a FastAPI backend, and Hermes memory integration.
 
-The current implementation focuses on local orchestration: selecting a workspace, launching embedded shells or agent grids, checking Hermes/backend status, reading shared memory, and tracking agent runs and artifacts.
+The current implementation focuses on local, session-first orchestration: selecting workspaces, launching embedded shells or agent panes, resuming native Codex/OpenCode/Claude/Hermes sessions, checking Hermes/backend status, refreshing recall, and inspecting live session output.
 
 ## Features
 
-- Electron desktop app with a compact dashboard UI.
+- Electron desktop app with Athena branding and a compact room-based UI.
 - Embedded terminals powered by `node-pty` and `xterm.js`.
-- One-click launch options for shell, Codex, Codex grid, OpenCode grid, and Claude grid.
+- One-click launch options for shell, Hermes, Codex, Codex grid, OpenCode grid, and Claude grid.
+- Workspace tabs for switching between active projects.
+- Native session discovery for Codex, OpenCode, Claude, and Hermes.
+- Session-first Agents and Reviews surfaces for inspecting live buffers and native session metadata.
 - FastAPI backend started and monitored by the Electron main process.
 - Hermes status and memory endpoints.
-- Codex adapter for one-shot agent runs.
-- Run registry with status tracking, cancellation, and bounded artifact reads.
-- Generated per-run context artifacts under `.context-workspace/runs/<run-id>/`.
+- Recall refresh before agent launch, with generated prompt files that include project-local recall context.
+- Legacy Codex adapter support for one-shot backend runs and bounded artifact reads.
 - Test harness with deterministic fake agents for backend execution flow.
 
 ## Repository Layout
 
 ```text
-backend/                 FastAPI backend, memory, run registry, adapters
+backend/                 FastAPI backend, memory, native sessions, legacy run registry, adapters
 backend/adapters/        Agent adapter implementations
 client/                  Electron + React desktop client
 client/electron/         Electron main-process services and IPC handlers
@@ -27,7 +29,7 @@ client/src/              React UI and browser-side API wrappers
 docs/                    Implementation notes and verification docs
 scripts/                 Local verification helpers
 tests/                   Backend and adapter tests
-SPEC.md                  Design notes and historical project specification
+SPEC.md                  Historical design notes and project specification
 ```
 
 ## Requirements
@@ -41,7 +43,7 @@ SPEC.md                  Design notes and historical project specification
   - `claude`
 - Optional Hermes Agent install for real shared memory integration
 
-The desktop app can open without all agent CLIs installed, but missing adapters will show as unavailable and related launch commands may fail inside the terminal.
+The desktop app can open without all agent CLIs installed, but missing adapters show as unavailable and related launch commands may fail inside the terminal.
 
 ## Setup
 
@@ -144,33 +146,25 @@ npm run build
 
 The tests use a fake CLI agent fixture so the execution loop can be verified without calling real hosted models or external agent tools.
 
-## How Agent Runs Work
+## How Agent Sessions Work
 
-The backend receives an agent spawn request with:
+Athena's primary workflow is embedded, interactive agent sessions. The Electron main process launches terminal panes for shell, Hermes, Codex, OpenCode, and Claude, then the React UI renders those panes with `xterm.js`.
 
-- agent type
-- project directory
-- task text
-- optional memory query
-- optional timeout
+For agent panes, Athena:
 
-It then:
+1. Checks whether project recall is missing or stale.
+2. Runs the configured recall refresh command when available.
+3. Writes a temporary prompt file with workspace details, recall cache path, and recall contents.
+4. Starts the selected CLI in an embedded PTY.
+5. Tracks the pane as a live session and captures a bounded terminal buffer for review.
 
-1. Validates runtime limits and workspace safety.
-2. Creates a run record.
-3. Queries Hermes memory for relevant context.
-4. Writes context artifacts to:
+The app also discovers native provider sessions already on disk, so previous Codex/OpenCode/Claude/Hermes work can be inspected or resumed from the Sessions tab.
 
-   ```text
-   <project-dir>/.context-workspace/runs/<run-id>/
-   ```
+## Legacy Backend Runs
 
-5. Builds an agent-specific command through an adapter.
-6. Executes the one-shot CLI process.
-7. Captures stdout, stderr, and final result artifacts.
-8. Updates run status and appends a memory summary.
+The backend still includes an older one-shot run registry and Codex adapter. This path receives an agent spawn request, creates a run record, writes bounded artifacts under `.context-workspace/runs/<run-id>/`, executes the CLI process, and exposes status/artifact endpoints.
 
-Generated context artifacts are cache/output files. Hermes memory remains the durable source of shared context.
+That backend-run flow is maintained for compatibility and tests, but Athena's current product direction is session-first embedded terminals plus native session discovery. Generated context artifacts are cache/output files. Hermes memory and project-local recall remain the durable shared context.
 
 ## Embedded Terminals
 
@@ -179,6 +173,7 @@ The Electron main process manages embedded terminals through `node-pty`. The Rea
 The `New` menu can launch:
 
 - `Shell`
+- `Hermes`
 - `Codex`
 - `Codex Grid`
 - `OpenCode Grid`
@@ -200,7 +195,7 @@ The response is plain text so CLI agents can consume it easily with tools like `
 
 ## Hermes MCP Bridge
 
-Context Workspace also includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace. This bridge is intended for Hermes running in WSL while Context Workspace runs on Windows.
+Athena includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace. This bridge is intended for Hermes running in WSL while Athena runs on Windows.
 
 Install the MCP server dependencies into the Python environment Hermes will use:
 
@@ -240,14 +235,14 @@ From WSL, that file is available at:
 /mnt/c/Users/alanq/.context-workspace/backend.json
 ```
 
-Start the Context Workspace desktop app before starting Hermes so the backend state file exists. If you run the backend directly on a fixed port, you can use `CONTEXT_WORKSPACE_BACKEND_URL` instead:
+Start the Athena desktop app before starting Hermes so the backend state file exists. If you run the backend directly on a fixed port, you can use `CONTEXT_WORKSPACE_BACKEND_URL` instead:
 
 ```yaml
 env:
   CONTEXT_WORKSPACE_BACKEND_URL: "http://127.0.0.1:8000"
 ```
 
-The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, agent run management, artifact reads, and project-local recall cache management.
+The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, legacy agent run management, artifact reads, and project-local recall cache management.
 
 When Electron starts the backend, it configures a default recall refresh command:
 
@@ -263,7 +258,7 @@ Recommended recall workflow:
 2. Hermes calls `context_workspace_summarize_agent_sessions` when it needs native Codex/OpenCode/Claude session history for the selected workspace.
 3. Hermes summarizes the relevant prior-session context.
 4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
-5. Future Context Workspace agent runs include that cache in the generated `context.md`.
+5. Future Athena agent launches include that cache in the generated prompt context.
 
 Useful MCP tools for this workflow:
 
@@ -275,7 +270,7 @@ context_workspace_read_recall_cache(project_dir)
 context_workspace_clear_recall_cache(project_dir)
 ```
 
-Context Workspace owns these app-side tools. Hermes still owns its own config, `session_search`, long-term memory writes, and the decision about when to refresh or clear recall.
+Athena owns these app-side tools. Hermes still owns its own config, `session_search`, long-term memory writes, and the decision about when to refresh or clear recall.
 
 ## Troubleshooting
 

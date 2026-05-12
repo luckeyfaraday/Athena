@@ -10,6 +10,21 @@ backend port from:
 
 Set `CONTEXT_WORKSPACE_BACKEND_URL` to override discovery.
 
+When the MCP server runs inside WSL and discovers an Electron backend URL such
+as `http://127.0.0.1:<port>` from the Windows `backend.json`, it automatically
+rewrites the host to the Windows gateway IP from `/etc/resolv.conf`. This keeps
+the Electron app bound to Windows localhost while making Hermes-in-WSL able to
+reach the backend.
+
+If WSL gateway discovery is wrong for your environment, set:
+
+```bash
+export CONTEXT_WORKSPACE_WINDOWS_HOST=<windows-host-ip>
+```
+
+`CONTEXT_WORKSPACE_BACKEND_URL` still has highest priority and is used exactly
+as provided.
+
 Hermes configuration:
 
 ```yaml

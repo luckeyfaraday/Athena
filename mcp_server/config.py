@@ -13,4 +13,5 @@ class Settings(BaseModel):
     )
     default_backend_url: str = "http://127.0.0.1:8000"
     request_timeout_seconds: float = float(os.environ.get("CONTEXT_WORKSPACE_MCP_HTTP_TIMEOUT", "60"))
+    windows_host: str | None = os.environ.get("CONTEXT_WORKSPACE_WINDOWS_HOST")
 

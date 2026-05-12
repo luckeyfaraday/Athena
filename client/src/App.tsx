@@ -65,6 +65,7 @@ const emptyLoadState: LoadState = {
 };
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
+const workspaceListStorageKey = "context-workspace:workspaces";
 const deletedAgentSessionsStoragePrefix = "context-workspace:deleted-agent-sessions:";
 
 function storedWorkspaceValue(): string | null {
@@ -83,6 +84,50 @@ function parseStoredWorkspace(value: string | null): string | null {
   } catch {
     return value;
   }
+}
+
+function normalizeWorkspaceKey(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function sameWorkspacePath(left: string, right: string): boolean {
+  return Boolean(left && right && normalizeWorkspaceKey(left) === normalizeWorkspaceKey(right));
+}
+
+function workspaceDisplayName(workspace: WorkspacePath): string {
+  const normalized = workspace.displayPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized.split("/").filter(Boolean).at(-1) ?? workspace.displayPath;
+}
+
+function workspaceKey(workspace: WorkspacePath): string {
+  return normalizeWorkspaceKey(workspace.nativePath);
+}
+
+function readWorkspaceList(): WorkspacePath[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(workspaceListStorageKey) ?? "[]") as Partial<WorkspacePath>[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is WorkspacePath =>
+      typeof item?.nativePath === "string" &&
+      typeof item.displayPath === "string" &&
+      (typeof item.wslPath === "string" || item.wslPath === null),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeWorkspaceList(workspaces: WorkspacePath[]): void {
+  try {
+    window.localStorage.setItem(workspaceListStorageKey, JSON.stringify(workspaces));
+  } catch {
+    // Ignore storage failures; tabs still work for this session.
+  }
+}
+
+function upsertWorkspace(workspaces: WorkspacePath[], workspace: WorkspacePath): WorkspacePath[] {
+  const key = workspaceKey(workspace);
+  return [workspace, ...workspaces.filter((item) => workspaceKey(item) !== key)].slice(0, 12);
 }
 
 function deletedAgentSessionsStorageKey(workspace: string): string {
@@ -109,6 +154,7 @@ function writeDeletedAgentSessions(workspace: string, sessions: Set<string>): vo
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
   const [workspacePath, setWorkspacePath] = useState<WorkspacePath | null>(null);
+  const [workspaceTabs, setWorkspaceTabs] = useState<WorkspacePath[]>(() => readWorkspaceList());
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
   const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
@@ -116,16 +162,14 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
   const [terminalFocus, setTerminalFocus] = useState(false);
-  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef(false);
-  const autoStartedTerminals = useRef(false);
+  const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
-  const newMenuRef = useRef<HTMLDivElement | null>(null);
   const workspace = workspacePath?.nativePath ?? "";
   const workspaceDisplay = workspacePath?.displayPath ?? workspace;
 
@@ -177,7 +221,7 @@ export function App() {
         client.hermesStatus(),
         workspace ? client.recallStatus(workspace) : Promise.resolve(null),
         client.adapters(),
-        client.recentMemory(30),
+        workspace ? client.projectMemory(workspace, 30) : client.recentMemory(30),
       ]);
       setState({ hermes, recall, adapters, memory });
       setError(null);
@@ -190,17 +234,25 @@ export function App() {
 
   useEffect(() => {
     try {
-      if (workspacePath?.nativePath.trim()) window.localStorage.setItem(workspaceStorageKey, JSON.stringify(workspacePath));
+      if (workspacePath?.nativePath.trim()) {
+        window.localStorage.setItem(workspaceStorageKey, JSON.stringify(workspacePath));
+      } else {
+        window.localStorage.removeItem(workspaceStorageKey);
+      }
     } catch {
       // Ignore storage failures; the selected workspace still works for this session.
     }
   }, [workspacePath]);
 
   useEffect(() => {
+    writeWorkspaceList(workspaceTabs);
+  }, [workspaceTabs]);
+
+  useEffect(() => {
     const stored = parseStoredWorkspace(storedWorkspaceValue());
     const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
     workspacePromise
-      .then((resolved) => setWorkspacePath(resolved))
+      .then((resolved) => activateWorkspace(resolved))
       .catch((err) => setError(String(err)));
 
     desktop
@@ -248,10 +300,13 @@ export function App() {
   }, [refreshBackend, refreshData, refreshSessions, refreshAgentSessions]);
 
   useEffect(() => {
-    if (autoStartedTerminals.current || !workspace || embeddedSessions.length > 0) return;
-    autoStartedTerminals.current = true;
+    if (!workspace) return;
+    const key = normalizeWorkspaceKey(workspace);
+    const hasWorkspaceTerminal = embeddedSessions.some((session) => sameWorkspacePath(session.workspace, workspace));
+    if (autoStartedTerminals.current.has(key) || hasWorkspaceTerminal) return;
+    autoStartedTerminals.current.add(key);
     void launchEmbedded("shell", 1);
-  }, [workspace, embeddedSessions.length]);
+  }, [workspace, embeddedSessions]);
 
   useEffect(() => {
     if (!workspace || !state.recall?.stale || !state.recall.refresh_configured) return;
@@ -259,24 +314,6 @@ export function App() {
     autoRecallRefreshWorkspace.current = workspace;
     void refreshRecall("Workspace selected", { surfaceError: false });
   }, [workspace, state.recall?.stale, state.recall?.refresh_configured]);
-
-  useEffect(() => {
-    if (!newMenuOpen) return;
-
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!newMenuRef.current?.contains(event.target as Node)) setNewMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setNewMenuOpen(false);
-    };
-
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [newMenuOpen]);
 
   async function restartBackend() {
     setBusy(true);
@@ -294,10 +331,31 @@ export function App() {
   async function selectWorkspace() {
     try {
       const selected = await desktop.selectWorkspace();
-      if (selected) setWorkspacePath(selected);
+      if (selected) activateWorkspace(selected);
     } catch (err) {
       setError(String(err));
     }
+  }
+
+  function activateWorkspace(nextWorkspace: WorkspacePath) {
+    setWorkspacePath(nextWorkspace);
+    setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
+    setSelectedSessionKey(null);
+    setState((current) => ({ ...current, recall: null }));
+  }
+
+  function closeWorkspaceTab(tab: WorkspacePath) {
+    const key = workspaceKey(tab);
+    setWorkspaceTabs((current) => {
+      const next = current.filter((item) => workspaceKey(item) !== key);
+      if (workspacePath && workspaceKey(workspacePath) === key) {
+        const replacement = next[0] ?? null;
+        setWorkspacePath(replacement);
+        setSelectedSessionKey(null);
+        setState((currentState) => ({ ...currentState, recall: null }));
+      }
+      return next;
+    });
   }
 
   async function refreshRecall(taskHint = "Manual recall refresh", options: { surfaceError?: boolean } = {}) {
@@ -429,13 +487,17 @@ export function App() {
     }
   }
 
-  const selectedEmbeddedSession = embeddedSessions.find((session) => embeddedSessionKey(session) === selectedSessionKey) ?? null;
+  const activeEmbeddedSessions = useMemo(
+    () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
+    [embeddedSessions, workspace],
+  );
+  const selectedEmbeddedSession = activeEmbeddedSessions.find((session) => embeddedSessionKey(session) === selectedSessionKey) ?? null;
   const selectedAgentSession = agentSessions.find((session) => selectedAgentSessionKey(session) === selectedSessionKey) ?? null;
   const memoryEntries = [...state.memory].reverse();
   const codexInstalled = Boolean(state.adapters.codex?.installed);
   const installedAdapters = Object.values(state.adapters).filter((adapter) => adapter.installed).length;
-  const liveSessionCount = embeddedSessions.filter((session) => session.status === "running").length;
-  const reviewSessionCount = embeddedSessions.length + agentSessions.length;
+  const liveSessionCount = activeEmbeddedSessions.filter((session) => session.status === "running").length;
+  const reviewSessionCount = activeEmbeddedSessions.length + agentSessions.length;
   const activeRoute = roomRouteById[activeRoom];
 
   const agentRoles: AgentRole[] = [
@@ -512,28 +574,20 @@ export function App() {
                 <h1>{activeRoute.label}</h1>
                 <p>{activeRoute.description}</p>
               </div>
-              <div className="topbarActions">
-                <button className="ghostButton" onClick={() => void selectWorkspace()}>
-                  <FolderOpen size={14} /> Open Workspace
-                </button>
-                <button className="ghostButton" onClick={() => void launchEmbedded("shell", 1)} disabled={!workspace || busy}>
-                  <TerminalSquare size={14} /> Open in Terminal
-                </button>
-                <NewLaunchMenu
-                  busy={busy}
-                  open={newMenuOpen}
-                  workspace={workspace}
-                  menuRef={newMenuRef}
-                  onOpenChange={setNewMenuOpen}
-                  onLaunch={launchEmbedded}
-                />
-              </div>
             </header>
+            <WorkspaceTabs
+              workspaces={workspaceTabs}
+              activeWorkspace={workspacePath}
+              terminalSessions={embeddedSessions}
+              onSelect={activateWorkspace}
+              onClose={closeWorkspaceTab}
+              onAdd={selectWorkspace}
+            />
 
             {activeRoom === "command" && (
               <CommandRoom
                 workspace={workspace}
-                sessions={embeddedSessions}
+                sessions={activeEmbeddedSessions}
                 agentSessions={agentSessions}
                 busy={busy}
                 focused={terminalFocus}
@@ -556,7 +610,7 @@ export function App() {
             {activeRoom === "swarm" && (
               <SwarmRoom
                 roles={agentRoles}
-                sessions={embeddedSessions}
+                sessions={activeEmbeddedSessions}
                 agentSessions={agentSessions}
                 onOpenCommand={() => setActiveRoom("command")}
                 onInspectEmbeddedSession={(session) => {
@@ -571,7 +625,7 @@ export function App() {
             )}
             {activeRoom === "review" && (
               <ReviewRoom
-                embeddedSessions={embeddedSessions}
+                embeddedSessions={activeEmbeddedSessions}
                 agentSessions={agentSessions}
                 selectedEmbeddedSession={selectedEmbeddedSession}
                 selectedAgentSession={selectedAgentSession}
@@ -611,8 +665,8 @@ export function App() {
           </aside>
 
           <aside className="rightColumn">
-            <ActiveAgents roles={agentRoles} embeddedSessions={embeddedSessions} />
-            <MemoryTimeline entries={memoryEntries} embeddedSessions={embeddedSessions} agentSessions={agentSessions} />
+            <ActiveAgents roles={agentRoles} embeddedSessions={activeEmbeddedSessions} />
+            <MemoryTimeline entries={memoryEntries} embeddedSessions={activeEmbeddedSessions} agentSessions={agentSessions} />
           </aside>
 
           <SharedMemorySnapshot
@@ -620,7 +674,7 @@ export function App() {
             entries={memoryEntries}
             hermes={state.hermes}
             recall={state.recall}
-            embeddedSessions={embeddedSessions}
+            embeddedSessions={activeEmbeddedSessions}
             agentSessions={agentSessions}
             refreshing={recallRefreshing}
             onRefresh={() => void refreshRecall("Manual recall refresh")}
@@ -666,6 +720,57 @@ function StatusPill({ tone, children }: { tone: "ok" | "warn" | "bad"; children:
   );
 }
 
+function WorkspaceTabs({
+  workspaces,
+  activeWorkspace,
+  terminalSessions,
+  onSelect,
+  onClose,
+  onAdd,
+}: {
+  workspaces: WorkspacePath[];
+  activeWorkspace: WorkspacePath | null;
+  terminalSessions: EmbeddedTerminalSession[];
+  onSelect: (workspace: WorkspacePath) => void;
+  onClose: (workspace: WorkspacePath) => void;
+  onAdd: () => Promise<void>;
+}) {
+  return (
+    <div className="workspaceTabs" aria-label="Open workspaces">
+      <div className="workspaceTabList">
+        {workspaces.map((workspace) => {
+          const active = activeWorkspace ? workspaceKey(activeWorkspace) === workspaceKey(workspace) : false;
+          const running = terminalSessions.filter((session) => sameWorkspacePath(session.workspace, workspace.nativePath) && session.status === "running").length;
+          return (
+            <div key={workspace.nativePath} className={active ? "workspaceTab active" : "workspaceTab"}>
+              <button type="button" onClick={() => onSelect(workspace)} title={workspace.displayPath}>
+                <span>
+                  <strong>{workspaceDisplayName(workspace)}</strong>
+                  <small>{running} running</small>
+                </span>
+              </button>
+              {workspaces.length > 1 && (
+                <button
+                  type="button"
+                  className="workspaceTabClose"
+                  aria-label={`Close ${workspaceDisplayName(workspace)}`}
+                  onClick={() => onClose(workspace)}
+                >
+                  <XCircle size={12} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {workspaces.length === 0 && <span className="workspaceTabEmpty">No workspace selected</span>}
+      </div>
+      <button type="button" className="workspaceAddButton" onClick={() => void onAdd()} title="Add workspace">
+        <FolderOpen size={13} /> Add
+      </button>
+    </div>
+  );
+}
+
 function FlowStep({ icon, label, active }: { icon: ReactNode; label: string; active?: boolean }) {
   return (
     <div className={active ? "flowStep active" : "flowStep"}>
@@ -698,6 +803,7 @@ function NewLaunchMenu({
     { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <Layers3 size={14} />, kind: "codex", count: 4 },
     { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <Bot size={14} />, kind: "opencode", count: 1 },
     { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <Users size={14} />, kind: "opencode", count: 4 },
+    { label: "Claude", detail: "Spawn one Claude agent", icon: <ShieldCheck size={14} />, kind: "claude", count: 1 },
     { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ShieldCheck size={14} />, kind: "claude", count: 4 },
   ];
 
@@ -1059,8 +1165,10 @@ function CommandRoom({
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
+  const newMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setPaneOrder((current) => {
@@ -1112,11 +1220,23 @@ function CommandRoom({
     setDeletedSessionKeys(readDeletedAgentSessions(workspace));
   }, [workspace]);
 
-  function arrangeGrid() {
-    setPaneOrder(sessions.map((session) => session.id));
-    setCollapsedPaneIds(new Set());
-    setMaximizedPaneId(null);
-  }
+  useEffect(() => {
+    if (!newMenuOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!newMenuRef.current?.contains(event.target as Node)) setNewMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNewMenuOpen(false);
+    };
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [newMenuOpen]);
 
   function togglePaneCollapsed(sessionId: string) {
     setCollapsedPaneIds((current) => {
@@ -1228,15 +1348,14 @@ function CommandRoom({
           <button className="ghostButton" onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
             <TerminalSquare size={15} /> New Shell
           </button>
-          <button className="ghostButton" onClick={arrangeGrid} disabled={sessions.length === 0}>
-            <Layers3 size={15} /> Arrange Grid
-          </button>
-          <button className="primaryButton" onClick={() => void onLaunch("opencode", 4)} disabled={!workspace || busy}>
-            <Bot size={15} /> OpenCode Grid
-          </button>
-          <button className="primaryButton" onClick={() => void onLaunch("claude", 4)} disabled={!workspace || busy}>
-            <Bot size={15} /> Claude Grid
-          </button>
+          <NewLaunchMenu
+            busy={busy}
+            open={newMenuOpen}
+            workspace={workspace}
+            menuRef={newMenuRef}
+            onOpenChange={setNewMenuOpen}
+            onLaunch={onLaunch}
+          />
         </div>
       </div>
 

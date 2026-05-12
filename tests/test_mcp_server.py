@@ -25,6 +25,7 @@ def test_tool_schema_resolves_future_annotations() -> None:
     assert schema["properties"]["timeout_seconds"] == {
         "anyOf": [{"type": "number"}, {"type": "null"}]
     }
+    assert schema["properties"]["visible_terminal"] == {"type": "boolean"}
     assert schema["required"] == ["project_dir", "task"]
 
 
@@ -49,10 +50,46 @@ def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
     assert schema["properties"]["title"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
+    assert schema["properties"]["task"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
     assert schema["properties"]["resume_session_id"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
     assert schema["required"] == ["project_dir"]
+
+
+def test_read_agent_session_tool_schema() -> None:
+    schema = server._tool_schema(tools.context_workspace_read_agent_session)["inputSchema"]
+
+    assert schema["properties"]["provider"] == {"type": "string"}
+    assert schema["properties"]["session_id"] == {"type": "string"}
+    assert schema["properties"]["max_bytes"] == {"type": "integer"}
+    assert schema["required"] == ["provider", "session_id"]
+
+
+def test_spawn_agent_defaults_to_visible_terminal(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    result = asyncio.run(tools.context_workspace_spawn_agent(str(tmp_path), "Optimize About page", agent_type="opencode"))
+
+    assert result["mode"] == "visible_terminal"
+    assert calls == [
+        {
+            "project_dir": str(tmp_path),
+            "kind": "opencode",
+            "count": 1,
+            "title": "OpenCode: Optimize About page",
+            "session_label": "New",
+            "task": "Optimize About page",
+        }
+    ]
 
 
 def test_delete_memory_tool_schema_requires_text() -> None:

@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from client import ContextWorkspaceClient, ContextWorkspaceElectronClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -93,8 +95,23 @@ async def context_workspace_spawn_agent(
     agent_type: str = "codex",
     memory_query: str | None = None,
     timeout_seconds: float | None = None,
+    visible_terminal: bool = True,
 ) -> dict[str, Any]:
-    """Spawn a Context Workspace agent run."""
+    """Spawn an agent. By default this opens a visible embedded PTY in the desktop app."""
+    normalized_agent = _terminal_kind_for_agent(agent_type)
+    if visible_terminal:
+        return {
+            "mode": "visible_terminal",
+            **await context_workspace_spawn_terminal(
+                project_dir=project_dir,
+                kind=normalized_agent,
+                count=1,
+                title=_title_for_task(normalized_agent, task),
+                session_label="New",
+                task=task,
+            ),
+        }
+
     return await ContextWorkspaceClient().post(
         "/agents/spawn",
         {
@@ -112,6 +129,7 @@ async def context_workspace_spawn_terminal(
     kind: str = "codex",
     count: int = 1,
     title: str | None = None,
+    task: str | None = None,
     resume_session_id: str | None = None,
     session_label: str | None = None,
 ) -> dict[str, Any]:
@@ -123,6 +141,7 @@ async def context_workspace_spawn_terminal(
             "kind": kind,
             "count": count,
             "title": title,
+            "task": task,
             "resume_session_id": resume_session_id,
             "session_label": session_label,
         },
@@ -151,8 +170,27 @@ async def context_workspace_read_artifact(
     tail: bool = True,
 ) -> str:
     """Read a run artifact: context, stdout, stderr, or result."""
+    try:
+        return await ContextWorkspaceClient().get(
+            f"/agents/runs/{run_id}/artifacts/{artifact_name}",
+            max_bytes=max_bytes,
+            tail=str(tail).lower(),
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {400, 404} and run_id.startswith("ses_"):
+            return await context_workspace_read_agent_session("opencode", run_id, max_bytes=max_bytes, tail=tail)
+        raise
+
+
+async def context_workspace_read_agent_session(
+    provider: str,
+    session_id: str,
+    max_bytes: int = 65536,
+    tail: bool = True,
+) -> str:
+    """Read a provider-native session transcript, including OpenCode SQLite sessions."""
     return await ContextWorkspaceClient().get(
-        f"/agents/runs/{run_id}/artifacts/{artifact_name}",
+        f"/agents/sessions/{provider}/{session_id}/transcript",
         max_bytes=max_bytes,
         tail=str(tail).lower(),
     )
@@ -238,6 +276,7 @@ def register_tools(mcp: Any) -> None:
         context_workspace_get_run,
         context_workspace_cancel_run,
         context_workspace_read_artifact,
+        context_workspace_read_agent_session,
         context_workspace_wait_for_run,
         context_workspace_write_recall_cache,
         context_workspace_read_recall_cache,
@@ -255,3 +294,29 @@ def _resolve_recall_project(project_dir: str) -> Path:
         return resolve_project_dir(project_dir)
     except OSError as exc:
         raise SafetyError(f"Project directory cannot be resolved: {project_dir}") from exc
+
+
+def _terminal_kind_for_agent(agent_type: str) -> str:
+    normalized = agent_type.strip().lower().replace("_", "-")
+    aliases = {
+        "codex": "codex",
+        "opencode": "opencode",
+        "open-code": "opencode",
+        "claude": "claude",
+        "claude-code": "claude",
+        "hermes": "hermes",
+    }
+    if normalized not in aliases:
+        raise ValueError(f"Unsupported agent type: {agent_type}")
+    return aliases[normalized]
+
+
+def _title_for_task(kind: str, task: str) -> str:
+    prefix = {
+        "codex": "Codex",
+        "opencode": "OpenCode",
+        "claude": "Claude",
+        "hermes": "Hermes",
+    }.get(kind, "Agent")
+    first_line = next((line.strip() for line in task.splitlines() if line.strip()), "")
+    return f"{prefix}: {first_line[:48]}" if first_line else prefix

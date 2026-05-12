@@ -56,6 +56,7 @@ export type EmbeddedTerminalSession = {
 export type EmbeddedTerminalSpawnOptions = {
   kind?: EmbeddedTerminalKind;
   title?: string;
+  task?: string;
   cols?: number;
   rows?: number;
   resumeSessionId?: string;

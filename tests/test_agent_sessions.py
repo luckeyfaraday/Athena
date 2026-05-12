@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from backend.agent_sessions import format_agent_sessions_summary, list_native_agent_sessions
+from backend.agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
 
 
 def test_lists_codex_sessions_for_workspace(tmp_path: Path) -> None:
@@ -79,6 +79,44 @@ def test_lists_opencode_and_filters_query(tmp_path: Path) -> None:
 
     assert [session.id for session in sessions] == ["opencode-session-1"]
     assert sessions[0].model == "anthropic/claude-sonnet"
+
+
+def test_reads_opencode_transcript_from_message_parts(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    db_path = home / ".local" / "share" / "opencode" / "opencode.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "create table session (id text primary key, title text, directory text, agent text, model text, time_created integer, time_updated integer)"
+        )
+        connection.execute("create table message (id text primary key, session_id text, time_created integer, time_updated integer, data text)")
+        connection.execute("create table part (id text primary key, message_id text, session_id text, time_created integer, time_updated integer, data text)")
+        connection.execute(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?)",
+            ("ses_test", "SEO plan", str(tmp_path / "project"), "build", json.dumps({"providerID": "test", "id": "model"}), 1, 2),
+        )
+        connection.execute(
+            "insert into message values (?, ?, ?, ?, ?)",
+            ("msg_user", "ses_test", 3, 3, json.dumps({"role": "user", "agent": "build"})),
+        )
+        connection.execute(
+            "insert into part values (?, ?, ?, ?, ?, ?)",
+            ("part_user", "msg_user", "ses_test", 4, 4, json.dumps({"type": "text", "text": "optimize the repo about"})),
+        )
+        connection.execute(
+            "insert into message values (?, ?, ?, ?, ?)",
+            ("msg_assistant", "ses_test", 5, 5, json.dumps({"role": "assistant", "modelID": "MiniMax-M2.7"})),
+        )
+        connection.execute(
+            "insert into part values (?, ?, ?, ?, ?, ?)",
+            ("part_assistant", "msg_assistant", "ses_test", 6, 6, json.dumps({"type": "text", "text": "Here is the SEO plan."})),
+        )
+
+    transcript = read_agent_session_transcript("opencode", "ses_test", home_dir=home)
+
+    assert "# OpenCode Session Transcript" in transcript
+    assert "optimize the repo about" in transcript
+    assert "Here is the SEO plan." in transcript
 
 
 def test_lists_claude_jsonl_sessions(tmp_path: Path) -> None:

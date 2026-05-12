@@ -33,6 +33,7 @@ export type EmbeddedTerminalSession = {
 export type EmbeddedTerminalSpawnOptions = {
   kind?: EmbeddedTerminalKind;
   title?: string;
+  task?: string;
   cols?: number;
   rows?: number;
   resumeSessionId?: string;
@@ -71,7 +72,7 @@ export async function spawnEmbeddedTerminal(
 
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId ? null : await writeHermesPrompt(cwd, kind, options.title);
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId ? null : await writeHermesPrompt(cwd, kind, options.title, options.task);
   const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
@@ -323,7 +324,7 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
   ].join("; ");
 }
 
-async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?: string): Promise<string> {
+async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?: string, task?: string): Promise<string> {
   const memory = await fetchHermesMemory(cwd);
   const recall = readHermesRecall(cwd);
   const directory = tempWorkspaceDirectory();
@@ -334,6 +335,7 @@ async function writeHermesPrompt(cwd: string, kind: EmbeddedTerminalKind, title?
     `Agent: ${agentConfig(kind).label}`,
     `Pane: ${title ?? "Codex"}`,
     `Workspace: ${cwd}`,
+    task?.trim() ? `Task: ${task.trim()}` : "",
     "",
     "Context Workspace refreshed Hermes recall before launching this terminal when refresh was configured.",
     `Recall cache path: ${recall.path}`,

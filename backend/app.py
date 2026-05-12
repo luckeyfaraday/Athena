@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .adapters.base import AgentAdapter
-from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions
+from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
 from .adapters.codex import CodexAdapter
 from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
@@ -200,6 +200,23 @@ def create_app(
             "sessions": [session.payload() for session in sessions],
             "summary": format_agent_sessions_summary(sessions),
         }
+
+    @app.get("/agents/sessions/{provider}/{session_id}/transcript", response_class=PlainTextResponse)
+    def get_agent_session_transcript(
+        provider: str,
+        session_id: str,
+        max_bytes: int = Query(default=65536, ge=1, le=1048576),
+        tail: bool = Query(default=True),
+    ) -> str:
+        try:
+            session_provider = _session_provider(provider)
+            if session_provider is None:
+                raise ValueError("provider is required.")
+            return read_agent_session_transcript(session_provider, session_id, max_bytes=max_bytes, tail=tail)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/agents/spawn", status_code=202)
     def spawn_agent(request: SpawnAgentRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:

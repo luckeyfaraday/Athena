@@ -29,6 +29,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
         "context_workspace_get_run",
         "context_workspace_cancel_run",
         "context_workspace_read_artifact",
+        "context_workspace_read_agent_session",
         "context_workspace_wait_for_run",
         "context_workspace_write_recall_cache",
         "context_workspace_read_recall_cache",

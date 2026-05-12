@@ -14,6 +14,7 @@ import {
   Layers3,
   Play,
   RefreshCw,
+  ScrollText,
   Search,
   Send,
   ShieldCheck,
@@ -55,6 +56,13 @@ type PaneDragState = {
   deltaX: number;
   deltaY: number;
   targetId: string | null;
+};
+
+type AgentTranscriptState = {
+  key: string;
+  text: string;
+  loading: boolean;
+  error: string | null;
 };
 
 const emptyLoadState: LoadState = {
@@ -165,6 +173,7 @@ export function App() {
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
+  const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptState | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef(false);
@@ -500,6 +509,23 @@ export function App() {
   const reviewSessionCount = activeEmbeddedSessions.length + agentSessions.length;
   const activeRoute = roomRouteById[activeRoom];
 
+  const loadAgentTranscript = useCallback(async (session: AgentSession) => {
+    const key = selectedAgentSessionKey(session);
+    setSelectedSessionKey(key);
+    setActiveRoom("review");
+    setAgentTranscript({ key, text: "", loading: true, error: null });
+    if (!client) {
+      setAgentTranscript({ key, text: "", loading: false, error: "Backend is not available." });
+      return;
+    }
+    try {
+      const text = await client.agentSessionTranscript(session.provider, session.id);
+      setAgentTranscript({ key, text, loading: false, error: null });
+    } catch (err) {
+      setAgentTranscript({ key, text: "", loading: false, error: String(err) });
+    }
+  }, [client]);
+
   const agentRoles: AgentRole[] = [
     {
       role: "Builder",
@@ -605,6 +631,7 @@ export function App() {
                   setSelectedSessionKey(selectedAgentSessionKey(session));
                   setActiveRoom("review");
                 }}
+                onViewAgentTranscript={loadAgentTranscript}
               />
             )}
             {activeRoom === "swarm" && (
@@ -630,8 +657,10 @@ export function App() {
                 selectedEmbeddedSession={selectedEmbeddedSession}
                 selectedAgentSession={selectedAgentSession}
                 selectedSessionKey={selectedSessionKey}
+                agentTranscript={agentTranscript}
                 onSelectEmbeddedSession={(session) => setSelectedSessionKey(embeddedSessionKey(session))}
                 onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
+                onLoadAgentTranscript={loadAgentTranscript}
               />
             )}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} />}
@@ -1141,6 +1170,7 @@ function CommandRoom({
   onResumeSession,
   onInspectEmbeddedSession,
   onInspectAgentSession,
+  onViewAgentTranscript,
 }: {
   workspace: string;
   sessions: EmbeddedTerminalSession[];
@@ -1155,6 +1185,7 @@ function CommandRoom({
   onResumeSession: (session: AgentSession) => Promise<void>;
   onInspectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onInspectAgentSession: (session: AgentSession) => void;
+  onViewAgentTranscript: (session: AgentSession) => Promise<void>;
 }) {
   const [paneOrder, setPaneOrder] = useState<string[]>([]);
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
@@ -1488,6 +1519,9 @@ function CommandRoom({
                 <button type="button" onClick={() => onInspectAgentSession(session)}>
                   <FileText size={13} /> Inspect
                 </button>
+                <button type="button" onClick={() => void onViewAgentTranscript(session)}>
+                  <ScrollText size={13} /> Transcript
+                </button>
                 {session.resumeCommand && (
                   <button type="button" onClick={() => void onResumeSession(session)} disabled={busy}>
                     <RefreshCw size={13} /> Resume
@@ -1721,16 +1755,20 @@ function ReviewRoom({
   selectedEmbeddedSession,
   selectedAgentSession,
   selectedSessionKey,
+  agentTranscript,
   onSelectEmbeddedSession,
   onSelectAgentSession,
+  onLoadAgentTranscript,
 }: {
   embeddedSessions: EmbeddedTerminalSession[];
   agentSessions: AgentSession[];
   selectedEmbeddedSession: EmbeddedTerminalSession | null;
   selectedAgentSession: AgentSession | null;
   selectedSessionKey: string | null;
+  agentTranscript: AgentTranscriptState | null;
   onSelectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onSelectAgentSession: (session: AgentSession) => void;
+  onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
 }) {
   const selectedLabel = selectedEmbeddedSession?.title ?? selectedAgentSession?.title ?? "No session selected";
   const liveAgentSessions = embeddedSessions.filter((session) => session.kind !== "shell" && session.status === "running");
@@ -1751,8 +1789,8 @@ function ReviewRoom({
 
       <div className="reviewColumns">
         <ReviewCard title="Live buffers" icon={<TerminalSquare size={17} />} items={[`${embeddedSessions.length} embedded terminals`, `${liveAgentSessions.length} live agent panes`, "Terminal output captured from panes"]} />
-        <ReviewCard title="Native history" icon={<Code2 size={17} />} items={[`${historicalAgentSessions.length} historical sessions`, "Codex/OpenCode/Claude/Hermes metadata", "Resume commands when available"]} />
-        <ReviewCard title="Inspector scope" icon={<Play size={17} />} items={["Inspect live pane output", "Inspect provider metadata", "Use Command Room for resume actions"]} />
+        <ReviewCard title="Native history" icon={<Code2 size={17} />} items={[`${historicalAgentSessions.length} historical sessions`, "Provider metadata", "Transcript reads when available"]} />
+        <ReviewCard title="Inspector scope" icon={<Play size={17} />} items={["Inspect live pane output", "Inspect provider metadata", "Read native transcripts"]} />
       </div>
 
       <div className="sessionReviewList">
@@ -1780,18 +1818,33 @@ function ReviewRoom({
             <button type="button" className="ghostIconButton" onClick={() => onSelectAgentSession(session)}>
               <FileText size={14} />
             </button>
+            <button type="button" className="ghostIconButton" onClick={() => void onLoadAgentTranscript(session)}>
+              <ScrollText size={14} />
+            </button>
           </article>
         ))}
         {embeddedSessions.length === 0 && agentSessions.length === 0 && <p>No sessions yet. Launch an embedded agent or resume a native session from the Command Room.</p>}
       </div>
-      <SessionInspector embeddedSession={selectedEmbeddedSession} agentSession={selectedAgentSession} />
+      <SessionInspector embeddedSession={selectedEmbeddedSession} agentSession={selectedAgentSession} agentTranscript={agentTranscript} onLoadAgentTranscript={onLoadAgentTranscript} />
     </div>
   );
 }
 
-function SessionInspector({ embeddedSession, agentSession }: { embeddedSession: EmbeddedTerminalSession | null; agentSession: AgentSession | null }) {
+function SessionInspector({
+  embeddedSession,
+  agentSession,
+  agentTranscript,
+  onLoadAgentTranscript,
+}: {
+  embeddedSession: EmbeddedTerminalSession | null;
+  agentSession: AgentSession | null;
+  agentTranscript: AgentTranscriptState | null;
+  onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
+}) {
   const [buffer, setBuffer] = useState("");
   const terminalId = embeddedSession?.id ?? agentSession?.terminalId ?? null;
+  const transcriptKey = agentSession ? selectedAgentSessionKey(agentSession) : null;
+  const transcript = transcriptKey && agentTranscript?.key === transcriptKey ? agentTranscript : null;
 
   useEffect(() => {
     if (!terminalId) {
@@ -1850,11 +1903,30 @@ function SessionInspector({ embeddedSession, agentSession }: { embeddedSession: 
           <span className="tinyLabel">Session inspector</span>
           <strong>{embeddedSession?.title ?? agentSession?.title ?? "No session selected"}</strong>
         </div>
-        <StatusPill tone={terminalId ? "ok" : agentSession ? "warn" : "bad"}>{terminalId ? "Live buffer" : agentSession ? "Metadata only" : "Empty"}</StatusPill>
+        <div className="sessionInspectorActions">
+          {agentSession && !terminalId && (
+            <button type="button" className="ghostButton" onClick={() => void onLoadAgentTranscript(agentSession)} disabled={transcript?.loading}>
+              <ScrollText size={14} /> {transcript?.loading ? "Loading" : "Transcript"}
+            </button>
+          )}
+          <StatusPill tone={terminalId ? "ok" : transcript?.text ? "ok" : agentSession ? "warn" : "bad"}>
+            {terminalId ? "Live buffer" : transcript?.text ? "Transcript" : agentSession ? "Metadata only" : "Empty"}
+          </StatusPill>
+        </div>
       </div>
       <div className="sessionInspectorGrid">
         <pre>{metadata.join("\n")}</pre>
-        <pre>{terminalId ? buffer || "No terminal output captured yet." : "No live terminal buffer is attached to this session."}</pre>
+        <pre>
+          {terminalId
+            ? buffer || "No terminal output captured yet."
+            : transcript?.loading
+              ? "Loading native session transcript..."
+              : transcript?.error
+                ? transcript.error
+                : transcript?.text
+                  ? transcript.text
+                  : "No live terminal buffer is attached to this session. Use Transcript for native session content."}
+        </pre>
       </div>
     </section>
   );

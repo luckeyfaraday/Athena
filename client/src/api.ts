@@ -126,6 +126,12 @@ export class BackendClient {
     return this.text(`/agents/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactName)}?max_bytes=${maxBytes}`);
   }
 
+  async agentSessionTranscript(provider: string, sessionId: string, maxBytes = 262144): Promise<string> {
+    return this.text(
+      `/agents/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/transcript?max_bytes=${maxBytes}`,
+    );
+  }
+
   async recentMemory(limit = 20): Promise<string[]> {
     const response = await this.json<{ entries: string[] }>(`/memory/recent?limit=${limit}`);
     return response.entries;

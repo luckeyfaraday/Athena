@@ -68,7 +68,7 @@ Goal: let the user start fresh without losing useful context.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#ec62ad60` merge sessions / start fresh | P1 | User can select sessions and generate a curated handoff summary into recall cache. Raw transcripts are not dumped. |
+| `#ec62ad60` merge sessions / start fresh | P1 | Planned in `docs/session-continuity-handoff-plan.md`: user can select sessions and generate a curated handoff summary into recall cache. Raw transcripts are not dumped. |
 | Add session-to-recall action | P1 | A session row can contribute a bounded summary to project recall. |
 | Add recall audit trail | P2 | UI shows when recall was refreshed, source, bytes, and whether a launch used fresh recall. |
 
@@ -124,6 +124,6 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 
 Start with Milestone 4, using `docs/current-app-audit.md` as the current baseline:
 
-1. Build `#ec62ad60` session continuity: select sessions, generate a bounded handoff summary, and write it to recall.
+1. Build `#ec62ad60` session continuity from `docs/session-continuity-handoff-plan.md`: select sessions, generate a bounded handoff summary, and write it to recall.
 2. Finish `#ce14092c` only if chat-vs-shell mode has a clear product meaning.
 3. Treat `#9d14b31e` as a focused transparent-shell mode, not more general UI polish.

@@ -247,7 +247,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   color: var(--muted);
   font-size: 11px;
 }
-.topbarActions,
 .buttonRow {
   display: flex;
   align-items: center;
@@ -255,7 +254,99 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-.topbarActions { padding-top: 24px; }
+.workspaceTabs {
+  min-height: 42px;
+  padding: 7px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(7, 29, 23, .72);
+}
+.workspaceTabList {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.workspaceTab {
+  flex: 0 0 auto;
+  max-width: 210px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(15, 28, 22, .86);
+}
+.workspaceTab.active {
+  border-color: rgba(217, 196, 138, .5);
+  background: rgba(46, 90, 70, .34);
+}
+.workspaceTab > button:first-child {
+  min-width: 0;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+}
+.workspaceTab.active > button:first-child { color: var(--text); }
+.workspaceTab span,
+.workspaceTab strong,
+.workspaceTab small {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspaceTab strong {
+  font-size: 10px;
+  line-height: 1.15;
+}
+.workspaceTab small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.workspaceTabClose,
+.workspaceAddButton {
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.workspaceTabClose {
+  width: 25px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+}
+.workspaceTabClose:hover,
+.workspaceAddButton:hover {
+  color: var(--text);
+}
+.workspaceAddButton {
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-left: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 800;
+}
+.workspaceTabEmpty {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
 .iconButton,
 .primaryButton,
 .ghostButton,
@@ -468,10 +559,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   margin-top: 4px;
   color: var(--muted);
   font-size: 10px;
-}
-.commandRoom .buttonRow .primaryButton:nth-last-child(-n+2),
-.commandRoom .buttonRow .ghostButton:nth-child(3) {
-  display: none;
 }
 .commandRoomTabs {
   margin: 10px 12px;

@@ -131,6 +131,16 @@ export class BackendClient {
     return response.entries;
   }
 
+  async projectMemory(projectDir: string, limit = 20): Promise<string[]> {
+    const params = new URLSearchParams({ project_dir: projectDir, limit: String(limit) });
+    const response = await this.text(`/memory/hermes/project?${params.toString()}`);
+    return response
+      .replace(/^Project context from Hermes memory:\s*/i, "")
+      .split(/\n\n-\s+/)
+      .map((entry) => entry.replace(/^-\s+/, "").trim())
+      .filter(Boolean);
+  }
+
   async deleteMemory(text: string): Promise<{ deleted: boolean; removed: number }> {
     return this.json("/memory/delete", {
       method: "POST",

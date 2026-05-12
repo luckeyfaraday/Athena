@@ -80,6 +80,32 @@ def format_agent_sessions_summary(sessions: list[AgentSession]) -> str:
     return "\n".join(lines)
 
 
+def read_agent_session_transcript(
+    provider: AgentSessionProvider,
+    session_id: str,
+    *,
+    home_dir: str | Path | None = None,
+    max_bytes: int = 65536,
+    tail: bool = True,
+) -> str:
+    """Return a provider-native session transcript as markdown."""
+    normalized_id = session_id.strip()
+    if not normalized_id:
+        raise ValueError("session_id is required.")
+    home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
+    if provider == "opencode":
+        markdown = _read_opencode_transcript(normalized_id, home)
+    elif provider == "claude":
+        markdown = _read_claude_transcript(normalized_id, home)
+    elif provider == "hermes":
+        markdown = _read_hermes_transcript(normalized_id, home)
+    else:
+        raise ValueError("Codex run transcripts are exposed through run artifacts.")
+    if not markdown:
+        raise FileNotFoundError(f"{provider} session not found: {normalized_id}")
+    return _bounded_text(markdown, max_bytes=max_bytes, tail=tail)
+
+
 def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
     db_path = home / ".codex" / "state_5.sqlite"
     if not db_path.exists():
@@ -164,6 +190,130 @@ def _read_opencode_sessions(workspace: Path, home: Path) -> list[AgentSession]:
             )
         )
     return sessions
+
+
+def _read_opencode_transcript(session_id: str, home: Path) -> str:
+    db_path = home / ".local" / "share" / "opencode" / "opencode.db"
+    if not db_path.exists():
+        return ""
+    session_rows = _query_sqlite(
+        db_path,
+        """
+        select id, title, directory, agent, model, time_created, time_updated
+        from session
+        where id = ?
+        limit 1
+        """,
+        (session_id,),
+    )
+    if not session_rows:
+        return ""
+
+    rows = _query_sqlite(
+        db_path,
+        """
+        select m.id, m.data, p.id, p.data, coalesce(p.time_created, m.time_created)
+        from message m
+        left join part p on p.message_id = m.id
+        where m.session_id = ?
+        order by coalesce(p.time_created, m.time_created), m.id, p.id
+        """,
+        (session_id,),
+    )
+    header = _opencode_transcript_header(session_rows[0])
+    lines = [header, ""]
+    current_message = ""
+    for message_id, message_data, _part_id, part_data, _time in rows:
+        msg_id = _string_value(message_id)
+        if msg_id and msg_id != current_message:
+            current_message = msg_id
+            role = _json_string(message_data, "role") or "message"
+            agent = _json_string(message_data, "agent")
+            model = _json_string(message_data, "modelID") or _json_nested_string(message_data, "model", "modelID")
+            details = " / ".join(value for value in (agent, model) if value)
+            lines.append(f"## {role.title()}{f' ({details})' if details else ''}")
+            lines.append("")
+        rendered = _render_opencode_part(part_data)
+        if rendered:
+            lines.append(rendered)
+            lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _opencode_transcript_header(row: tuple[Any, ...]) -> str:
+    title = _clean_session_title(_string_value(row[1])) or "OpenCode session"
+    model = _parse_opencode_model(_nullable_string(row[4]))
+    details = [
+        f"session: {_string_value(row[0])}",
+        f"title: {title}",
+        f"workspace: {_string_value(row[2])}" if _string_value(row[2]) else "",
+        f"agent: {_string_value(row[3])}" if _string_value(row[3]) else "",
+        f"model: {model}" if model else "",
+        f"created: {_from_epoch(row[5])}",
+        f"updated: {_from_epoch(row[6])}",
+    ]
+    return "# OpenCode Session Transcript\n\n" + "\n".join(f"- {item}" for item in details if item)
+
+
+def _render_opencode_part(value: Any) -> str:
+    data = _json_object(value)
+    if not data:
+        return _string_value(value)
+    part_type = _string_property(data, "type")
+    if part_type == "text":
+        return _string_property(data, "text") or ""
+    if part_type == "reasoning":
+        text = _string_property(data, "text")
+        return f"**Reasoning**\n\n{text}" if text else ""
+    if part_type == "tool":
+        tool = _string_property(data, "tool") or "tool"
+        state = data.get("state")
+        if isinstance(state, dict):
+            title = _string_property(state, "title") or tool
+            status = _string_property(state, "status")
+            output = _string_property(state, "output")
+            body = f"**Tool: {title}{f' ({status})' if status else ''}**"
+            return f"{body}\n\n```text\n{output}\n```" if output else body
+        return f"**Tool: {tool}**"
+    return ""
+
+
+def _read_claude_transcript(session_id: str, home: Path) -> str:
+    projects_dir = home / ".claude" / "projects"
+    if not projects_dir.exists():
+        return ""
+    matches = list(projects_dir.glob(f"*/{session_id}.jsonl"))
+    if not matches:
+        return ""
+    lines = [f"# Claude Code Session Transcript\n\n- session: {session_id}", ""]
+    for raw in matches[0].read_text(encoding="utf-8", errors="replace").splitlines():
+        data = _json_object(raw)
+        message = data.get("message") if isinstance(data, dict) else None
+        if not isinstance(message, dict):
+            continue
+        role = _string_property(message, "role") or "message"
+        text = _message_content(message)
+        if text:
+            lines.extend([f"## {role.title()}", "", text, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _read_hermes_transcript(session_id: str, home: Path) -> str:
+    file_path = home / ".hermes" / "sessions" / f"session_{session_id}.json"
+    if not file_path.exists():
+        return ""
+    data = _json_object(file_path.read_text(encoding="utf-8", errors="replace"))
+    lines = [f"# Hermes Session Transcript\n\n- session: {session_id}", ""]
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role = _string_property(item, "role") or _string_property(item, "type") or "message"
+            text = _message_content(item)
+            if text:
+                lines.extend([f"## {role.title()}", "", text, ""])
+    return "\n".join(lines).strip() + "\n"
 
 
 def _read_claude_sessions(workspace: Path, home: Path) -> list[AgentSession]:
@@ -380,11 +530,11 @@ def _hermes_agent_label(source: str | None, manifest_entry: dict[str, str | None
     return " / ".join(parts) if parts else None
 
 
-def _query_sqlite(db_path: Path, sql: str) -> list[tuple[Any, ...]]:
+def _query_sqlite(db_path: Path, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
     try:
         connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.25)
         try:
-            return list(connection.execute(sql))
+            return list(connection.execute(sql, params))
         finally:
             connection.close()
     except sqlite3.Error:
@@ -474,6 +624,18 @@ def _parse_json_object(value: str | None) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _json_object(value: Any) -> dict[str, Any] | None:
+    return _parse_json_object(value if isinstance(value, str) else None)
+
+
+def _json_string(value: Any, key: str) -> str | None:
+    return _string_property(_json_object(value), key)
+
+
+def _json_nested_string(value: Any, parent: str, key: str) -> str | None:
+    return _string_property(_object_property(_json_object(value), parent), key)
+
+
 def _object_property(value: dict[str, Any] | None, key: str) -> dict[str, Any] | None:
     item = value.get(key) if value else None
     return item if isinstance(item, dict) else None
@@ -495,6 +657,14 @@ def _message_content(message: dict[str, Any] | None) -> str | None:
                 parts.append(item["text"])
         return "\n".join(parts)
     return None
+
+
+def _bounded_text(text: str, *, max_bytes: int, tail: bool) -> str:
+    data = text.encode("utf-8")
+    if len(data) <= max_bytes:
+        return text
+    chunk = data[-max_bytes:] if tail else data[:max_bytes]
+    return chunk.decode("utf-8", errors="replace")
 
 
 def _nullable_string(value: Any) -> str | None:

@@ -23,6 +23,7 @@ type SpawnTerminalRequest = {
   kind?: string;
   count?: number;
   title?: string;
+  task?: string;
   resume_session_id?: string;
   session_label?: string;
   cols?: number;
@@ -96,6 +97,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           await spawnEmbeddedTerminal(payload.workspace, {
             kind: payload.kind,
             title: payload.count > 1 ? terminalGridTitle(payload.kind, index) : payload.title,
+            task: payload.task,
             cols: payload.cols,
             rows: payload.rows,
             resumeSessionId: payload.resumeSessionId,
@@ -120,6 +122,7 @@ function parseSpawnTerminalRequest(body: unknown): {
   kind: EmbeddedTerminalKind;
   count: number;
   title?: string;
+  task?: string;
   resumeSessionId?: string;
   sessionLabel?: string;
   cols?: number;
@@ -140,6 +143,7 @@ function parseSpawnTerminalRequest(body: unknown): {
     kind: kind as EmbeddedTerminalKind,
     count,
     title: stringValue(request.title),
+    task: stringValue(request.task),
     resumeSessionId: stringValue(request.resume_session_id),
     sessionLabel: stringValue(request.session_label),
     cols: numberValue(request.cols),

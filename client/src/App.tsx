@@ -444,28 +444,28 @@ export function App() {
       type: "codex",
       icon: <Wrench size={18} />,
       status: liveSessionCount ? "running" : codexInstalled ? "ready" : "offline",
-      brief: "Implements the selected task against the live repo.",
+      brief: "Implements changes against the active workspace.",
     },
     {
       role: "Reviewer",
       type: "codex",
       icon: <Eye size={18} />,
       status: codexInstalled ? "ready" : "offline",
-      brief: "Reads diffs, tests, and session output before anything ships.",
+      brief: "Inspects diffs, checks, and session output.",
     },
     {
       role: "Scout",
       type: "opencode",
       icon: <Search size={18} />,
       status: state.adapters.opencode?.installed ? "ready" : "waiting",
-      brief: "Explores code, docs, and prior Hermes memory for context.",
+      brief: "Explores code, docs, and Hermes memory for context.",
     },
     {
       role: "Fixer",
       type: "claude",
       icon: <ShieldCheck size={18} />,
       status: state.adapters.claude?.installed ? "ready" : "waiting",
-      brief: "Takes failed sessions and drives them back to green.",
+      brief: "Works through failures and follow-up fixes.",
     },
   ];
 
@@ -603,7 +603,7 @@ export function App() {
             <ContextGlance
               tasks={reviewSessionCount}
               active={liveSessionCount}
-              agents={installedAdapters || agentRoles.length}
+              agents={installedAdapters}
               memory={state.memory.length}
               reviews={reviewSessionCount}
               onNavigate={setActiveRoom}
@@ -756,7 +756,7 @@ function ContextGlance({
         <span>ATHENA at a glance</span>
       </div>
       <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Sessions" value={tasks} detail={`${active} running`} onClick={() => onNavigate("swarm")} />
-      <MetricRow icon={<Users size={15} />} tone="violet" label="Agents" value={agents} detail="All nominal" onClick={() => onNavigate("swarm")} />
+      <MetricRow icon={<Users size={15} />} tone="violet" label="Adapters" value={agents} detail="Installed locally" onClick={() => onNavigate("swarm")} />
       <MetricRow icon={<Database size={15} />} tone="blue" label="Memory Entries" value={memory} detail="Recent memory" onClick={() => onNavigate("memory")} />
       <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Inspectable sessions" onClick={() => onNavigate("review")} />
     </section>
@@ -781,7 +781,7 @@ function LiveWorkflow({ activeSessions, reviewSessions, memoryCount }: { activeS
   return (
     <section className="dashboardCard liveWorkflow">
       <div className="cardHeader">
-        <span>Live Workflow</span>
+        <span>Session Workflow</span>
       </div>
       <div className="workflowTrack">
         <FlowStep icon={<FileText size={14} />} label="Session" active />
@@ -810,7 +810,7 @@ function ActiveAgents({ roles, embeddedSessions }: { roles: AgentRole[]; embedde
             <article key={role.role}>
               <span className={`agentBadge ${busy ? "busy" : role.status}`}>{role.icon}</span>
               <div>
-                <strong>{role.role === "Builder" ? "Code Runner" : role.role === "Reviewer" ? "Review Agent" : role.role === "Scout" ? "Memory Manager" : "Hermes Orchestrator"}</strong>
+                <strong>{role.role}</strong>
                 <small>{role.brief}</small>
               </div>
               <em className={busy ? "busy" : role.status}>{busy ? "Busy" : role.status === "ready" ? "Online" : role.status}</em>
@@ -1285,16 +1285,20 @@ function CommandRoom({
                 className="terminalChrome draggableChrome"
                 onPointerDown={(event) => startPaneDrag(event, session.id)}
               >
-                <button className="terminalControl close" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} />
+                <button className="terminalControl close" type="button" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} aria-label={`Close ${session.title}`} />
                 <button
                   className="terminalControl amber"
+                  type="button"
                   onClick={() => togglePaneCollapsed(session.id)}
                   title={collapsedPaneIds.has(session.id) ? `Restore ${session.title}` : `Minimize ${session.title}`}
+                  aria-label={collapsedPaneIds.has(session.id) ? `Restore ${session.title}` : `Minimize ${session.title}`}
                 />
                 <button
                   className="terminalControl green"
+                  type="button"
                   onClick={() => togglePaneMaximized(session.id)}
                   title={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
+                  aria-label={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
                 />
                 <strong>{session.title}</strong>
                 <em>{terminalPaneMeta(session)}</em>
@@ -1309,7 +1313,7 @@ function CommandRoom({
             <div className="terminalEmptyState">
               <AthenaMark />
               <strong>No embedded terminals yet.</strong>
-              <span>Select a workspace, then start a shell or launch a four-pane Codex grid with Hermes memory attached.</span>
+              <span>Select a workspace, then start a shell or launch an agent session with Hermes recall attached.</span>
             </div>
           )}
         </div>
@@ -1528,7 +1532,7 @@ function SwarmRoom({
         <div className="roomPanelHeader compact">
           <div>
             <span className="tinyLabel">Live agent sessions</span>
-            <h3>{liveAgentSessions.length ? "Work in motion" : "No live agents"}</h3>
+            <h3>{liveAgentSessions.length ? "Active sessions" : "No live agents"}</h3>
           </div>
           <button type="button" className="ghostButton" onClick={onOpenCommand}>
             <TerminalSquare size={14} /> Open Command
@@ -1618,7 +1622,7 @@ function ReviewRoom({
         <div>
           <span className="tinyLabel">Session review</span>
           <h3>{selectedLabel}</h3>
-          <p>Inspect live terminal buffers, prompt paths, provider session IDs, and native session metadata.</p>
+          <p>Inspect live buffers, prompt paths, provider session IDs, and native metadata.</p>
         </div>
         <div className={liveAgentSessions.length ? "decisionBadge ship" : historicalAgentSessions.length ? "decisionBadge idle" : "decisionBadge risk"}>
           {liveAgentSessions.length ? <Activity size={20} /> : historicalAgentSessions.length ? <Code2 size={20} /> : <XCircle size={20} />}

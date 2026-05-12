@@ -652,6 +652,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .terminalControl:hover {
   background: #e07060;
 }
+.terminalControl:focus-visible,
+.terminalChromeAction:focus-visible,
+.ghostIconButton:focus-visible {
+  outline: 1px solid rgba(216, 194, 143, .6);
+  outline-offset: 2px;
+}
 .terminalControl.amber { background: var(--orange); }
 .terminalControl.amber:hover { background: #f3b24c; }
 .terminalControl.green { background: var(--green); }
@@ -660,21 +666,32 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .dot.green { background: var(--green); }
 .terminalChrome strong {
   margin-left: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 24px;
   display: inline-flex;
   align-items: center;
+  overflow: hidden;
   color: #d7ccb0;
   font-size: 9px;
   letter-spacing: .08em;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 .terminalChrome em {
   margin-left: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 34%;
+  overflow: hidden;
   color: var(--muted);
   font-size: 9px;
   font-style: normal;
   font-weight: 700;
+  text-overflow: ellipsis;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 .terminalChromeAction {
   width: 24px;
@@ -1139,11 +1156,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .agentRoleGrid {
   padding: 12px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
   gap: 10px;
 }
 .agentCard {
-  min-height: 160px;
+  min-width: 0;
+  min-height: 148px;
   padding: 14px;
   display: flex;
   flex-direction: column;
@@ -1213,7 +1231,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .agentSessionBoard article {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) minmax(52px, auto) auto;
   align-items: center;
   gap: 10px;
   padding: 10px 0;
@@ -1238,6 +1256,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .agentSessionBoard article strong,
 .sessionReviewList article strong { display: block; margin-bottom: 3px; font-size: 11px; }
+.agentSessionBoard article strong {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .agentSessionBoard article p,
 .sessionReviewList article span {
   margin: 0;
@@ -1249,11 +1273,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .agentSessionBoard article > span,
 .sessionReviewList em {
+  min-width: 0;
+  overflow: hidden;
   color: var(--blue);
   font-size: 9px;
   font-style: normal;
   font-weight: 800;
   text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .dangerIconButton {
   width: 28px;
@@ -1311,6 +1339,14 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   background: #071d17;
 }
 .decisionHero h3 { max-width: 760px; font-size: 20px; }
+.decisionHero > div:first-child,
+.memoryHero > div {
+  min-width: 0;
+}
+.decisionHero h3,
+.memoryHero h3 {
+  overflow-wrap: anywhere;
+}
 .decisionHero p,
 .memoryHero p {
   margin: 8px 0 0;
@@ -1394,7 +1430,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(220px, .4fr) minmax(0, 1fr);
+  grid-template-columns: minmax(220px, .38fr) minmax(0, 1fr);
 }
 .sessionInspectorGrid pre {
   min-width: 0;
@@ -1407,6 +1443,24 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .sessionInspectorGrid pre + pre {
   border-left: 1px solid var(--line);
+}
+
+@media (max-width: 1180px) {
+  .agentRoleGrid,
+  .reviewColumns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .workflowTrack {
+    padding-inline: 18px;
+    gap: 8px;
+  }
+  .sessionInspectorGrid {
+    grid-template-columns: 1fr;
+  }
+  .sessionInspectorGrid pre + pre {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
 }
 
 .memoryHero { justify-content: flex-start; }

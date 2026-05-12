@@ -97,7 +97,13 @@ async def context_workspace_spawn_agent(
     timeout_seconds: float | None = None,
     visible_terminal: bool = True,
 ) -> dict[str, Any]:
-    """Spawn an agent. By default this opens a visible embedded PTY in the desktop app."""
+    """Spawn Codex/OpenCode/Claude as a visible Athena terminal by default.
+
+    This is the high-level tool Hermes should use when the user asks to start
+    an agent. It routes through Athena's Electron control server, so the desktop
+    app must be running. Set visible_terminal=false only for the legacy backend
+    run/artifact path.
+    """
     normalized_agent = _terminal_kind_for_agent(agent_type)
     if visible_terminal:
         return {
@@ -133,7 +139,7 @@ async def context_workspace_spawn_terminal(
     resume_session_id: str | None = None,
     session_label: str | None = None,
 ) -> dict[str, Any]:
-    """Spawn visible embedded terminal session(s) in the Context Workspace desktop app."""
+    """Low-level visible terminal spawner using Athena's Electron control server."""
     return await ContextWorkspaceElectronClient().post(
         "/terminals/spawn",
         {
@@ -169,7 +175,7 @@ async def context_workspace_read_artifact(
     max_bytes: int = 65536,
     tail: bool = True,
 ) -> str:
-    """Read a run artifact: context, stdout, stderr, or result."""
+    """Read legacy backend run artifacts; OpenCode ses_* IDs fall back to session transcripts."""
     try:
         return await ContextWorkspaceClient().get(
             f"/agents/runs/{run_id}/artifacts/{artifact_name}",
@@ -188,7 +194,7 @@ async def context_workspace_read_agent_session(
     max_bytes: int = 65536,
     tail: bool = True,
 ) -> str:
-    """Read a provider-native session transcript, including OpenCode SQLite sessions."""
+    """Read a provider-native transcript such as an OpenCode SQLite session."""
     return await ContextWorkspaceClient().get(
         f"/agents/sessions/{provider}/{session_id}/transcript",
         max_bytes=max_bytes,

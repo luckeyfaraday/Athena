@@ -71,9 +71,20 @@ context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit
 Visible terminal launch tool:
 
 ```text
+context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?)
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?)
+context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 ```
 
-Use `context_workspace_spawn_terminal` when Hermes should create a visible
-Command Room terminal. Use `context_workspace_spawn_agent` only for legacy
-backend run/artifact jobs.
+Use `context_workspace_spawn_agent` when Hermes should start Codex, OpenCode,
+or Claude for a user task. By default it opens a visible Command Room PTY
+through Electron control and injects the task, recall cache, and Hermes memory.
+
+Use `context_workspace_spawn_terminal` only when Hermes needs lower-level
+terminal control, such as opening a shell, Hermes pane, grid, or explicit resume.
+
+Do not call Athena's FastAPI `POST /agents/spawn` directly for OpenCode or
+Claude visible terminals. That route is the legacy backend run/artifact path.
+If `context_workspace_spawn_agent` reports that the Electron control server is
+unavailable, start or restart the Athena desktop app and check
+`~/.context-workspace/electron-control.json`.

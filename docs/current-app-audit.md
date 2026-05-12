@@ -1,12 +1,12 @@
 # Current App Audit
 
-Last audited: 2026-05-11 on `main` after PR #38.
+Last audited: 2026-05-12 on `ui-polish-pass`.
 
 ## Executive Summary
 
 The app has crossed the line from prototype UI into a usable Athena workspace. The strongest path is now embedded terminals plus native session discovery, with Hermes recall injected at spawn time and session inspection available from Reviews.
 
-The weakest remaining area is not another large feature. It is product clarity: simplify the visible model around sessions, remove legacy backend-run affordances from the primary UI, and polish the dense operational layout before adding voice, ambient capture, or a custom Hermes renderer.
+The weakest remaining area is session continuity: sessions can be found, opened, resumed, and inspected, but the app does not yet help the user turn multiple prior sessions into a curated handoff for starting fresh.
 
 ## What Works
 
@@ -26,8 +26,7 @@ The weakest remaining area is not another large feature. It is product clarity: 
 ## What Does Not Work Yet
 
 - Review Room is an inspector, not a true review decision surface. It does not summarize session output, detect changed files, show checks, or produce a handoff.
-- Active Agents still mixes role cards with real session state. The cards are useful orientation, but they are not a direct list of actual active agents.
-- Legacy backend runs remain visible in Agents even though current work happens in embedded/native sessions.
+- Active Agents still includes role cards for orientation, but the primary Agents surface is now session-first.
 - Settings has status visibility, but no persistent user preferences yet.
 - Memory deletion is exact-match only and has no confirmation, undo, or provenance display.
 - Sessions can be inspected or resumed, but not summarized, merged, or written back into recall as a curated handoff.
@@ -35,16 +34,6 @@ The weakest remaining area is not another large feature. It is product clarity: 
 - Full Python test execution is not reliable in the current local environment; `python3 -m pytest` previously hung in `tests/test_app.py`.
 
 ## What We Need
-
-### P0: Remove Legacy Run Confusion
-
-The app should treat embedded/native sessions as the primary execution model. Backend runs should be hidden from the main Agents room or moved to a small diagnostics/developer section.
-
-Acceptance criteria:
-
-- Agents room lists live embedded agent sessions as the real active agents.
-- Legacy backend runs are not presented as the primary work board.
-- Review metrics use embedded/native session counts, not backend-run language.
 
 ### P1: Make Review Room Produce Value
 
@@ -55,26 +44,6 @@ Acceptance criteria:
 - User can select a session and generate or view a bounded review summary.
 - Summary includes provider, workspace, prompt path, recent terminal output excerpt, and known session metadata.
 - Review UI avoids pretending to know test status or changed files unless those signals exist.
-
-### P1: Add `routes.ts`
-
-Navigation metadata is still embedded in `App.tsx`. This will get worse as Workspace, Settings modes, and polish work land.
-
-Acceptance criteria:
-
-- Room IDs, labels, descriptions, sidebar icons, and ordering are defined in one typed source of truth.
-- `App.tsx` consumes route metadata instead of duplicating it.
-
-### P1: Polish Current UI
-
-Polish should target operational clarity, not visual decoration.
-
-Acceptance criteria:
-
-- No clipped labels in Settings, Sessions, Review, or terminal headers.
-- Empty states say exactly what action creates useful data.
-- Focus/maximize/minimize behavior is obvious and reversible.
-- Dense panels remain readable on laptop-sized windows.
 
 ### P2: Session Continuity
 
@@ -96,21 +65,25 @@ Acceptance criteria:
 
 ## Recommended Next PRs
 
-1. `remove-legacy-run-board`
-   Move legacy backend runs out of the main Agents room and make Agents reflect embedded/native sessions.
+1. `session-continuity-handoff`
+   Let the user select sessions, generate a bounded handoff summary, and save it to recall.
 
-2. `routes-source-of-truth`
-   Add `routes.ts` and remove route/sidebar metadata duplication from `App.tsx`.
+2. `review-session-summary`
+   Derive useful summaries from embedded/native session content without claiming unavailable checks.
 
-3. `review-session-summary`
-   Add a real session summary/handoff surface in Review without claiming unavailable checks.
+3. `transparent-shell-focus`
+   Finish the true transparent/focused shell mode now that terminal focus and pane controls exist.
 
-4. `ui-polish-pass`
-   Tighten spacing, overflow, empty states, and terminal control affordances.
+4. `settings-mode-preferences`
+   Define and implement chat-vs-shell mode only if it changes launch or workspace behavior.
 
 ## Status Against Raw Task List
 
 - `#5596309f` audit what works, what does not, what we need, and what we do not need: completed by this document.
-- `#bee147fc` integrate functionality to UI: functionally complete, with remaining cleanup captured above.
-- `#11d80e78` polish UI: ready to start after legacy-run cleanup or routes cleanup.
-- `#e24fce1a` add `routes.ts`: should be one of the next small architecture PRs.
+- `#bee147fc` integrate functionality to UI: complete.
+- `#fa84515` Hermes sessions in Sessions tab: complete.
+- `#453f21e2` Athena branding: complete.
+- `#11d80e78` polish UI: complete on `ui-polish-pass`.
+- `#e24fce1a` add `routes.ts`: complete.
+- `#ce14092c` settings chat/shell mode: partial; settings state exists, mode preference does not.
+- `#9d14b31e` hide/transparent shell focus: partial; focus/maximize exists, transparent mode does not.

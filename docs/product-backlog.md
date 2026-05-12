@@ -78,9 +78,9 @@ Goal: support users working across several projects without mixing context.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#0ae98ecb` workspace tabs | P2 | Multiple workspaces can be open, each with isolated terminals, sessions, recall status, and memory lookup. |
-| Persist workspace list | P2 | Recent workspaces survive restart and can be closed/reopened. |
-| Prevent context bleed | P1 | Recall cache and session discovery always use the selected workspace, never the last active workspace by accident. |
+| `#0ae98ecb` workspace tabs | P2 | Done: multiple workspaces can stay open in tabs, and switching filters terminals, sessions, recall, and memory to the active workspace. |
+| Persist workspace list | P2 | Done: workspace tabs survive restart and can be closed/reopened. |
+| Prevent context bleed | P1 | Done: recall cache, session discovery, terminal views, and project memory use the selected workspace. |
 
 ## Milestone 6: Hermes UI Layer
 

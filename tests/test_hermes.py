@@ -62,7 +62,7 @@ def test_status_detects_wsl_hermes_on_native_windows(
             returncode=0,
             stdout="\n".join(
                 [
-                    "__HERMES_COMMAND__/home/youq/.local/bin/hermes",
+                    "__HERMES_COMMAND__/home/you/.local/bin/hermes",
                     "__HERMES_VERSION__Hermes Agent v0.12.0",
                     f"__HERMES_HOME__{hermes_home}",
                 ]
@@ -76,7 +76,7 @@ def test_status_detects_wsl_hermes_on_native_windows(
 
     assert status.installed is True
     assert status.native_windows is True
-    assert status.command_path == "wsl:/home/youq/.local/bin/hermes"
+    assert status.command_path == "wsl:/home/you/.local/bin/hermes"
     assert status.hermes_home == hermes_home
     assert status.memory_path == memory
     assert status.message == "Hermes Agent is installed in WSL2."

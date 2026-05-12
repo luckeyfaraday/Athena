@@ -77,7 +77,7 @@ The app acts as an orchestrator layer between Hermes (the memory/control plane) 
 
 ## 3. Backend — Python/FastAPI
 
-**Path:** `/home/you/home_ai/projects/context-workspace/backend/`
+**Path:** `/home/you/projects/context-workspace/backend/`
 
 ### File Structure
 
@@ -210,7 +210,7 @@ class HermesMemoryStore:
 | `search_project(project_dir, limit)` | Weighted matching against path variants (full path=100, home-relative=95, partial=60) |
 | `log_query(agent_id, query)` | Appends `[actor] asked Hermes memory about: ...` |
 
-**Pathneedle rule (CRITICAL):** Memory entries for context-workspace **must** contain the literal local filesystem path `/home/you/home_ai/projects/context-workspace/` for `search_project()` needle matching to work. The GitHub repo name `luckeyfaraday/Athena` alone does NOT generate matching needles.
+**Pathneedle rule (CRITICAL):** Memory entries for context-workspace **must** contain the literal local filesystem path `/home/you/projects/context-workspace/` for `search_project()` needle matching to work. The GitHub repo name `luckeyfaraday/Athena` alone does NOT generate matching needles.
 
 **`_project_needles()` generation:**
 ```python
@@ -359,7 +359,7 @@ class ExecutionResult:
 
 **Timeout handle returns `returncode=-1`** to indicate timeout occurred.
 
-**Environment inheritance:** `{**os.environ, **command.env}` — inherits all parent environment variables including potentially sensitive ones like `AWS_SECRET_NAME`, `OPENAI_KEY_NAME`. **Security concern.**
+**Environment inheritance:** spawned processes receive the parent environment plus command-specific overrides. Keep credentials out of the app process environment unless the child process explicitly needs them.
 
 ---
 
@@ -523,7 +523,7 @@ def _render_prompt(run: Run, artifacts: RunArtifacts) -> str:
 
 ## 4. Frontend — Electron/TypeScript/React
 
-**Path:** `/home/you/home_ai/projects/context-workspace/client/`
+**Path:** `/home/you/projects/context-workspace/client/`
 
 ### File Structure
 
@@ -891,7 +891,7 @@ User / Hermes → POST /agents/spawn
 
 ### Hermes Memory Pathneedle Rule
 
-Memory entries for context-workspace **must** contain the literal local filesystem path `/home/you/home_ai/projects/context-workspace/` for `search_project()` needle matching to work.
+Memory entries for context-workspace **must** contain the literal local filesystem path `/home/you/projects/context-workspace/` for `search_project()` needle matching to work.
 
 `_project_needles()` generates scoring needles from the path string. The GitHub repo name alone (`luckeyfaraday/Athena`) generates no matching needles → zero score → empty results → "No Hermes memory entries are available."
 
@@ -971,37 +971,13 @@ Originally conceived as Tauri + Rust + PTY. Corrected to **Electron + React + Fa
 
 ## 10. Security Considerations
 
-### Critical
-
-1. **Shell injection in `embedded-terminal.ts`** — `$(cat ${quoteShell(promptPath)})` in bash commands. `quoteShell` only escapes single quotes; `$()`, backticks, `$(...)` in prompt content execute as command substitution. If Hermes memory contains shell metacharacters, command injection occurs at agent launch.
-
-2. **Recall cache unsanitized** — `_read_recall_cache()` returns raw file content injected into `context.md` with no sanitization. The recall cache is written by an external command (via `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD` or MCP). If that command produces content with `$()` or backticks, it reaches the agent unfiltered.
-
-3. **Env var leakage** — Both `backend.ts` and `embedded-terminal.ts` pass `...process.env` to spawned processes, leaking API keys and secrets (AWS, OpenAI, Anthropic, etc.) to agent subprocesses.
-
-### Medium
-
-4. **`sandbox: false`** in `main.ts` — Renderer has reduced security boundary; contextIsolation is enabled but sandboxing is disabled.
-
-5. **Broadcast to all BrowserWindows** — Terminal data emitted to every open window including devtools.
-
-6. **Predictable terminal IDs** — Uses `Date.now() + Math.random()` instead of `crypto.randomUUID()`.
-
-7. **Backend discovery file world-readable** — `~/.context-workspace/backend.json` exposes backend URL, PID, and health status.
-
-8. **Supply chain risk** — `hermes.py` install script fetched from raw GitHub URL with no commit pin or hash verification.
-
-9. **Secret redaction incomplete** — `api_key = fake_secret_value` → `api_key = [REDACTED]` leaves value partially visible when spaces around `=`; regex doesn't cover all secret patterns.
-
-10. **No upper bound on PTY resize** — `resizeEmbeddedTerminal` accepts any cols/rows; renderer can request extreme values causing DoS.
-
-11. **PowerShell command-line length limit** — Large Hermes memory contexts passed as PowerShell variables could exceed ~32KB limit and silently truncate.
+Public security notes intentionally stay high-level. Detailed vulnerability tracking belongs in private issues until a fix is released.
 
 ### Design Notes
 
 - CORS permissive for MVP (any localhost port); tighten for production
 - `adapter_statuses` and `_normalize_agent_type` both hardcode agent type list — drift risk
-- `INJECTION_PATTERNS` in memory.py is trivially bypassed with slight modifications
+- Memory redaction is a defense-in-depth measure, not a substitute for trusted inputs
 - No artifact retention/cleanup policy — run directories accumulate indefinitely
 
 ---

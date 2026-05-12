@@ -42,7 +42,7 @@ mcp_servers:
   context_workspace:
     command: "/home/you/.hermes/hermes-agent/venv/bin/python3"
     args:
-      - "/home/you/home_ai/projects/context-workspace/mcp_server/server.py"
+      - "/home/you/projects/context-workspace/mcp_server/server.py"
     timeout: 120
     connect_timeout: 30
 ```

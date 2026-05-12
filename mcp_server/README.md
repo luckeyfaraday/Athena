@@ -25,6 +25,16 @@ export CONTEXT_WORKSPACE_WINDOWS_HOST=<windows-host-ip>
 `CONTEXT_WORKSPACE_BACKEND_URL` still has highest priority and is used exactly
 as provided.
 
+Visible embedded terminal launches use the Electron control server, discovered
+from:
+
+```text
+~/.context-workspace/electron-control.json
+```
+
+Set `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL` to override discovery. The desktop
+app must be running for visible terminal tools to work.
+
 Hermes configuration:
 
 ```yaml
@@ -32,14 +42,15 @@ mcp_servers:
   context_workspace:
     command: "/home/you/.hermes/hermes-agent/venv/bin/python3"
     args:
-      - "/home/you/home_ai/projects/context-workspace/mcp_server/server.py"
+      - "/home/you/projects/context-workspace/mcp_server/server.py"
     timeout: 120
     connect_timeout: 30
 ```
 
 Hermes owns `session_search`, its own config, and durable memory writes. Context
 Workspace owns app-side tools such as backend health checks, native session
-discovery, recall cache files, and agent spawning.
+discovery, recall cache files, legacy run spawning, and visible terminal
+spawning.
 
 The recall bridge workflow is:
 
@@ -56,3 +67,13 @@ Session discovery tools:
 context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
 context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
 ```
+
+Visible terminal launch tool:
+
+```text
+context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?)
+```
+
+Use `context_workspace_spawn_terminal` when Hermes should create a visible
+Command Room terminal. Use `context_workspace_spawn_agent` only for legacy
+backend run/artifact jobs.

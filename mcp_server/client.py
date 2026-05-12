@@ -27,6 +27,21 @@ def get_backend_url(settings: Settings | None = None) -> str:
     return settings.default_backend_url.rstrip("/")
 
 
+def get_electron_control_url(settings: Settings | None = None) -> str:
+    settings = settings or Settings()
+    if settings.electron_control_url:
+        return settings.electron_control_url.rstrip("/")
+
+    if settings.electron_control_state_path.exists():
+        data = json.loads(settings.electron_control_state_path.read_text(encoding="utf-8"))
+        url = data.get("baseUrl")
+        running = data.get("running")
+        if isinstance(url, str) and url.strip() and running is not False:
+            return url.rstrip("/")
+
+    raise RuntimeError("Context Workspace Electron control server is not available. Start the desktop app first.")
+
+
 class ContextWorkspaceClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
@@ -39,6 +54,24 @@ class ContextWorkspaceClient:
             content_type = response.headers.get("content-type", "")
             if "text/plain" in content_type:
                 return response.text
+            return response.json()
+
+    async def post(self, path: str, json_body: dict[str, Any] | None = None) -> Any:
+        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+            response = await client.post(f"{self.base_url}{path}", json=json_body or {})
+            response.raise_for_status()
+            return response.json()
+
+
+class ContextWorkspaceElectronClient:
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings()
+        self.base_url = get_electron_control_url(self.settings)
+
+    async def get(self, path: str, **params: Any) -> Any:
+        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+            response = await client.get(f"{self.base_url}{path}", params=_compact_params(params))
+            response.raise_for_status()
             return response.json()
 
     async def post(self, path: str, json_body: dict[str, Any] | None = None) -> Any:
@@ -89,4 +122,3 @@ def _windows_host_from_resolv_conf(path: Path = Path("/etc/resolv.conf")) -> str
     except OSError:
         return None
     return None
-

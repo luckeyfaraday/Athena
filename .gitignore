@@ -6,3 +6,11 @@ client/dist/
 client/dist-electron/
 client/release/
 
+# Local workspace state and generated recall caches can contain private paths,
+# session titles, backend ports, and resume commands.
+.context-workspace/
+**/.context-workspace/
+
+# Generated media/project scratch directories.
+video/
+hyperframes-video/

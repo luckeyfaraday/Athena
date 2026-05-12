@@ -24,6 +24,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
         "context_workspace_list_agent_sessions",
         "context_workspace_summarize_agent_sessions",
         "context_workspace_spawn_agent",
+        "context_workspace_spawn_terminal",
         "context_workspace_list_runs",
         "context_workspace_get_run",
         "context_workspace_cancel_run",

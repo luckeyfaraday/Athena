@@ -40,6 +40,21 @@ def test_agent_session_tool_schema_includes_filters() -> None:
     assert schema["required"] == ["project_dir"]
 
 
+def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
+    schema = server._tool_schema(tools.context_workspace_spawn_terminal)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {"type": "string"}
+    assert schema["properties"]["kind"] == {"type": "string"}
+    assert schema["properties"]["count"] == {"type": "integer"}
+    assert schema["properties"]["title"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert schema["properties"]["resume_session_id"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert schema["required"] == ["project_dir"]
+
+
 def test_delete_memory_tool_schema_requires_text() -> None:
     schema = server._tool_schema(tools.context_workspace_delete_memory)["inputSchema"]
 

@@ -91,6 +91,8 @@ type HandoffSessionSource =
 
 type HandoffEvidence = HandoffSessionSource & {
   evidence: string;
+  usable: boolean;
+  note: string | null;
 };
 
 type HandoffPreview = {
@@ -1690,31 +1692,40 @@ async function loadHandoffEvidence(source: HandoffSessionSource): Promise<Handof
   if (!terminalId) {
     return {
       ...source,
-      evidence: "Metadata only. No live terminal buffer is attached to this historical session.",
+      evidence: "",
+      usable: false,
+      note: "No live terminal buffer is attached to this session.",
     };
   }
   try {
     const buffer = await desktop.getEmbeddedTerminalBuffer(terminalId);
+    const evidence = extractHandoffEvidence(buffer);
     return {
       ...source,
-      evidence: tailText(buffer || "No terminal output captured yet.", 1800),
+      evidence,
+      usable: evidence.length > 0,
+      note: evidence.length > 0 ? null : "No usable task evidence could be extracted from the terminal buffer.",
     };
   } catch (err) {
     return {
       ...source,
-      evidence: `Unable to read live buffer: ${String(err)}`,
+      evidence: "",
+      usable: false,
+      note: `Unable to read live buffer: ${String(err)}`,
     };
   }
 }
 
 function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): string {
   const generated = new Date().toISOString();
+  const usableSources = sources.filter((source) => source.usable);
+  const unusableSources = sources.filter((source) => !source.usable);
   const selectedSessions = sources
-    .map((source) => `- ${source.label}: ${source.title} (${source.status}, ${source.id})`)
+    .map((source) => `- ${source.label}: ${source.title} (${source.status}, ${source.id})${source.usable ? "" : " - no usable evidence"}`)
     .join("\n");
   const evidenceSections: string[] = [];
   let remainingEvidenceChars = 12000;
-  for (const source of sources) {
+  for (const source of usableSources) {
     if (remainingEvidenceChars <= 0) {
       evidenceSections.push(`### ${source.title}\n\n[omitted because handoff evidence reached its size cap]`);
       continue;
@@ -1723,17 +1734,20 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     remainingEvidenceChars -= evidence.length;
     evidenceSections.push([`### ${source.title}`, evidence].join("\n\n"));
   }
+  for (const source of unusableSources) {
+    evidenceSections.push(`### ${source.title}\n\n${source.note ?? "No usable evidence found."}`);
+  }
   const evidence = evidenceSections.join("\n\n");
   return [
     "# Athena Session Handoff",
     "",
     `Generated: ${generated}`,
     `Workspace: ${workspace}`,
-    `Sources: ${sources.length}`,
+    `Sources: ${usableSources.length} usable of ${sources.length} selected`,
     "",
     "## Summary",
-    "- Bounded handoff generated from selected Athena sessions.",
-    "- Review the selected sessions and evidence before launching the next agent.",
+    "- Bounded handoff generated from selected Athena sessions with usable evidence.",
+    unusableSources.length ? `- ${unusableSources.length} selected source${unusableSources.length === 1 ? "" : "s"} had no usable evidence and should not drive the next agent.` : "",
     "",
     "## Selected Sessions",
     selectedSessions || "- None",
@@ -1744,7 +1758,51 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     "## Next Suggested Context",
     "- Use this handoff as short-lived project context.",
     "- Verify current git state and latest user instructions before making changes.",
-  ].join("\n");
+  ].filter((line) => line !== "").join("\n");
+}
+
+function extractHandoffEvidence(value: string): string {
+  const cleaned = stripTerminalControls(removeExistingHandoffBlocks(value));
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .filter(isMeaningfulHandoffLine);
+  const uniqueLines: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueLines.push(line);
+  }
+  return tailText(uniqueLines.slice(-24).join("\n"), 1800);
+}
+
+function removeExistingHandoffBlocks(value: string): string {
+  const index = value.indexOf("# Athena Session Handoff");
+  return index >= 0 ? value.slice(0, index) : value;
+}
+
+function stripTerminalControls(value: string): string {
+  return value
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .replace(/[╹┃━─▀▄█]+/g, " ");
+}
+
+function isMeaningfulHandoffLine(line: string): boolean {
+  if (line.length < 6 || line.length > 240) return false;
+  if (!/[a-zA-Z]/.test(line)) return false;
+  if (/^(generated|workspace|sources|summary|selected sessions|recent evidence|next suggested context)$/i.test(line)) return false;
+  if (/^#*\s*athena session handoff/i.test(line)) return false;
+  if (/^\[?truncated to last \d+ chars\]?/i.test(line)) return false;
+  if (/\b(ctrl\+p commands|parent up|prev left|next right|explore \(|build ·|mini.?max|tokens?\)|\d+(?:\.\d+)?k \(\d+%\))/i.test(line)) return false;
+  if (/^\W+$/.test(line)) return false;
+  const letters = line.match(/[a-zA-Z]/g)?.length ?? 0;
+  const visible = line.replace(/\s/g, "").length;
+  return visible > 0 && letters / visible > 0.25;
 }
 
 function tailText(value: string, maxChars: number): string {
@@ -1996,6 +2054,11 @@ function ReviewRoom({
     setHandoffError(null);
     try {
       const evidence = await Promise.all(selectedHandoffSources.map(loadHandoffEvidence));
+      if (!evidence.some((source) => source.usable)) {
+        setHandoffPreview(null);
+        setHandoffError("No usable handoff evidence found. Pick live sessions with task output or sessions with readable transcripts.");
+        return;
+      }
       const markdown = buildHandoffMarkdown(workspace, evidence);
       setHandoffPreview({
         markdown,

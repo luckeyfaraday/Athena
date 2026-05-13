@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -299,7 +301,10 @@ def _read_claude_transcript(session_id: str, home: Path) -> str:
 
 
 def _read_hermes_transcript(session_id: str, home: Path) -> str:
-    file_path = home / ".hermes" / "sessions" / f"session_{session_id}.json"
+    hermes_dir = _resolve_hermes_dir(home)
+    if hermes_dir is None:
+        return ""
+    file_path = hermes_dir / "sessions" / f"session_{session_id}.json"
     if not file_path.exists():
         return ""
     data = _json_object(file_path.read_text(encoding="utf-8", errors="replace"))
@@ -391,7 +396,9 @@ def _read_claude_session_file(file_path: Path, workspace: Path) -> AgentSession 
 
 
 def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
-    hermes_dir = home / ".hermes"
+    hermes_dir = _resolve_hermes_dir(home)
+    if hermes_dir is None:
+        return []
     sessions_dir = hermes_dir / "sessions"
     db_path = hermes_dir / "state.db"
     manifest = _read_hermes_manifest(sessions_dir / "sessions.json")
@@ -468,6 +475,33 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
             )
 
     return sorted(sessions_by_id.values(), key=lambda session: _date_sort_key(session.updated_at), reverse=True)[:100]
+
+
+def _resolve_hermes_dir(home: Path) -> Path | None:
+    native = home / ".hermes"
+    if native.exists():
+        return native
+    return _probe_wsl_hermes_dir()
+
+
+def _probe_wsl_hermes_dir() -> Path | None:
+    if os.name != "nt" or shutil.which("wsl.exe") is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["wsl.exe", "-e", "sh", "-lc", 'wslpath -w "$HOME/.hermes"'],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    candidate = completed.stdout.strip().splitlines()[0] if completed.stdout.strip() else ""
+    if not candidate:
+        return None
+    path = Path(candidate)
+    return path if path.exists() else None
 
 
 def _read_hermes_manifest(file_path: Path) -> dict[str, dict[str, str | None]]:

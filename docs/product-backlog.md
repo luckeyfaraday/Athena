@@ -72,8 +72,8 @@ Goal: let the user start fresh without losing useful context.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#ec62ad60` merge sessions / start fresh | P1 | Next: user can select sessions and generate a curated handoff summary into recall cache. Raw transcripts are available for inspection but should not be dumped directly. |
-| Add session-to-recall action | P1 | A transcript/session row can contribute a bounded summary to project recall. |
+| `#ec62ad60` merge sessions / start fresh | P1 | First slice done: user can select sessions, preview a bounded handoff, and save it to recall cache. Follow-up: one-click start-fresh launch after save. |
+| Add session-to-recall action | P1 | Done: selected review sessions can contribute a bounded handoff to project recall. |
 | Add recall audit trail | P2 | UI shows when recall was refreshed, source, bytes, and whether a launch used fresh recall. |
 
 ## Milestone 5: Multi-Workspace

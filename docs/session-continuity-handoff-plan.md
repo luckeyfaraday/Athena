@@ -1,6 +1,6 @@
 # Session Continuity Handoff Plan
 
-Last updated: 2026-05-12.
+Last updated: 2026-05-13.
 
 ## Goal
 
@@ -27,17 +27,19 @@ This is not raw transcript merging. The output must be short, inspectable, works
 
 ## First Shippable Slice
 
+Status: implemented in the `session-continuity-handoff` branch.
+
 ### UI
 
-- Add multi-select checkboxes to the Review session list.
-- Add a `Create handoff` action enabled when at least one session is selected.
-- Show a preview panel with:
+- Added multi-select checkboxes to the Review session list.
+- Added a `Create handoff` action enabled when at least one session is selected.
+- Added a preview panel with:
   - source session count
   - workspace
   - generated markdown
   - byte count
-  - warning that raw transcripts are not saved
-- Add `Save to recall` after preview generation.
+  - bounded evidence excerpt instead of full raw transcripts
+- Added `Save to recall` after preview generation.
 
 ### Handoff Content
 
@@ -76,9 +78,9 @@ For the first implementation, the summary can be deterministic and metadata-base
 
 ### Recall Write Path
 
-Preferred first implementation:
+Implemented first write path:
 
-- Add a backend endpoint such as `POST /hermes/recall/write`.
+- Added backend endpoint `POST /hermes/recall/write`.
 - Request body:
   - `project_dir`
   - `markdown`

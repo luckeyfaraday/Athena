@@ -107,4 +107,4 @@ Reason: the UI should not depend on Hermes MCP to write the cache. Hermes can st
 - Add recall audit trail in UI: source, timestamp, bytes, workspace, and whether the next launch used fresh recall.
 - Add optional manual edit before saving.
 - Add provider-specific historical transcript readers only after privacy and size rules are explicit.
-- Add a `Start fresh from handoff` action that saves recall and launches a new selected agent in one flow.
+- Added a `Start fresh from handoff` action that saves recall and launches a new selected agent in one flow.

@@ -504,9 +504,16 @@ export function App() {
     const trimmed = prompt.trim();
     if (!trimmed || sessionIds.length === 0) return;
 
-    const results = await Promise.allSettled(
-      sessionIds.map((id) => desktop.writeEmbeddedTerminal(id, `${trimmed}\r`)),
-    );
+    const sessionById = new Map(embeddedSessions.map((session) => [session.id, session]));
+    const results = await Promise.allSettled(sessionIds.map(async (id) => {
+      const session = sessionById.get(id);
+      if (session?.kind === "codex") {
+        await desktop.writeEmbeddedTerminal(id, trimmed);
+        await delay(120);
+        return desktop.writeEmbeddedTerminal(id, "\r");
+      }
+      return desktop.writeEmbeddedTerminal(id, `${trimmed}\r`);
+    }));
     const failed = results.filter((result) => result.status === "rejected").length;
     if (failed > 0) {
       setError(`Prompt sent to ${sessionIds.length - failed} agents; ${failed} agent${failed === 1 ? "" : "s"} could not receive it.`);

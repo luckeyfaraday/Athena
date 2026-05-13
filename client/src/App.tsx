@@ -2045,6 +2045,24 @@ function ReviewRoom({
           </div>
         </div>
         <p>Bounded handoff preview for the active workspace.</p>
+        <div className="handoffSourcePicker" aria-label="Handoff sources">
+          {handoffSources.slice(0, 12).map((source) => {
+            const selected = handoffSelection.has(source.key) || (handoffSelection.size === 0 && selectedSessionKey === source.key);
+            return (
+              <button
+                key={source.key}
+                type="button"
+                className={selected ? "handoffSourceChip selected" : "handoffSourceChip"}
+                onClick={() => toggleHandoffSource(source.key)}
+              >
+                {selected ? <CheckCircle2 size={13} /> : <span />}
+                <strong>{source.title}</strong>
+                <em>{source.label}</em>
+              </button>
+            );
+          })}
+          {handoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions available for handoff.</span>}
+        </div>
         {handoffError && <p className="handoffError">{handoffError}</p>}
         {handoffSavedAt && <p className="handoffSaved">Saved to recall at {handoffSavedAt}</p>}
         {handoffPreview && (

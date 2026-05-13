@@ -703,6 +703,10 @@ export function App() {
                 onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
                 onLoadAgentTranscript={loadAgentTranscript}
                 onSaveHandoff={saveHandoffToRecall}
+                onStartFreshFromHandoff={async (kind, markdown) => {
+                  await saveHandoffToRecall(markdown);
+                  await launchEmbedded(kind, 1);
+                }}
               />
             )}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} />}
@@ -1875,6 +1879,7 @@ function ReviewRoom({
   onSelectAgentSession,
   onLoadAgentTranscript,
   onSaveHandoff,
+  onStartFreshFromHandoff,
 }: {
   embeddedSessions: EmbeddedTerminalSession[];
   agentSessions: AgentSession[];
@@ -1887,11 +1892,13 @@ function ReviewRoom({
   onSelectAgentSession: (session: AgentSession) => void;
   onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
   onSaveHandoff: (markdown: string) => Promise<void>;
+  onStartFreshFromHandoff: (kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">, markdown: string) => Promise<void>;
 }) {
   const [handoffSelection, setHandoffSelection] = useState<Set<string>>(() => new Set());
   const [handoffPreview, setHandoffPreview] = useState<HandoffPreview | null>(null);
   const [handoffGenerating, setHandoffGenerating] = useState(false);
   const [handoffSaving, setHandoffSaving] = useState(false);
+  const [handoffLaunching, setHandoffLaunching] = useState<EmbeddedTerminalKind | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [handoffSavedAt, setHandoffSavedAt] = useState<string | null>(null);
   const selectedLabel = selectedEmbeddedSession?.title ?? selectedAgentSession?.title ?? "No session selected";
@@ -1979,6 +1986,20 @@ function ReviewRoom({
     }
   }
 
+  async function startFreshFromHandoff(kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">) {
+    if (!handoffPreview) return;
+    setHandoffLaunching(kind);
+    setHandoffError(null);
+    try {
+      await onStartFreshFromHandoff(kind, handoffPreview.markdown);
+      setHandoffSavedAt(new Date().toLocaleTimeString());
+    } catch (err) {
+      setHandoffError(String(err));
+    } finally {
+      setHandoffLaunching(null);
+    }
+  }
+
   return (
     <div className="roomPanel reviewRoom">
       <div className="decisionHero">
@@ -2025,6 +2046,17 @@ function ReviewRoom({
               <span>{handoffPreview.workspace}</span>
             </div>
             <pre>{handoffPreview.markdown}</pre>
+            <div className="handoffLaunchActions">
+              <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("codex")} disabled={Boolean(handoffLaunching)}>
+                <Bot size={14} /> {handoffLaunching === "codex" ? "Launching" : "Start Codex"}
+              </button>
+              <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("opencode")} disabled={Boolean(handoffLaunching)}>
+                <Code2 size={14} /> {handoffLaunching === "opencode" ? "Launching" : "Start OpenCode"}
+              </button>
+              <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("claude")} disabled={Boolean(handoffLaunching)}>
+                <Sparkles size={14} /> {handoffLaunching === "claude" ? "Launching" : "Start Claude"}
+              </button>
+            </div>
           </div>
         )}
       </section>

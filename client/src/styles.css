@@ -1538,6 +1538,14 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font: 11px/1.55 "SFMono-Regular", Consolas, monospace;
   white-space: pre-wrap;
 }
+.handoffLaunchActions {
+  padding: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid rgba(226,214,183,.1);
+}
 .handoffCheckbox {
   width: 28px;
   height: 28px;

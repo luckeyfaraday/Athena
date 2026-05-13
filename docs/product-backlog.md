@@ -72,7 +72,7 @@ Goal: let the user start fresh without losing useful context.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#ec62ad60` merge sessions / start fresh | P1 | First slice done: user can select sessions, preview a bounded handoff, and save it to recall cache. Follow-up: one-click start-fresh launch after save. |
+| `#ec62ad60` merge sessions / start fresh | P1 | Done: user can select sessions, preview a bounded handoff, save it to recall cache, and launch a fresh Codex/OpenCode/Claude session from that handoff. |
 | Add session-to-recall action | P1 | Done: selected review sessions can contribute a bounded handoff to project recall. |
 | Add recall audit trail | P2 | UI shows when recall was refreshed, source, bytes, and whether a launch used fresh recall. |
 

@@ -2077,13 +2077,18 @@ function ReviewRoom({
             className={selectedSessionKey === embeddedSessionKey(session) || handoffSelection.has(embeddedSessionKey(session)) ? "selected" : ""}
             onClick={() => onSelectEmbeddedSession(session)}
           >
-            <label className="handoffCheckbox" title="Include in handoff" onClick={(event) => event.stopPropagation()}>
-              <input
-                type="checkbox"
-                checked={handoffSelection.has(embeddedSessionKey(session))}
-                onChange={() => toggleHandoffSource(embeddedSessionKey(session))}
-              />
-            </label>
+            <button
+              type="button"
+              className={handoffSelection.has(embeddedSessionKey(session)) ? "handoffSelectButton selected" : "handoffSelectButton"}
+              aria-pressed={handoffSelection.has(embeddedSessionKey(session))}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleHandoffSource(embeddedSessionKey(session));
+              }}
+            >
+              {handoffSelection.has(embeddedSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
+              {handoffSelection.has(embeddedSessionKey(session)) ? "Selected" : "Include"}
+            </button>
             <StatusDot status={session.status === "running" ? "running" : "offline"} />
             <div>
               <strong>{session.title}</strong>
@@ -2104,13 +2109,18 @@ function ReviewRoom({
             className={selectedSessionKey === selectedAgentSessionKey(session) || handoffSelection.has(selectedAgentSessionKey(session)) ? "selected" : ""}
             onClick={() => onSelectAgentSession(session)}
           >
-            <label className="handoffCheckbox" title="Include in handoff" onClick={(event) => event.stopPropagation()}>
-              <input
-                type="checkbox"
-                checked={handoffSelection.has(selectedAgentSessionKey(session))}
-                onChange={() => toggleHandoffSource(selectedAgentSessionKey(session))}
-              />
-            </label>
+            <button
+              type="button"
+              className={handoffSelection.has(selectedAgentSessionKey(session)) ? "handoffSelectButton selected" : "handoffSelectButton"}
+              aria-pressed={handoffSelection.has(selectedAgentSessionKey(session))}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleHandoffSource(selectedAgentSessionKey(session));
+              }}
+            >
+              {handoffSelection.has(selectedAgentSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
+              {handoffSelection.has(selectedAgentSessionKey(session)) ? "Selected" : "Include"}
+            </button>
             <StatusDot status={session.status === "running" ? "running" : session.status === "exited" ? "offline" : "ready"} />
             <div>
               <strong>{session.title}</strong>

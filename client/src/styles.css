@@ -1546,18 +1546,35 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   gap: 8px;
   border-top: 1px solid rgba(226,214,183,.1);
 }
-.handoffCheckbox {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
+.handoffSelectButton {
+  min-width: 82px;
+  height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(226,214,183,.04);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
 }
-.handoffCheckbox input {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--gold);
-  cursor: pointer;
+.handoffSelectButton span {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(226,214,183,.35);
+  border-radius: 3px;
+}
+.handoffSelectButton.selected {
+  border-color: rgba(217,196,138,.55);
+  background: rgba(217,196,138,.14);
+  color: var(--gold);
+}
+.handoffSelectButton:hover {
+  color: var(--text);
+  background: rgba(226,214,183,.08);
 }
 .sessionReviewList {
   margin: 0 12px 12px;

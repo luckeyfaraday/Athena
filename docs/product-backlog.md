@@ -1,6 +1,6 @@
 # Context Workspace Product Backlog
 
-Last verified: 2026-05-12 on `ui-polish-pass`.
+Last verified: 2026-05-13 on `main` after PR #12.
 
 This backlog converts the raw task list into implementation milestones. It separates verified current behavior from proposed work so new features do not duplicate already-merged PRs.
 
@@ -12,8 +12,9 @@ This backlog converts the raw task list into implementation milestones. It separ
 - New agent terminals refresh recall before launch when recall is missing or stale.
 - Terminal prompts include the refreshed recall cache path and contents.
 - Sessions tab tracks Codex, OpenCode, Claude, and Hermes sessions.
-- Backend exposes native session discovery through `/agents/sessions`.
-- MCP exposes Context Workspace tools for health, memory, visible embedded terminal spawning, legacy backend runs/artifacts, recall cache, native sessions, and memory delete.
+- Backend exposes native session discovery and native transcripts through `/agents/sessions`.
+- MCP exposes Context Workspace tools for health, memory, visible embedded terminal spawning, legacy backend runs/artifacts, recall cache, native sessions, native transcripts, and memory delete.
+- Review and Command Room can inspect native session metadata and transcripts.
 - Memory Room can delete exact Hermes memory entries through `/memory/delete`.
 - Current UI is branded Athena.
 
@@ -32,6 +33,8 @@ This backlog converts the raw task list into implementation milestones. It separ
 | `#11d80e78` polish the UI | Done | Focused pass tightened session-first copy, terminal controls, overflow behavior, and responsive review/agent panels. |
 | MCP memory delete | Done | Backend and MCP expose exact Hermes memory delete; Memory Room can call it from the UI. |
 | MCP visible terminal spawn | Done | Hermes can spawn visible Command Room terminals through Electron control instead of the legacy backend run API. |
+| Native session transcript viewer | Done | PR #12 added transcript actions for native sessions in Command Room and Reviews, backed by provider-native transcript endpoints. |
+| MCP spawn contract clarification | Done | PR #11 clarified that `context_workspace_spawn_agent` is the high-level visible terminal spawn tool and `/agents/spawn` is legacy backend run infrastructure. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -40,8 +43,8 @@ Goal: every visible control either performs a real action, exposes accurate stat
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
 | `#ce14092c` settings chat/shell mode | P1 | Partial: Settings shows real environment/runtime state, but there is no persistent chat-vs-shell mode preference yet. |
-| Add actionable session detail view | P1 | Done: embedded and native sessions can be opened from Command/Reviews to inspect metadata and live terminal buffers. |
-| Make Review Room real | P1 | In progress: Review Room is now session-focused; remaining work is deriving checks and summaries from terminal/session content. |
+| Add actionable session detail view | P1 | Done: embedded and native sessions can be opened from Command/Reviews to inspect metadata, live terminal buffers, and native transcripts. |
+| Make Review Room real | P1 | Done for session inspection: Review Room shows live buffers, native metadata, and transcripts. Separate future work can derive summaries/checks from those contents. |
 | Make Active Agents real | P1 | Done: Agents is session-first; live embedded sessions and native session discovery drive the visible state. |
 | Remove or relabel remaining decorative metrics | P2 | Done: visible dashboard metrics now use session, adapter, memory, and review counts from app state. |
 
@@ -69,8 +72,8 @@ Goal: let the user start fresh without losing useful context.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#ec62ad60` merge sessions / start fresh | P1 | Planned in `docs/session-continuity-handoff-plan.md`: user can select sessions and generate a curated handoff summary into recall cache. Raw transcripts are not dumped. |
-| Add session-to-recall action | P1 | A session row can contribute a bounded summary to project recall. |
+| `#ec62ad60` merge sessions / start fresh | P1 | Next: user can select sessions and generate a curated handoff summary into recall cache. Raw transcripts are available for inspection but should not be dumped directly. |
+| Add session-to-recall action | P1 | A transcript/session row can contribute a bounded summary to project recall. |
 | Add recall audit trail | P2 | UI shows when recall was refreshed, source, bytes, and whether a launch used fresh recall. |
 
 ## Milestone 5: Multi-Workspace

@@ -74,6 +74,7 @@ type HandoffSessionSource =
       status: string;
       id: string;
       workspace: string;
+      provider: HandoffSourceProvider;
       session: EmbeddedTerminalSession;
     }
   | {
@@ -84,6 +85,7 @@ type HandoffSessionSource =
       status: string;
       id: string;
       workspace: string;
+      provider: HandoffSourceProvider;
       session: AgentSession;
     };
 
@@ -97,6 +99,8 @@ type HandoffPreview = {
   sourceCount: number;
   workspace: string;
 };
+
+type HandoffSourceProvider = EmbeddedTerminalKind | AgentSession["provider"];
 
 const emptyLoadState: LoadState = {
   hermes: null,
@@ -1908,6 +1912,7 @@ function ReviewRoom({
   const [handoffLaunching, setHandoffLaunching] = useState<EmbeddedTerminalKind | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [handoffSavedAt, setHandoffSavedAt] = useState<string | null>(null);
+  const [handoffProviderTab, setHandoffProviderTab] = useState<HandoffSourceProvider | "all">("all");
   const selectedLabel = selectedEmbeddedSession?.title ?? selectedAgentSession?.title ?? "No session selected";
   const liveAgentSessions = embeddedSessions.filter((session) => session.kind !== "shell" && session.status === "running");
   const historicalAgentSessions = agentSessions.filter((session) => session.status === "historical");
@@ -1922,6 +1927,7 @@ function ReviewRoom({
         id: session.id,
         workspace: session.workspace,
         session,
+        provider: session.kind,
       })),
       ...agentSessions.map((session) => ({
         key: selectedAgentSessionKey(session),
@@ -1932,10 +1938,27 @@ function ReviewRoom({
         id: session.id,
         workspace: session.workspace,
         session,
+        provider: session.provider,
       })),
     ],
     [agentSessions, embeddedSessions],
   );
+  const handoffProviderTabs = useMemo(() => {
+    const counts = new Map<HandoffSourceProvider | "all", number>([["all", handoffSources.length]]);
+    for (const source of handoffSources) {
+      counts.set(source.provider, (counts.get(source.provider) ?? 0) + 1);
+    }
+    return (["all", "codex", "opencode", "claude", "hermes", "shell"] as (HandoffSourceProvider | "all")[])
+      .filter((provider) => provider === "all" || (counts.get(provider) ?? 0) > 0)
+      .map((provider) => ({
+        provider,
+        label: provider === "all" ? "All" : provider === "shell" ? "Shell" : providerLabel(provider as AgentSession["provider"]),
+        count: counts.get(provider) ?? 0,
+      }));
+  }, [handoffSources]);
+  const visibleHandoffSources = handoffProviderTab === "all"
+    ? handoffSources
+    : handoffSources.filter((source) => source.provider === handoffProviderTab);
   const selectedHandoffSources = handoffSelection.size > 0
     ? handoffSources.filter((source) => handoffSelection.has(source.key))
     : handoffSources.filter((source) => source.key === selectedSessionKey);
@@ -1948,6 +1971,12 @@ function ReviewRoom({
       return next.size === current.size ? current : next;
     });
   }, [handoffSources]);
+
+  useEffect(() => {
+    if (handoffProviderTab === "all") return;
+    if (handoffSources.some((source) => source.provider === handoffProviderTab)) return;
+    setHandoffProviderTab("all");
+  }, [handoffProviderTab, handoffSources]);
 
   function toggleHandoffSource(key: string) {
     setHandoffSelection((current) => {
@@ -2045,8 +2074,21 @@ function ReviewRoom({
           </div>
         </div>
         <p>Bounded handoff preview for the active workspace.</p>
+        <div className="handoffProviderTabs" aria-label="Handoff source providers">
+          {handoffProviderTabs.map((tab) => (
+            <button
+              key={tab.provider}
+              type="button"
+              className={handoffProviderTab === tab.provider ? "active" : ""}
+              onClick={() => setHandoffProviderTab(tab.provider)}
+            >
+              {tab.label}
+              <span>{tab.count}</span>
+            </button>
+          ))}
+        </div>
         <div className="handoffSourcePicker" aria-label="Handoff sources">
-          {handoffSources.slice(0, 12).map((source) => {
+          {visibleHandoffSources.slice(0, 12).map((source) => {
             const selected = handoffSelection.has(source.key) || (handoffSelection.size === 0 && selectedSessionKey === source.key);
             return (
               <button
@@ -2062,6 +2104,7 @@ function ReviewRoom({
             );
           })}
           {handoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions available for handoff.</span>}
+          {handoffSources.length > 0 && visibleHandoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions for this provider.</span>}
         </div>
         {handoffError && <p className="handoffError">{handoffError}</p>}
         {handoffSavedAt && <p className="handoffSaved">Saved to recall at {handoffSavedAt}</p>}

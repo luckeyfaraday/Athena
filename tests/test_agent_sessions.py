@@ -4,6 +4,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import backend.agent_sessions as agent_sessions
 from backend.agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
 
 
@@ -155,6 +158,36 @@ def test_lists_claude_jsonl_sessions(tmp_path: Path) -> None:
     assert [session.id for session in sessions] == ["claude-session-1"]
     assert sessions[0].title == "Polish the UI"
     assert sessions[0].updated_at == "2026-05-09T12:05:00Z"
+
+
+def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    hermes_home = tmp_path / "wsl-home" / ".hermes"
+    sessions_dir = hermes_home / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "session_h1.json").write_text(
+        json.dumps(
+            {
+                "model": "hermes-model",
+                "platform": "cli",
+                "session_start": "2026-05-12T10:00:00Z",
+                "last_updated": "2026-05-12T10:05:00Z",
+                "messages": [{"role": "user", "content": "Review the Athena sessions"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_sessions, "_probe_wsl_hermes_dir", lambda: hermes_home)
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="hermes")
+    transcript = read_agent_session_transcript("hermes", "h1", home_dir=home)
+
+    assert [session.id for session in sessions] == ["h1"]
+    assert sessions[0].provider == "hermes"
+    assert sessions[0].title == "Review the Athena sessions"
+    assert "Review the Athena sessions" in transcript
 
 
 def test_formats_empty_and_populated_summary(tmp_path: Path) -> None:

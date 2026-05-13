@@ -212,7 +212,8 @@ function readClaudeSessionFile(filePath: string, workspace: string): AgentSessio
 }
 
 async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
-  const hermesDir = path.join(os.homedir(), ".hermes");
+  const hermesDir = await resolveHermesDir();
+  if (!hermesDir) return [];
   const dbPath = path.join(hermesDir, "state.db");
   const sessionsDir = path.join(hermesDir, "sessions");
   const manifest = readHermesManifest(path.join(sessionsDir, "sessions.json"));
@@ -283,6 +284,23 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
   return Array.from(sessionsById.values())
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, 100);
+}
+
+async function resolveHermesDir(): Promise<string | null> {
+  const native = path.join(os.homedir(), ".hermes");
+  if (fs.existsSync(native)) return native;
+  if (process.platform !== "win32") return null;
+  try {
+    const { stdout } = await execFileAsync("wsl.exe", ["-e", "sh", "-lc", 'wslpath -w "$HOME/.hermes"'], {
+      encoding: "utf8",
+      timeout: 3000,
+      windowsHide: true,
+    });
+    const candidate = stdout.trim().split(/\r?\n/)[0];
+    return candidate && fs.existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
 }
 
 type HermesManifestEntry = {

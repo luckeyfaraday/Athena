@@ -497,6 +497,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(22, 38, 31, .98), rgba(9, 20, 16, .98));
 }
+.reviewRoom {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
 .roomPanelHeader {
   min-height: 48px;
   padding: 11px 14px;
@@ -1491,7 +1495,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-size: 11px;
 }
 .sessionInspector {
-  min-height: 280px;
+  flex: 0 0 auto;
+  min-height: 360px;
   margin: 0 12px 12px;
   display: flex;
   flex-direction: column;
@@ -1521,7 +1526,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .sessionInspectorGrid {
   flex: 1;
-  min-height: 0;
+  min-height: 260px;
   display: grid;
   grid-template-columns: minmax(220px, .38fr) minmax(0, 1fr);
 }

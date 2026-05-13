@@ -2,6 +2,12 @@
   "name": "context-workspace-client",
   "version": "0.1.0",
   "private": true,
+  "description": "Athena desktop AI workspace",
+  "author": "luckeyfaraday",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/luckeyfaraday/Athena.git"
+  },
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {

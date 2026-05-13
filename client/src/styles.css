@@ -1511,6 +1511,102 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .handoffPanel .handoffSaved {
   color: var(--green);
 }
+.handoffProviderTabs {
+  margin-top: 10px;
+  padding: 3px;
+  display: inline-flex;
+  max-width: 100%;
+  gap: 3px;
+  overflow-x: auto;
+  border: 1px solid rgba(226,214,183,.1);
+  border-radius: 7px;
+  background: #061a15;
+}
+.handoffProviderTabs button {
+  height: 28px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.handoffProviderTabs button.active {
+  background: rgba(217,196,138,.14);
+  color: var(--gold);
+}
+.handoffProviderTabs button span {
+  min-width: 17px;
+  height: 17px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 99px;
+  background: rgba(226,214,183,.1);
+  color: var(--muted);
+  font-size: 9px;
+}
+.handoffSourcePicker {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+}
+.handoffSourceChip {
+  min-width: 0;
+  min-height: 42px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(226,214,183,.04);
+  color: var(--text-2);
+  text-align: left;
+}
+.handoffSourceChip > svg,
+.handoffSourceChip > span {
+  grid-row: 1 / span 2;
+}
+.handoffSourceChip > span {
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(226,214,183,.38);
+  border-radius: 3px;
+}
+.handoffSourceChip strong,
+.handoffSourceChip em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.handoffSourceChip strong {
+  font-size: 10px;
+}
+.handoffSourceChip em {
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.handoffSourceChip.selected {
+  border-color: rgba(217,196,138,.62);
+  background: rgba(217,196,138,.15);
+  color: var(--gold);
+}
+.handoffSourceEmpty {
+  color: var(--muted);
+  font-size: 11px;
+}
 .handoffPreview {
   margin-top: 10px;
   border: 1px solid rgba(226,214,183,.1);
@@ -1546,16 +1642,35 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   gap: 8px;
   border-top: 1px solid rgba(226,214,183,.1);
 }
-.handoffCheckbox {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
+.handoffSelectButton {
+  min-width: 82px;
+  height: 30px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(226,214,183,.04);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
 }
-.handoffCheckbox input {
+.handoffSelectButton span {
   width: 14px;
   height: 14px;
-  accent-color: var(--gold);
+  border: 1px solid rgba(226,214,183,.35);
+  border-radius: 3px;
+}
+.handoffSelectButton.selected {
+  border-color: rgba(217,196,138,.55);
+  background: rgba(217,196,138,.14);
+  color: var(--gold);
+}
+.handoffSelectButton:hover {
+  color: var(--text);
+  background: rgba(226,214,183,.08);
 }
 .sessionReviewList {
   margin: 0 12px 12px;

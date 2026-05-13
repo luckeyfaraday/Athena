@@ -74,6 +74,7 @@ type HandoffSessionSource =
       status: string;
       id: string;
       workspace: string;
+      provider: HandoffSourceProvider;
       session: EmbeddedTerminalSession;
     }
   | {
@@ -84,11 +85,14 @@ type HandoffSessionSource =
       status: string;
       id: string;
       workspace: string;
+      provider: HandoffSourceProvider;
       session: AgentSession;
     };
 
 type HandoffEvidence = HandoffSessionSource & {
   evidence: string;
+  usable: boolean;
+  note: string | null;
 };
 
 type HandoffPreview = {
@@ -97,6 +101,8 @@ type HandoffPreview = {
   sourceCount: number;
   workspace: string;
 };
+
+type HandoffSourceProvider = EmbeddedTerminalKind | AgentSession["provider"];
 
 const emptyLoadState: LoadState = {
   hermes: null,
@@ -1686,31 +1692,40 @@ async function loadHandoffEvidence(source: HandoffSessionSource): Promise<Handof
   if (!terminalId) {
     return {
       ...source,
-      evidence: "Metadata only. No live terminal buffer is attached to this historical session.",
+      evidence: "",
+      usable: false,
+      note: "No live terminal buffer is attached to this session.",
     };
   }
   try {
     const buffer = await desktop.getEmbeddedTerminalBuffer(terminalId);
+    const evidence = extractHandoffEvidence(buffer);
     return {
       ...source,
-      evidence: tailText(buffer || "No terminal output captured yet.", 1800),
+      evidence,
+      usable: evidence.length > 0,
+      note: evidence.length > 0 ? null : "No usable task evidence could be extracted from the terminal buffer.",
     };
   } catch (err) {
     return {
       ...source,
-      evidence: `Unable to read live buffer: ${String(err)}`,
+      evidence: "",
+      usable: false,
+      note: `Unable to read live buffer: ${String(err)}`,
     };
   }
 }
 
 function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): string {
   const generated = new Date().toISOString();
+  const usableSources = sources.filter((source) => source.usable);
+  const unusableSources = sources.filter((source) => !source.usable);
   const selectedSessions = sources
-    .map((source) => `- ${source.label}: ${source.title} (${source.status}, ${source.id})`)
+    .map((source) => `- ${source.label}: ${source.title} (${source.status}, ${source.id})${source.usable ? "" : " - no usable evidence"}`)
     .join("\n");
   const evidenceSections: string[] = [];
   let remainingEvidenceChars = 12000;
-  for (const source of sources) {
+  for (const source of usableSources) {
     if (remainingEvidenceChars <= 0) {
       evidenceSections.push(`### ${source.title}\n\n[omitted because handoff evidence reached its size cap]`);
       continue;
@@ -1719,17 +1734,20 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     remainingEvidenceChars -= evidence.length;
     evidenceSections.push([`### ${source.title}`, evidence].join("\n\n"));
   }
+  for (const source of unusableSources) {
+    evidenceSections.push(`### ${source.title}\n\n${source.note ?? "No usable evidence found."}`);
+  }
   const evidence = evidenceSections.join("\n\n");
   return [
     "# Athena Session Handoff",
     "",
     `Generated: ${generated}`,
     `Workspace: ${workspace}`,
-    `Sources: ${sources.length}`,
+    `Sources: ${usableSources.length} usable of ${sources.length} selected`,
     "",
     "## Summary",
-    "- Bounded handoff generated from selected Athena sessions.",
-    "- Review the selected sessions and evidence before launching the next agent.",
+    "- Bounded handoff generated from selected Athena sessions with usable evidence.",
+    unusableSources.length ? `- ${unusableSources.length} selected source${unusableSources.length === 1 ? "" : "s"} had no usable evidence and should not drive the next agent.` : "",
     "",
     "## Selected Sessions",
     selectedSessions || "- None",
@@ -1740,7 +1758,51 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     "## Next Suggested Context",
     "- Use this handoff as short-lived project context.",
     "- Verify current git state and latest user instructions before making changes.",
-  ].join("\n");
+  ].filter((line) => line !== "").join("\n");
+}
+
+function extractHandoffEvidence(value: string): string {
+  const cleaned = stripTerminalControls(removeExistingHandoffBlocks(value));
+  const lines = cleaned
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .filter(isMeaningfulHandoffLine);
+  const uniqueLines: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueLines.push(line);
+  }
+  return tailText(uniqueLines.slice(-24).join("\n"), 1800);
+}
+
+function removeExistingHandoffBlocks(value: string): string {
+  const index = value.indexOf("# Athena Session Handoff");
+  return index >= 0 ? value.slice(0, index) : value;
+}
+
+function stripTerminalControls(value: string): string {
+  return value
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .replace(/[╹┃━─▀▄█]+/g, " ");
+}
+
+function isMeaningfulHandoffLine(line: string): boolean {
+  if (line.length < 6 || line.length > 240) return false;
+  if (!/[a-zA-Z]/.test(line)) return false;
+  if (/^(generated|workspace|sources|summary|selected sessions|recent evidence|next suggested context)$/i.test(line)) return false;
+  if (/^#*\s*athena session handoff/i.test(line)) return false;
+  if (/^\[?truncated to last \d+ chars\]?/i.test(line)) return false;
+  if (/\b(ctrl\+p commands|parent up|prev left|next right|explore \(|build ·|mini.?max|tokens?\)|\d+(?:\.\d+)?k \(\d+%\))/i.test(line)) return false;
+  if (/^\W+$/.test(line)) return false;
+  const letters = line.match(/[a-zA-Z]/g)?.length ?? 0;
+  const visible = line.replace(/\s/g, "").length;
+  return visible > 0 && letters / visible > 0.25;
 }
 
 function tailText(value: string, maxChars: number): string {
@@ -1908,6 +1970,7 @@ function ReviewRoom({
   const [handoffLaunching, setHandoffLaunching] = useState<EmbeddedTerminalKind | null>(null);
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [handoffSavedAt, setHandoffSavedAt] = useState<string | null>(null);
+  const [handoffProviderTab, setHandoffProviderTab] = useState<HandoffSourceProvider | "all">("all");
   const selectedLabel = selectedEmbeddedSession?.title ?? selectedAgentSession?.title ?? "No session selected";
   const liveAgentSessions = embeddedSessions.filter((session) => session.kind !== "shell" && session.status === "running");
   const historicalAgentSessions = agentSessions.filter((session) => session.status === "historical");
@@ -1922,6 +1985,7 @@ function ReviewRoom({
         id: session.id,
         workspace: session.workspace,
         session,
+        provider: session.kind,
       })),
       ...agentSessions.map((session) => ({
         key: selectedAgentSessionKey(session),
@@ -1932,11 +1996,30 @@ function ReviewRoom({
         id: session.id,
         workspace: session.workspace,
         session,
+        provider: session.provider,
       })),
     ],
     [agentSessions, embeddedSessions],
   );
-  const selectedHandoffSources = handoffSources.filter((source) => handoffSelection.has(source.key));
+  const handoffProviderTabs = useMemo(() => {
+    const counts = new Map<HandoffSourceProvider | "all", number>([["all", handoffSources.length]]);
+    for (const source of handoffSources) {
+      counts.set(source.provider, (counts.get(source.provider) ?? 0) + 1);
+    }
+    return (["all", "codex", "opencode", "claude", "hermes", "shell"] as (HandoffSourceProvider | "all")[])
+      .filter((provider) => provider === "all" || (counts.get(provider) ?? 0) > 0)
+      .map((provider) => ({
+        provider,
+        label: provider === "all" ? "All" : provider === "shell" ? "Shell" : providerLabel(provider as AgentSession["provider"]),
+        count: counts.get(provider) ?? 0,
+      }));
+  }, [handoffSources]);
+  const visibleHandoffSources = handoffProviderTab === "all"
+    ? handoffSources
+    : handoffSources.filter((source) => source.provider === handoffProviderTab);
+  const selectedHandoffSources = handoffSelection.size > 0
+    ? handoffSources.filter((source) => handoffSelection.has(source.key))
+    : handoffSources.filter((source) => source.key === selectedSessionKey);
   const canCreateHandoff = selectedHandoffSources.length > 0 && !handoffGenerating;
 
   useEffect(() => {
@@ -1946,6 +2029,12 @@ function ReviewRoom({
       return next.size === current.size ? current : next;
     });
   }, [handoffSources]);
+
+  useEffect(() => {
+    if (handoffProviderTab === "all") return;
+    if (handoffSources.some((source) => source.provider === handoffProviderTab)) return;
+    setHandoffProviderTab("all");
+  }, [handoffProviderTab, handoffSources]);
 
   function toggleHandoffSource(key: string) {
     setHandoffSelection((current) => {
@@ -1965,6 +2054,11 @@ function ReviewRoom({
     setHandoffError(null);
     try {
       const evidence = await Promise.all(selectedHandoffSources.map(loadHandoffEvidence));
+      if (!evidence.some((source) => source.usable)) {
+        setHandoffPreview(null);
+        setHandoffError("No usable handoff evidence found. Pick live sessions with task output or sessions with readable transcripts.");
+        return;
+      }
       const markdown = buildHandoffMarkdown(workspace, evidence);
       setHandoffPreview({
         markdown,
@@ -2043,6 +2137,38 @@ function ReviewRoom({
           </div>
         </div>
         <p>Bounded handoff preview for the active workspace.</p>
+        <div className="handoffProviderTabs" aria-label="Handoff source providers">
+          {handoffProviderTabs.map((tab) => (
+            <button
+              key={tab.provider}
+              type="button"
+              className={handoffProviderTab === tab.provider ? "active" : ""}
+              onClick={() => setHandoffProviderTab(tab.provider)}
+            >
+              {tab.label}
+              <span>{tab.count}</span>
+            </button>
+          ))}
+        </div>
+        <div className="handoffSourcePicker" aria-label="Handoff sources">
+          {visibleHandoffSources.slice(0, 12).map((source) => {
+            const selected = handoffSelection.has(source.key) || (handoffSelection.size === 0 && selectedSessionKey === source.key);
+            return (
+              <button
+                key={source.key}
+                type="button"
+                className={selected ? "handoffSourceChip selected" : "handoffSourceChip"}
+                onClick={() => toggleHandoffSource(source.key)}
+              >
+                {selected ? <CheckCircle2 size={13} /> : <span />}
+                <strong>{source.title}</strong>
+                <em>{source.label}</em>
+              </button>
+            );
+          })}
+          {handoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions available for handoff.</span>}
+          {handoffSources.length > 0 && visibleHandoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions for this provider.</span>}
+        </div>
         {handoffError && <p className="handoffError">{handoffError}</p>}
         {handoffSavedAt && <p className="handoffSaved">Saved to recall at {handoffSavedAt}</p>}
         {handoffPreview && (
@@ -2070,44 +2196,71 @@ function ReviewRoom({
 
       <div className="sessionReviewList">
         {embeddedSessions.map((session) => (
-          <article key={embeddedSessionKey(session)} className={selectedSessionKey === embeddedSessionKey(session) ? "selected" : ""}>
-            <label className="handoffCheckbox" title="Include in handoff">
-              <input
-                type="checkbox"
-                checked={handoffSelection.has(embeddedSessionKey(session))}
-                onChange={() => toggleHandoffSource(embeddedSessionKey(session))}
-              />
-            </label>
+          <article
+            key={embeddedSessionKey(session)}
+            className={selectedSessionKey === embeddedSessionKey(session) || handoffSelection.has(embeddedSessionKey(session)) ? "selected" : ""}
+            onClick={() => onSelectEmbeddedSession(session)}
+          >
+            <button
+              type="button"
+              className={handoffSelection.has(embeddedSessionKey(session)) ? "handoffSelectButton selected" : "handoffSelectButton"}
+              aria-pressed={handoffSelection.has(embeddedSessionKey(session))}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleHandoffSource(embeddedSessionKey(session));
+              }}
+            >
+              {handoffSelection.has(embeddedSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
+              {handoffSelection.has(embeddedSessionKey(session)) ? "Selected" : "Include"}
+            </button>
             <StatusDot status={session.status === "running" ? "running" : "offline"} />
             <div>
               <strong>{session.title}</strong>
               <span>{session.kind} · {session.status}{session.promptPath ? " · prompt attached" : ""}</span>
             </div>
             <em>{session.pid ? `pid ${session.pid}` : "no pid"}</em>
-            <button type="button" className="ghostIconButton" onClick={() => onSelectEmbeddedSession(session)}>
+            <button type="button" className="ghostIconButton" onClick={(event) => {
+              event.stopPropagation();
+              onSelectEmbeddedSession(session);
+            }}>
               <FileText size={14} />
             </button>
           </article>
         ))}
         {agentSessions.slice(0, 8).map((session) => (
-          <article key={selectedAgentSessionKey(session)} className={selectedSessionKey === selectedAgentSessionKey(session) ? "selected" : ""}>
-            <label className="handoffCheckbox" title="Include in handoff">
-              <input
-                type="checkbox"
-                checked={handoffSelection.has(selectedAgentSessionKey(session))}
-                onChange={() => toggleHandoffSource(selectedAgentSessionKey(session))}
-              />
-            </label>
+          <article
+            key={selectedAgentSessionKey(session)}
+            className={selectedSessionKey === selectedAgentSessionKey(session) || handoffSelection.has(selectedAgentSessionKey(session)) ? "selected" : ""}
+            onClick={() => onSelectAgentSession(session)}
+          >
+            <button
+              type="button"
+              className={handoffSelection.has(selectedAgentSessionKey(session)) ? "handoffSelectButton selected" : "handoffSelectButton"}
+              aria-pressed={handoffSelection.has(selectedAgentSessionKey(session))}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleHandoffSource(selectedAgentSessionKey(session));
+              }}
+            >
+              {handoffSelection.has(selectedAgentSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
+              {handoffSelection.has(selectedAgentSessionKey(session)) ? "Selected" : "Include"}
+            </button>
             <StatusDot status={session.status === "running" ? "running" : session.status === "exited" ? "offline" : "ready"} />
             <div>
               <strong>{session.title}</strong>
               <span>{providerLabel(session.provider)} · {session.id}</span>
             </div>
             <em>{session.status}</em>
-            <button type="button" className="ghostIconButton" onClick={() => onSelectAgentSession(session)}>
+            <button type="button" className="ghostIconButton" onClick={(event) => {
+              event.stopPropagation();
+              onSelectAgentSession(session);
+            }}>
               <FileText size={14} />
             </button>
-            <button type="button" className="ghostIconButton" onClick={() => void onLoadAgentTranscript(session)}>
+            <button type="button" className="ghostIconButton" onClick={(event) => {
+              event.stopPropagation();
+              void onLoadAgentTranscript(session);
+            }}>
               <ScrollText size={14} />
             </button>
           </article>

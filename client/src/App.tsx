@@ -65,6 +65,39 @@ type AgentTranscriptState = {
   error: string | null;
 };
 
+type HandoffSessionSource =
+  | {
+      key: string;
+      kind: "embedded";
+      title: string;
+      label: string;
+      status: string;
+      id: string;
+      workspace: string;
+      session: EmbeddedTerminalSession;
+    }
+  | {
+      key: string;
+      kind: "native";
+      title: string;
+      label: string;
+      status: string;
+      id: string;
+      workspace: string;
+      session: AgentSession;
+    };
+
+type HandoffEvidence = HandoffSessionSource & {
+  evidence: string;
+};
+
+type HandoffPreview = {
+  markdown: string;
+  bytes: number;
+  sourceCount: number;
+  workspace: string;
+};
+
 const emptyLoadState: LoadState = {
   hermes: null,
   recall: null,
@@ -496,6 +529,13 @@ export function App() {
     }
   }
 
+  async function saveHandoffToRecall(markdown: string) {
+    if (!client || !workspace) throw new Error("Backend or workspace is not available.");
+    const result = await client.writeRecall(workspace, markdown);
+    setState((current) => ({ ...current, recall: result.recall }));
+    setError(null);
+  }
+
   const activeEmbeddedSessions = useMemo(
     () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
     [embeddedSessions, workspace],
@@ -658,9 +698,11 @@ export function App() {
                 selectedAgentSession={selectedAgentSession}
                 selectedSessionKey={selectedSessionKey}
                 agentTranscript={agentTranscript}
+                workspace={workspace}
                 onSelectEmbeddedSession={(session) => setSelectedSessionKey(embeddedSessionKey(session))}
                 onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
                 onLoadAgentTranscript={loadAgentTranscript}
+                onSaveHandoff={saveHandoffToRecall}
               />
             )}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} />}
@@ -1628,6 +1670,78 @@ function embeddedSessionKey(session: EmbeddedTerminalSession): string {
   return `embedded:${session.id}`;
 }
 
+async function loadHandoffEvidence(source: HandoffSessionSource): Promise<HandoffEvidence> {
+  const terminalId = source.kind === "embedded" ? source.session.id : source.session.terminalId;
+  if (!terminalId) {
+    return {
+      ...source,
+      evidence: "Metadata only. No live terminal buffer is attached to this historical session.",
+    };
+  }
+  try {
+    const buffer = await desktop.getEmbeddedTerminalBuffer(terminalId);
+    return {
+      ...source,
+      evidence: tailText(buffer || "No terminal output captured yet.", 1800),
+    };
+  } catch (err) {
+    return {
+      ...source,
+      evidence: `Unable to read live buffer: ${String(err)}`,
+    };
+  }
+}
+
+function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): string {
+  const generated = new Date().toISOString();
+  const selectedSessions = sources
+    .map((source) => `- ${source.label}: ${source.title} (${source.status}, ${source.id})`)
+    .join("\n");
+  const evidenceSections: string[] = [];
+  let remainingEvidenceChars = 12000;
+  for (const source of sources) {
+    if (remainingEvidenceChars <= 0) {
+      evidenceSections.push(`### ${source.title}\n\n[omitted because handoff evidence reached its size cap]`);
+      continue;
+    }
+    const evidence = tailText(source.evidence.trim() || "No evidence available.", Math.min(1800, remainingEvidenceChars));
+    remainingEvidenceChars -= evidence.length;
+    evidenceSections.push([`### ${source.title}`, evidence].join("\n\n"));
+  }
+  const evidence = evidenceSections.join("\n\n");
+  return [
+    "# Athena Session Handoff",
+    "",
+    `Generated: ${generated}`,
+    `Workspace: ${workspace}`,
+    `Sources: ${sources.length}`,
+    "",
+    "## Summary",
+    "- Bounded handoff generated from selected Athena sessions.",
+    "- Review the selected sessions and evidence before launching the next agent.",
+    "",
+    "## Selected Sessions",
+    selectedSessions || "- None",
+    "",
+    "## Recent Evidence",
+    evidence || "No evidence selected.",
+    "",
+    "## Next Suggested Context",
+    "- Use this handoff as short-lived project context.",
+    "- Verify current git state and latest user instructions before making changes.",
+  ].join("\n");
+}
+
+function tailText(value: string, maxChars: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `[truncated to last ${maxChars} chars]\n${normalized.slice(-maxChars)}`;
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
 function terminalPaneMeta(session: EmbeddedTerminalSession): string {
   if (session.kind === "shell") return `${session.status}${session.pid ? ` · pid ${session.pid}` : ""}`;
   return session.sessionLabel ?? "New";
@@ -1756,9 +1870,11 @@ function ReviewRoom({
   selectedAgentSession,
   selectedSessionKey,
   agentTranscript,
+  workspace,
   onSelectEmbeddedSession,
   onSelectAgentSession,
   onLoadAgentTranscript,
+  onSaveHandoff,
 }: {
   embeddedSessions: EmbeddedTerminalSession[];
   agentSessions: AgentSession[];
@@ -1766,13 +1882,103 @@ function ReviewRoom({
   selectedAgentSession: AgentSession | null;
   selectedSessionKey: string | null;
   agentTranscript: AgentTranscriptState | null;
+  workspace: string;
   onSelectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onSelectAgentSession: (session: AgentSession) => void;
   onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
+  onSaveHandoff: (markdown: string) => Promise<void>;
 }) {
+  const [handoffSelection, setHandoffSelection] = useState<Set<string>>(() => new Set());
+  const [handoffPreview, setHandoffPreview] = useState<HandoffPreview | null>(null);
+  const [handoffGenerating, setHandoffGenerating] = useState(false);
+  const [handoffSaving, setHandoffSaving] = useState(false);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
+  const [handoffSavedAt, setHandoffSavedAt] = useState<string | null>(null);
   const selectedLabel = selectedEmbeddedSession?.title ?? selectedAgentSession?.title ?? "No session selected";
   const liveAgentSessions = embeddedSessions.filter((session) => session.kind !== "shell" && session.status === "running");
   const historicalAgentSessions = agentSessions.filter((session) => session.status === "historical");
+  const handoffSources = useMemo<HandoffSessionSource[]>(
+    () => [
+      ...embeddedSessions.map((session) => ({
+        key: embeddedSessionKey(session),
+        kind: "embedded" as const,
+        title: session.title,
+        label: `embedded ${session.kind}`,
+        status: session.status,
+        id: session.id,
+        workspace: session.workspace,
+        session,
+      })),
+      ...agentSessions.map((session) => ({
+        key: selectedAgentSessionKey(session),
+        kind: "native" as const,
+        title: session.title,
+        label: `native ${providerLabel(session.provider)}`,
+        status: session.status,
+        id: session.id,
+        workspace: session.workspace,
+        session,
+      })),
+    ],
+    [agentSessions, embeddedSessions],
+  );
+  const selectedHandoffSources = handoffSources.filter((source) => handoffSelection.has(source.key));
+  const canCreateHandoff = selectedHandoffSources.length > 0 && !handoffGenerating;
+
+  useEffect(() => {
+    const available = new Set(handoffSources.map((source) => source.key));
+    setHandoffSelection((current) => {
+      const next = new Set([...current].filter((key) => available.has(key)));
+      return next.size === current.size ? current : next;
+    });
+  }, [handoffSources]);
+
+  function toggleHandoffSource(key: string) {
+    setHandoffSelection((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setHandoffPreview(null);
+    setHandoffError(null);
+    setHandoffSavedAt(null);
+  }
+
+  async function createHandoffPreview() {
+    if (!workspace || selectedHandoffSources.length === 0) return;
+    setHandoffGenerating(true);
+    setHandoffError(null);
+    try {
+      const evidence = await Promise.all(selectedHandoffSources.map(loadHandoffEvidence));
+      const markdown = buildHandoffMarkdown(workspace, evidence);
+      setHandoffPreview({
+        markdown,
+        bytes: byteLength(markdown),
+        sourceCount: evidence.length,
+        workspace,
+      });
+    } catch (err) {
+      setHandoffError(String(err));
+    } finally {
+      setHandoffGenerating(false);
+    }
+  }
+
+  async function saveHandoffPreview() {
+    if (!handoffPreview) return;
+    setHandoffSaving(true);
+    setHandoffError(null);
+    try {
+      await onSaveHandoff(handoffPreview.markdown);
+      setHandoffSavedAt(new Date().toLocaleTimeString());
+    } catch (err) {
+      setHandoffError(String(err));
+    } finally {
+      setHandoffSaving(false);
+    }
+  }
+
   return (
     <div className="roomPanel reviewRoom">
       <div className="decisionHero">
@@ -1793,9 +1999,46 @@ function ReviewRoom({
         <ReviewCard title="Inspector scope" icon={<Play size={17} />} items={["Inspect live pane output", "Inspect provider metadata", "Read native transcripts"]} />
       </div>
 
+      <section className="handoffPanel">
+        <div className="handoffPanelHeader">
+          <div>
+            <span className="tinyLabel">Session continuity</span>
+            <strong>{selectedHandoffSources.length ? `${selectedHandoffSources.length} selected` : "Select sessions for handoff"}</strong>
+          </div>
+          <div className="sessionInspectorActions">
+            <button type="button" className="ghostButton" onClick={() => void createHandoffPreview()} disabled={!canCreateHandoff}>
+              <FileText size={14} /> {handoffGenerating ? "Creating" : "Create handoff"}
+            </button>
+            <button type="button" className="ghostButton" onClick={() => void saveHandoffPreview()} disabled={!handoffPreview || handoffSaving}>
+              <CheckCircle2 size={14} /> {handoffSaving ? "Saving" : "Save to recall"}
+            </button>
+          </div>
+        </div>
+        <p>Bounded handoff preview for the active workspace.</p>
+        {handoffError && <p className="handoffError">{handoffError}</p>}
+        {handoffSavedAt && <p className="handoffSaved">Saved to recall at {handoffSavedAt}</p>}
+        {handoffPreview && (
+          <div className="handoffPreview">
+            <div>
+              <span>{handoffPreview.sourceCount} sources</span>
+              <span>{handoffPreview.bytes} bytes</span>
+              <span>{handoffPreview.workspace}</span>
+            </div>
+            <pre>{handoffPreview.markdown}</pre>
+          </div>
+        )}
+      </section>
+
       <div className="sessionReviewList">
         {embeddedSessions.map((session) => (
           <article key={embeddedSessionKey(session)} className={selectedSessionKey === embeddedSessionKey(session) ? "selected" : ""}>
+            <label className="handoffCheckbox" title="Include in handoff">
+              <input
+                type="checkbox"
+                checked={handoffSelection.has(embeddedSessionKey(session))}
+                onChange={() => toggleHandoffSource(embeddedSessionKey(session))}
+              />
+            </label>
             <StatusDot status={session.status === "running" ? "running" : "offline"} />
             <div>
               <strong>{session.title}</strong>
@@ -1809,6 +2052,13 @@ function ReviewRoom({
         ))}
         {agentSessions.slice(0, 8).map((session) => (
           <article key={selectedAgentSessionKey(session)} className={selectedSessionKey === selectedAgentSessionKey(session) ? "selected" : ""}>
+            <label className="handoffCheckbox" title="Include in handoff">
+              <input
+                type="checkbox"
+                checked={handoffSelection.has(selectedAgentSessionKey(session))}
+                onChange={() => toggleHandoffSource(selectedAgentSessionKey(session))}
+              />
+            </label>
             <StatusDot status={session.status === "running" ? "running" : session.status === "exited" ? "offline" : "ready"} />
             <div>
               <strong>{session.title}</strong>

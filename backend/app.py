@@ -56,6 +56,12 @@ class HermesRecallRefreshRequest(BaseModel):
     timeout_seconds: float = Field(default=120, gt=0, le=600)
 
 
+class HermesRecallWriteRequest(BaseModel):
+    project_dir: str
+    markdown: str = Field(min_length=1, max_length=131072)
+    source: str = Field(default="athena-session-handoff", min_length=1, max_length=120)
+
+
 RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
 HERMES_REFRESH_COMMAND_ENV = "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD"
 BACKEND_URL_ENV = "CONTEXT_WORKSPACE_BACKEND_URL"
@@ -127,6 +133,20 @@ def create_app(
         )
         recall = _recall_status_payload(project)
         return {"refresh": result, "recall": recall}
+
+    @app.post("/hermes/recall/write")
+    def write_hermes_recall(request: HermesRecallWriteRequest) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(request.project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        markdown = request.markdown.strip()
+        if not markdown:
+            raise HTTPException(status_code=400, detail="Recall markdown cannot be empty.")
+
+        recall = _write_recall_cache(project, markdown, source=request.source.strip())
+        return {"recall": recall}
 
     @app.post("/hermes/install")
     def install_hermes(request: HermesInstallRequest) -> dict[str, Any]:
@@ -462,6 +482,22 @@ def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
         "source": metadata.get("source") if isinstance(metadata.get("source"), str) else None,
         "refresh_configured": bool(os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()),
     }
+
+
+def _write_recall_cache(project_dir: Path, markdown: str, *, source: str) -> dict[str, Any]:
+    cache_dir = project_dir / ".context-workspace" / "hermes"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    recall_path = cache_dir / "session-recall.md"
+    metadata_path = cache_dir / "last-refresh.json"
+    text = markdown.rstrip() + "\n"
+    recall_path.write_text(text, encoding="utf-8")
+    metadata = {
+        "refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source": source or "athena-session-handoff",
+        "bytes": len(text.encode("utf-8")),
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    return _recall_status_payload(project_dir)
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

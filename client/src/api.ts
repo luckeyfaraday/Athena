@@ -44,6 +44,10 @@ export type RecallRefreshResult = {
   recall: RecallStatus;
 };
 
+export type RecallWriteResult = {
+  recall: RecallStatus;
+};
+
 export type AdapterStatus = {
   agent_type: string;
   configured: boolean;
@@ -104,6 +108,18 @@ export class BackendClient {
       body: JSON.stringify({
         project_dir: projectDir,
         task_hint: taskHint,
+      }),
+    });
+  }
+
+  async writeRecall(projectDir: string, markdown: string, source = "athena-session-handoff"): Promise<RecallWriteResult> {
+    return this.json("/hermes/recall/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_dir: projectDir,
+        markdown,
+        source,
       }),
     });
   }

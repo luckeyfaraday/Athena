@@ -220,6 +220,31 @@ def test_hermes_recall_refresh_runs_configured_command(tmp_path: Path, monkeypat
     assert "manual launch" in (tmp_path / ".context-workspace" / "hermes" / "session-recall.md").read_text(encoding="utf-8")
 
 
+def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/hermes/recall/write",
+        json={
+            "project_dir": str(tmp_path),
+            "markdown": "# Athena Session Handoff\n\n- Continue from selected sessions.",
+            "source": "test-handoff",
+        },
+    )
+
+    assert response.status_code == 200
+    recall_path = tmp_path / ".context-workspace" / "hermes" / "session-recall.md"
+    metadata_path = tmp_path / ".context-workspace" / "hermes" / "last-refresh.json"
+    recall = response.json()["recall"]
+    assert recall["status"] == "fresh"
+    assert recall["source"] == "test-handoff"
+    assert recall_path.read_text(encoding="utf-8").endswith("\n")
+    assert "Continue from selected sessions" in recall_path.read_text(encoding="utf-8")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["source"] == "test-handoff"
+    assert metadata["bytes"] == recall_path.stat().st_size
+
+
 def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

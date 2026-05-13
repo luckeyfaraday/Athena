@@ -1936,7 +1936,9 @@ function ReviewRoom({
     ],
     [agentSessions, embeddedSessions],
   );
-  const selectedHandoffSources = handoffSources.filter((source) => handoffSelection.has(source.key));
+  const selectedHandoffSources = handoffSelection.size > 0
+    ? handoffSources.filter((source) => handoffSelection.has(source.key))
+    : handoffSources.filter((source) => source.key === selectedSessionKey);
   const canCreateHandoff = selectedHandoffSources.length > 0 && !handoffGenerating;
 
   useEffect(() => {
@@ -2070,12 +2072,17 @@ function ReviewRoom({
 
       <div className="sessionReviewList">
         {embeddedSessions.map((session) => (
-          <article key={embeddedSessionKey(session)} className={selectedSessionKey === embeddedSessionKey(session) ? "selected" : ""}>
+          <article
+            key={embeddedSessionKey(session)}
+            className={selectedSessionKey === embeddedSessionKey(session) || handoffSelection.has(embeddedSessionKey(session)) ? "selected" : ""}
+            onClick={() => toggleHandoffSource(embeddedSessionKey(session))}
+          >
             <label className="handoffCheckbox" title="Include in handoff">
               <input
                 type="checkbox"
                 checked={handoffSelection.has(embeddedSessionKey(session))}
                 onChange={() => toggleHandoffSource(embeddedSessionKey(session))}
+                onClick={(event) => event.stopPropagation()}
               />
             </label>
             <StatusDot status={session.status === "running" ? "running" : "offline"} />
@@ -2084,18 +2091,26 @@ function ReviewRoom({
               <span>{session.kind} · {session.status}{session.promptPath ? " · prompt attached" : ""}</span>
             </div>
             <em>{session.pid ? `pid ${session.pid}` : "no pid"}</em>
-            <button type="button" className="ghostIconButton" onClick={() => onSelectEmbeddedSession(session)}>
+            <button type="button" className="ghostIconButton" onClick={(event) => {
+              event.stopPropagation();
+              onSelectEmbeddedSession(session);
+            }}>
               <FileText size={14} />
             </button>
           </article>
         ))}
         {agentSessions.slice(0, 8).map((session) => (
-          <article key={selectedAgentSessionKey(session)} className={selectedSessionKey === selectedAgentSessionKey(session) ? "selected" : ""}>
+          <article
+            key={selectedAgentSessionKey(session)}
+            className={selectedSessionKey === selectedAgentSessionKey(session) || handoffSelection.has(selectedAgentSessionKey(session)) ? "selected" : ""}
+            onClick={() => toggleHandoffSource(selectedAgentSessionKey(session))}
+          >
             <label className="handoffCheckbox" title="Include in handoff">
               <input
                 type="checkbox"
                 checked={handoffSelection.has(selectedAgentSessionKey(session))}
                 onChange={() => toggleHandoffSource(selectedAgentSessionKey(session))}
+                onClick={(event) => event.stopPropagation()}
               />
             </label>
             <StatusDot status={session.status === "running" ? "running" : session.status === "exited" ? "offline" : "ready"} />
@@ -2104,10 +2119,16 @@ function ReviewRoom({
               <span>{providerLabel(session.provider)} · {session.id}</span>
             </div>
             <em>{session.status}</em>
-            <button type="button" className="ghostIconButton" onClick={() => onSelectAgentSession(session)}>
+            <button type="button" className="ghostIconButton" onClick={(event) => {
+              event.stopPropagation();
+              onSelectAgentSession(session);
+            }}>
               <FileText size={14} />
             </button>
-            <button type="button" className="ghostIconButton" onClick={() => void onLoadAgentTranscript(session)}>
+            <button type="button" className="ghostIconButton" onClick={(event) => {
+              event.stopPropagation();
+              void onLoadAgentTranscript(session);
+            }}>
               <ScrollText size={14} />
             </button>
           </article>

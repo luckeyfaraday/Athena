@@ -2075,14 +2075,13 @@ function ReviewRoom({
           <article
             key={embeddedSessionKey(session)}
             className={selectedSessionKey === embeddedSessionKey(session) || handoffSelection.has(embeddedSessionKey(session)) ? "selected" : ""}
-            onClick={() => toggleHandoffSource(embeddedSessionKey(session))}
+            onClick={() => onSelectEmbeddedSession(session)}
           >
-            <label className="handoffCheckbox" title="Include in handoff">
+            <label className="handoffCheckbox" title="Include in handoff" onClick={(event) => event.stopPropagation()}>
               <input
                 type="checkbox"
                 checked={handoffSelection.has(embeddedSessionKey(session))}
                 onChange={() => toggleHandoffSource(embeddedSessionKey(session))}
-                onClick={(event) => event.stopPropagation()}
               />
             </label>
             <StatusDot status={session.status === "running" ? "running" : "offline"} />
@@ -2103,14 +2102,13 @@ function ReviewRoom({
           <article
             key={selectedAgentSessionKey(session)}
             className={selectedSessionKey === selectedAgentSessionKey(session) || handoffSelection.has(selectedAgentSessionKey(session)) ? "selected" : ""}
-            onClick={() => toggleHandoffSource(selectedAgentSessionKey(session))}
+            onClick={() => onSelectAgentSession(session)}
           >
-            <label className="handoffCheckbox" title="Include in handoff">
+            <label className="handoffCheckbox" title="Include in handoff" onClick={(event) => event.stopPropagation()}>
               <input
                 type="checkbox"
                 checked={handoffSelection.has(selectedAgentSessionKey(session))}
                 onChange={() => toggleHandoffSource(selectedAgentSessionKey(session))}
-                onClick={(event) => event.stopPropagation()}
               />
             </label>
             <StatusDot status={session.status === "running" ? "running" : session.status === "exited" ? "offline" : "ready"} />

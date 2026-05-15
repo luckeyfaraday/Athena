@@ -1,6 +1,6 @@
 # Context Workspace Product Backlog
 
-Last verified: 2026-05-13 on `main` after PR #12.
+Last verified: 2026-05-15 on `main` after PR #28.
 
 This backlog converts the raw task list into implementation milestones. It separates verified current behavior from proposed work so new features do not duplicate already-merged PRs.
 
@@ -17,6 +17,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 - Review and Command Room can inspect native session metadata and transcripts.
 - Memory Room can delete exact Hermes memory entries through `/memory/delete`.
 - Current UI is branded Athena.
+- Workspaces, session continuity handoff, recall audit trail, Codex JSONL session context, desktop lag reduction, and frontend room/component extraction are merged.
 
 ## Done
 
@@ -36,6 +37,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 | Native session transcript viewer | Done | PR #12 added transcript actions for native sessions in Command Room and Reviews, backed by provider-native transcript endpoints. |
 | MCP spawn contract clarification | Done | PR #11 clarified that `context_workspace_spawn_agent` is the high-level visible terminal spawn tool and `/agents/spawn` is legacy backend run infrastructure. |
 | Codex JSONL session context gap | Done | Codex sessions are enriched from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
+| Frontend architecture cleanup | Done | PRs #22-24 and #28 split rooms, sidebar, dashboard panels, workspace tabs, status UI, formatters, and shared helpers out of `App.tsx`. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -64,8 +66,9 @@ Goal: keep the growing frontend maintainable.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| Split `App.tsx` rooms into modules | P2 | Command, Agents, Reviews, Memory, and Settings rooms live in separate components without behavior changes. |
-| Centralize status formatters | P2 | Age, provider labels, status tone mapping, and session labels are shared helpers. |
+| Split `App.tsx` rooms into modules | Done | Command, Agents, Reviews, Memory, Settings, and Workspace rooms live in separate components without behavior changes. |
+| Extract dashboard/sidebar support UI | Done | Sidebar, workspace tabs, dashboard panels, status UI, and workspace/session helpers are separate modules. |
+| Centralize status formatters | Done | Age, provider labels, status tone mapping, recall audit lines, session labels, and workspace path helpers are shared helpers. |
 
 ## Milestone 4: Session Continuity
 
@@ -75,7 +78,7 @@ Goal: let the user start fresh without losing useful context.
 |---|---:|---|
 | `#ec62ad60` merge sessions / start fresh | P1 | Done: user can select sessions, preview a bounded handoff, save it to recall cache, and launch a fresh Codex/OpenCode/Claude session from that handoff. |
 | Add session-to-recall action | P1 | Done: selected review sessions can contribute a bounded handoff to project recall. |
-| Add recall audit trail | P2 | Done: recall status includes source, source count/titles, bytes, refreshed time, and last launch usage; Settings and Shared Memory Snapshot display it. |
+| Add recall audit trail | P2 | Done: recall status includes source, source count/titles, bytes, refreshed time, and last launch usage; Settings and Shared Memory Snapshot display it, with fixed byte metadata from PR #27. |
 
 ## Milestone 5: Multi-Workspace
 
@@ -113,8 +116,11 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#d4b192ce` Ambient Peekaboo background capture loop | Research | Produce a threat model and relevance design before implementation. No continuous raw screen stream is written to recall. |
-| Selective screen context injection | P3 | Only curated, task-relevant summaries can enter recall or spawn prompts. User can inspect and disable capture. |
+| `#d4b192ce` Ambient Screen Context Layer | Research | Curated umbrella for Peekaboo, PeekabooWin, Perceptron Mk1, Hermes curation, and selective recall injection. Produce architecture, threat model, and relevance policy before implementation. |
+| Cross-platform capture adapter | Research | Define a provider interface for macOS Peekaboo, Windows PeekabooWin, and a future Linux backend. Capture must be local-first and user-controllable. |
+| Perceptron Mk1 vision adapter | Research | Evaluate OpenRouter `perceptron/perceptron-mk1` for bounded screenshot/video understanding, OCR cleanup, UI region grounding, and optional box/point/polygon annotations. No raw continuous stream to the model. |
+| Hermes screen-context curator | P3 | Hermes receives local OCR/snapshot facts and optional VLM summaries, then writes only task-relevant compact context to recall. |
+| Selective screen context injection | P3 | Only curated, task-relevant summaries can enter recall or spawn prompts. User can inspect, redact, pause, and disable capture. |
 
 ## Parking Lot
 
@@ -127,8 +133,8 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 
 ## Next Implementation Step
 
-Start with Milestone 4, using `docs/current-app-audit.md` as the current baseline:
+Current recommended order:
 
-1. Build `#ec62ad60` session continuity from `docs/session-continuity-handoff-plan.md`: select sessions, generate a bounded handoff summary, and write it to recall.
-2. Finish `#ce14092c` only if chat-vs-shell mode has a clear product meaning.
-3. Treat `#9d14b31e` as a focused transparent-shell mode, not more general UI polish.
+1. Finish `#ce14092c` only if chat-vs-shell mode has a clear product meaning.
+2. Treat `#9d14b31e` as a focused transparent-shell mode, not more general UI polish.
+3. Keep `#d4b192ce` as research until privacy, relevance, platform adapter, and cost boundaries are written down.

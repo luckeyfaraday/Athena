@@ -442,8 +442,14 @@ function SessionInspector({
           `Model: ${agentSession.model ?? "unknown"}`,
           `Agent: ${agentSession.agent ?? "default"}`,
           `Branch: ${agentSession.branch ?? "unknown"}`,
+          agentSession.metadata?.model_provider ? `Model provider: ${agentSession.metadata.model_provider}` : null,
+          agentSession.metadata?.cli_version ? `CLI version: ${agentSession.metadata.cli_version}` : null,
+          agentSession.metadata?.collaboration_mode ? `Collaboration: ${agentSession.metadata.collaboration_mode}` : null,
+          agentSession.metadata?.approval_policy ? `Approval: ${agentSession.metadata.approval_policy}` : null,
+          agentSession.metadata?.sandbox_policy ? `Sandbox: ${agentSession.metadata.sandbox_policy}` : null,
+          agentSession.metadata?.git_commit_hash ? `Commit: ${agentSession.metadata.git_commit_hash}` : null,
           `Resume: ${agentSession.resumeCommand ?? "none"}`,
-        ]
+        ].filter((line): line is string => Boolean(line))
       : ["Select a session to inspect metadata and live buffer output."];
 
   return (

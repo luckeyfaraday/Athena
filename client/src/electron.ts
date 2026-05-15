@@ -78,6 +78,7 @@ export type AgentSession = {
   terminalId: string | null;
   pid: number | null;
   resumeCommand: string | null;
+  metadata: Record<string, string>;
 };
 
 type WorkspaceApi = {
@@ -165,6 +166,7 @@ const browserFallback: WorkspaceApi = {
         terminalId: null,
         pid: null,
         resumeCommand: "codex resume preview-codex",
+        metadata: {},
       },
     ];
   },

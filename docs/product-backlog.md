@@ -35,6 +35,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 | MCP visible terminal spawn | Done | Hermes can spawn visible Command Room terminals through Electron control instead of the legacy backend run API. |
 | Native session transcript viewer | Done | PR #12 added transcript actions for native sessions in Command Room and Reviews, backed by provider-native transcript endpoints. |
 | MCP spawn contract clarification | Done | PR #11 clarified that `context_workspace_spawn_agent` is the high-level visible terminal spawn tool and `/agents/spawn` is legacy backend run infrastructure. |
+| Codex JSONL session context gap | Done | Codex sessions are enriched from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
 
 ## Milestone 1: Finish UI Functionality
 

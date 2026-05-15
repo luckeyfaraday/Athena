@@ -21,6 +21,7 @@ export type AgentSession = {
   terminalId: string | null;
   pid: number | null;
   resumeCommand: string | null;
+  metadata: Record<string, string>;
 };
 
 type SqliteValue = string | number | null;
@@ -73,38 +74,188 @@ function liveTerminalSession(session: EmbeddedTerminalSession): AgentSession {
     terminalId: session.id,
     pid: session.pid,
     resumeCommand: null,
+    metadata: {},
   };
 }
 
 async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
+  const jsonlMetadata = readCodexJsonlMetadata(workspace);
   const dbPath = path.join(os.homedir(), ".codex", "state_5.sqlite");
-  if (!fs.existsSync(dbPath)) return [];
-  const rows = await querySqlite(dbPath, [
-    "select id, cwd, title, created_at_ms, updated_at_ms, git_branch, cli_version, first_user_message, model, agent_role",
-    "from threads",
-    "where cwd = ?",
-    "order by updated_at_ms desc",
-    "limit 50",
-  ].join(" "), [workspace]);
-  return rows.map((row): AgentSession => {
-    const id = stringValue(row[0]);
-    const title = cleanSessionTitle(stringValue(row[2]) || stringValue(row[7])) || "Codex session";
-    return {
+  const sessions: AgentSession[] = [];
+  const seenIds = new Set<string>();
+
+  if (fs.existsSync(dbPath)) {
+    const rows = await querySqlite(dbPath, [
+      "select id, cwd, title, created_at_ms, updated_at_ms, git_branch, cli_version, first_user_message, model, agent_role",
+      "from threads",
+      "where cwd = ?",
+      "order by updated_at_ms desc",
+      "limit 50",
+    ].join(" "), [workspace]);
+    for (const row of rows) {
+      const id = stringValue(row[0]);
+      if (!id) continue;
+      const metadata = jsonlMetadata.get(id) ?? {};
+      const cliVersion = nullableString(row[6]) ?? metadata.cli_version;
+      const enriched = cliVersion ? { ...metadata, cli_version: cliVersion } : metadata;
+      sessions.push({
+        id,
+        provider: "codex",
+        title: cleanSessionTitle(stringValue(row[2]) || stringValue(row[7]) || metadata.first_user_message || null) || "Codex session",
+        workspace: stringValue(row[1]) || workspace,
+        branch: nullableString(row[5]) ?? metadata.git_branch ?? null,
+        model: nullableString(row[8]) ?? metadata.model ?? null,
+        agent: nullableString(row[9]) ?? metadata.personality ?? null,
+        createdAt: metadata.created_at ?? fromEpoch(row[3]),
+        updatedAt: latestIso(metadata.updated_at, fromEpoch(row[4])),
+        status: "historical",
+        terminalId: null,
+        pid: null,
+        resumeCommand: `codex resume --cd ${quoteShellArg(workspace)} ${quoteShellArg(id)}`,
+        metadata: enriched,
+      });
+      seenIds.add(id);
+    }
+  }
+
+  for (const [id, metadata] of jsonlMetadata) {
+    if (seenIds.has(id)) continue;
+    sessions.push({
       id,
       provider: "codex",
-      title,
-      workspace: stringValue(row[1]) || workspace,
-      branch: nullableString(row[5]),
-      model: nullableString(row[8]),
-      agent: nullableString(row[9]),
-      createdAt: fromEpoch(row[3]),
-      updatedAt: fromEpoch(row[4]),
+      title: cleanSessionTitle(metadata.first_user_message ?? null) || "Codex session",
+      workspace: metadata.cwd || workspace,
+      branch: metadata.git_branch ?? null,
+      model: metadata.model ?? null,
+      agent: metadata.personality ?? null,
+      createdAt: metadata.created_at ?? new Date(0).toISOString(),
+      updatedAt: metadata.updated_at ?? metadata.created_at ?? new Date(0).toISOString(),
       status: "historical",
       terminalId: null,
       pid: null,
-      resumeCommand: id ? `codex resume --cd ${quoteShellArg(workspace)} ${quoteShellArg(id)}` : null,
-    };
-  }).filter((session) => Boolean(session.id));
+      resumeCommand: `codex resume --cd ${quoteShellArg(workspace)} ${quoteShellArg(id)}`,
+      metadata,
+    });
+  }
+
+  return sessions;
+}
+
+function readCodexJsonlMetadata(workspace: string): Map<string, Record<string, string>> {
+  const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
+  const byId = new Map<string, Record<string, string>>();
+  if (!fs.existsSync(sessionsDir)) return byId;
+  for (const filePath of recentJsonlFiles(sessionsDir, 400)) {
+    const metadata = readCodexJsonlFileMetadata(filePath);
+    const id = metadata.session_id;
+    const cwd = metadata.cwd;
+    if (!id || !cwd || !samePath(cwd, workspace)) continue;
+    byId.set(id, metadata);
+  }
+  return byId;
+}
+
+function recentJsonlFiles(root: string, limit: number): string[] {
+  const files: string[] = [];
+  const visit = (dir: string) => {
+    for (const name of safeReadDir(dir)) {
+      const filePath = path.join(dir, name);
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(filePath);
+      } catch {
+        continue;
+      }
+      if (stat.isDirectory()) visit(filePath);
+      else if (name.endsWith(".jsonl")) files.push(filePath);
+    }
+  };
+  visit(root);
+  return files.sort((left, right) => safeMtimeMs(right) - safeMtimeMs(left)).slice(0, limit);
+}
+
+function safeMtimeMs(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function readCodexJsonlFileMetadata(filePath: string): Record<string, string> {
+  const metadata: Record<string, string> = { jsonl_path: filePath };
+  let lines: string[];
+  try {
+    lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).slice(0, 240);
+  } catch {
+    return metadata;
+  }
+  for (const line of lines) {
+    const entry = parseJsonObject(line);
+    if (!entry) continue;
+    const timestamp = stringProperty(entry, "timestamp");
+    if (timestamp) {
+      metadata.created_at ??= timestamp;
+      metadata.updated_at = timestamp;
+    }
+    const entryType = stringProperty(entry, "type");
+    const payload = objectProperty(entry, "payload");
+    if (entryType === "session_meta") mergeCodexSessionMeta(metadata, payload);
+    else if (entryType === "turn_context") mergeCodexTurnContext(metadata, payload);
+    else if (entryType === "event_msg" && !metadata.first_user_message) {
+      const messageType = stringProperty(payload, "type");
+      const message = stringProperty(payload, "message");
+      if (messageType === "user_message" && message) metadata.first_user_message = message;
+    }
+  }
+  return metadata;
+}
+
+function mergeCodexSessionMeta(metadata: Record<string, string>, payload: Record<string, unknown> | null): void {
+  copyStringFields(metadata, payload, {
+    id: "session_id",
+    cwd: "cwd",
+    cli_version: "cli_version",
+    model_provider: "model_provider",
+    originator: "originator",
+    source: "source",
+    thread_source: "thread_source",
+    timestamp: "created_at",
+  });
+  const baseText = stringProperty(objectProperty(payload, "base_instructions"), "text");
+  if (baseText) metadata.system_prompt_excerpt = boundedUtf8(baseText, 4096);
+}
+
+function mergeCodexTurnContext(metadata: Record<string, string>, payload: Record<string, unknown> | null): void {
+  copyStringFields(metadata, payload, {
+    cwd: "cwd",
+    model: "model",
+    personality: "personality",
+    approval_policy: "approval_policy",
+    timezone: "timezone",
+    current_date: "current_date",
+  });
+  const sandboxType = stringProperty(objectProperty(payload, "sandbox_policy"), "type");
+  if (sandboxType) metadata.sandbox_policy = sandboxType;
+  const collaborationMode = stringProperty(objectProperty(payload, "collaboration_mode"), "mode");
+  if (collaborationMode) metadata.collaboration_mode = collaborationMode;
+  copyStringFields(metadata, objectProperty(payload, "git"), {
+    branch: "git_branch",
+    commit_hash: "git_commit_hash",
+    commit: "git_commit_hash",
+  });
+}
+
+function copyStringFields(metadata: Record<string, string>, source: Record<string, unknown> | null, mapping: Record<string, string>): void {
+  for (const [sourceKey, targetKey] of Object.entries(mapping)) {
+    const value = stringProperty(source, sourceKey);
+    if (value) metadata[targetKey] = value;
+  }
+}
+
+function boundedUtf8(value: string, maxBytes: number): string {
+  const buffer = Buffer.from(value, "utf8");
+  return buffer.length <= maxBytes ? value : buffer.subarray(0, maxBytes).toString("utf8");
 }
 
 async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> {
@@ -135,6 +286,7 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
       terminalId: null,
       pid: null,
       resumeCommand: id ? `opencode ${quoteShellArg(workspace)} --session ${quoteShellArg(id)}` : null,
+      metadata: {},
     };
   }).filter((session) => Boolean(session.id));
 }
@@ -208,6 +360,7 @@ function readClaudeSessionFile(filePath: string, workspace: string): AgentSessio
     terminalId: null,
     pid: null,
     resumeCommand: `claude --resume ${quoteShellArg(sessionId)}`,
+    metadata: {},
   };
 }
 
@@ -250,6 +403,7 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
         terminalId: null,
         pid: null,
         resumeCommand: `hermes --resume ${quoteShellArg(id)}`,
+        metadata: {},
       });
     }
   }
@@ -277,6 +431,7 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
         terminalId: null,
         pid: null,
         resumeCommand: `hermes --resume ${quoteShellArg(match[1])}`,
+        metadata: {},
       });
     }
   }
@@ -459,6 +614,11 @@ function fromEpoch(value: SqliteValue): string {
   const number = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(number) || number <= 0) return new Date(0).toISOString();
   return new Date(number < 10_000_000_000 ? number * 1000 : number).toISOString();
+}
+
+function latestIso(left: string | undefined, right: string): string {
+  if (!left) return right;
+  return Date.parse(left) >= Date.parse(right) ? left : right;
 }
 
 function parseOpenCodeModel(value: string | null): string | null {

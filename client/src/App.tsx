@@ -43,6 +43,7 @@ const emptyLoadState: LoadState = {
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 const workspaceListStorageKey = "context-workspace:workspaces";
+const nativeSessionRefreshIntervalMs = 30_000;
 
 function storedWorkspaceValue(): string | null {
   try {
@@ -107,6 +108,7 @@ export function App() {
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef(false);
+  const agentSessionsLastRefreshAt = useRef(0);
   const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const workspace = workspacePath?.nativePath ?? "";
@@ -136,12 +138,15 @@ export function App() {
     }
   }, []);
 
-  const refreshAgentSessions = useCallback(async () => {
+  const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {
     if (!workspace) {
       setAgentSessions([]);
       return;
     }
     if (agentSessionsRefreshInFlight.current) return;
+    const now = Date.now();
+    if (!options.force && now - agentSessionsLastRefreshAt.current < nativeSessionRefreshIntervalMs) return;
+    agentSessionsLastRefreshAt.current = now;
     agentSessionsRefreshInFlight.current = true;
     try {
       setAgentSessions(await desktop.listAgentSessions(workspace));
@@ -205,7 +210,7 @@ export function App() {
   }, [refreshData, refreshSessions]);
 
   useEffect(() => {
-    void refreshAgentSessions();
+    void refreshAgentSessions({ force: true });
   }, [refreshAgentSessions, embeddedSessions]);
 
   useEffect(() => {
@@ -233,10 +238,12 @@ export function App() {
         if (status?.healthy) void refreshData();
       });
       void refreshSessions();
-      void refreshAgentSessions();
+      if (activeRoom === "command" || activeRoom === "review" || activeRoom === "swarm" || activeRoom === "workspace") {
+        void refreshAgentSessions();
+      }
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [refreshBackend, refreshData, refreshSessions, refreshAgentSessions]);
+  }, [activeRoom, refreshBackend, refreshData, refreshSessions, refreshAgentSessions]);
 
   useEffect(() => {
     if (!workspace) return;

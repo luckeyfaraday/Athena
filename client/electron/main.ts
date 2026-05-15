@@ -15,6 +15,12 @@ const appRoot = path.resolve(__dirname, "..");
 let mainWindow: BrowserWindow | null = null;
 let viteProc: ChildProcess | null = null;
 
+function shouldUseHeadlessGraphicsMode(): boolean {
+  return process.env.CI === "true"
+    || process.env.CONTEXT_WORKSPACE_HEADLESS === "1"
+    || process.env.ELECTRON_DISABLE_GPU === "1";
+}
+
 function waitForVite(url: string, timeout = 15000): Promise<void> {
   const start = Date.now();
   return new Promise((resolve, reject) => {
@@ -100,14 +106,17 @@ async function createWindow(): Promise<void> {
   });
 }
 
-// GPU/sandbox flags — required in container/CI environments without real GPU
-// Must be set BEFORE app.whenReady() and before any window creation
+// Keep hardware acceleration enabled for normal desktop runs; xterm rendering
+// and scrolling are noticeably worse when Electron is forced into CPU paint.
+// These switches must be set before app.whenReady() and window creation.
 app.commandLine.appendSwitch("no-sandbox");
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-software-rasterizer");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("disable-gpu-rasterization");
-app.disableHardwareAcceleration();
+if (shouldUseHeadlessGraphicsMode()) {
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("disable-gpu-rasterization");
+  app.disableHardwareAcceleration();
+}
 
 app.whenReady().then(async () => {
   installApplicationMenu();

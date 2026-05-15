@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bot, CheckCircle2, Code2, FileText, Play, ScrollText, Sparkles, TerminalSquare, XCircle } from "lucide-react";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "../electron";
 import { StatusDot, StatusPill } from "../components/status";
@@ -10,6 +10,9 @@ import {
   type AgentTranscriptState,
   type HandoffPreview,
 } from "../session-utils";
+
+const inspectorBufferTailChars = 80_000;
+const inspectorBufferFlushMs = 120;
 
 type HandoffSourceProvider = EmbeddedTerminalKind | AgentSession["provider"];
 
@@ -392,11 +395,18 @@ function SessionInspector({
   onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
 }) {
   const [buffer, setBuffer] = useState("");
+  const pendingBufferRef = useRef("");
+  const flushTimerRef = useRef<number | null>(null);
   const terminalId = embeddedSession?.id ?? agentSession?.terminalId ?? null;
   const transcriptKey = agentSession ? selectedAgentSessionKey(agentSession) : null;
   const transcript = transcriptKey && agentTranscript?.key === transcriptKey ? agentTranscript : null;
 
   useEffect(() => {
+    pendingBufferRef.current = "";
+    if (flushTimerRef.current !== null) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
     if (!terminalId) {
       setBuffer("");
       return;
@@ -406,22 +416,44 @@ function SessionInspector({
     desktop
       .getEmbeddedTerminalBuffer(terminalId)
       .then((content) => {
-        if (!cancelled) setBuffer(content);
+        if (!cancelled) setBuffer(tailBuffer(content, inspectorBufferTailChars));
       })
       .catch((error) => {
         if (!cancelled) setBuffer(String(error));
       });
     return () => {
       cancelled = true;
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
     };
   }, [terminalId]);
 
   useEffect(() => {
     if (!terminalId) return undefined;
-    return desktop.onEmbeddedTerminalData((payload) => {
+    const flushPending = () => {
+      flushTimerRef.current = null;
+      const pending = pendingBufferRef.current;
+      pendingBufferRef.current = "";
+      if (!pending) return;
+      setBuffer((current) => tailBuffer(`${current}${pending}`, inspectorBufferTailChars));
+    };
+    const removeData = desktop.onEmbeddedTerminalData((payload) => {
       if (payload.id !== terminalId) return;
-      setBuffer((current) => `${current}${payload.data}`);
+      pendingBufferRef.current += payload.data;
+      if (flushTimerRef.current === null) {
+        flushTimerRef.current = window.setTimeout(flushPending, inspectorBufferFlushMs);
+      }
     });
+    return () => {
+      removeData();
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      pendingBufferRef.current = "";
+    };
   }, [terminalId]);
 
   const metadata = embeddedSession
@@ -624,4 +656,9 @@ function tailText(value: string, maxChars: number): string {
   const normalized = value.trim();
   if (normalized.length <= maxChars) return normalized;
   return `[truncated to last ${maxChars} chars]\n${normalized.slice(-maxChars)}`;
+}
+
+function tailBuffer(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `[truncated to last ${maxChars} chars]\n${value.slice(-maxChars)}`;
 }

@@ -524,10 +524,11 @@ def _write_recall_cache(
     metadata_path = cache_dir / "last-refresh.json"
     text = markdown.rstrip() + "\n"
     recall_path.write_text(text, encoding="utf-8")
+    written_bytes = recall_path.stat().st_size
     metadata = {
         "refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source": source or "athena-session-handoff",
-        "bytes": len(text.encode("utf-8")),
+        "bytes": written_bytes,
     }
     if source_count is not None:
         metadata["source_count"] = source_count

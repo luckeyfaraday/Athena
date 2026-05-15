@@ -54,6 +54,71 @@ def test_lists_codex_sessions_for_workspace(tmp_path: Path) -> None:
     assert sessions[0].resume_command is not None
 
 
+def test_lists_codex_sessions_from_jsonl_context(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    session_id = "codex-jsonl-1"
+    session_file = home / ".codex" / "sessions" / "2026" / "05" / "15" / f"rollout-{session_id}.jsonl"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-15T10:00:00Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": session_id,
+                            "timestamp": "2026-05-15T09:59:59Z",
+                            "cwd": str(workspace),
+                            "cli_version": "0.130.0",
+                            "model_provider": "openai",
+                            "base_instructions": {"text": "Full system prompt and personality."},
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-15T10:00:01Z",
+                        "type": "turn_context",
+                        "payload": {
+                            "cwd": str(workspace),
+                            "model": "gpt-5.5",
+                            "personality": "pragmatic",
+                            "approval_policy": "on-request",
+                            "sandbox_policy": {"type": "workspace-write"},
+                            "collaboration_mode": {"mode": "default"},
+                            "git": {"branch": "jsonl-branch", "commit_hash": "abc123"},
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-15T10:00:02Z",
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "Close the JSONL session gap"},
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="codex")
+    transcript = read_agent_session_transcript("codex", session_id, home_dir=home)
+
+    assert [session.id for session in sessions] == [session_id]
+    assert sessions[0].title == "Close the JSONL session gap"
+    assert sessions[0].branch == "jsonl-branch"
+    assert sessions[0].model == "gpt-5.5"
+    assert sessions[0].metadata["cli_version"] == "0.130.0"
+    assert sessions[0].metadata["model_provider"] == "openai"
+    assert sessions[0].metadata["collaboration_mode"] == "default"
+    assert "Full system prompt and personality." in transcript
+    assert "Close the JSONL session gap" in transcript
+
+
 def test_lists_opencode_and_filters_query(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

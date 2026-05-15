@@ -8,7 +8,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -33,6 +33,7 @@ class AgentSession:
     terminal_id: str | None
     pid: int | None
     resume_command: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def payload(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,54 +102,288 @@ def read_agent_session_transcript(
         markdown = _read_claude_transcript(normalized_id, home)
     elif provider == "hermes":
         markdown = _read_hermes_transcript(normalized_id, home)
+    elif provider == "codex":
+        markdown = _read_codex_transcript(normalized_id, home)
     else:
-        raise ValueError("Codex run transcripts are exposed through run artifacts.")
+        raise ValueError(f"Unsupported session provider: {provider}")
     if not markdown:
         raise FileNotFoundError(f"{provider} session not found: {normalized_id}")
     return _bounded_text(markdown, max_bytes=max_bytes, tail=tail)
 
 
 def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
+    jsonl_metadata = _read_codex_jsonl_metadata(workspace, home)
     db_path = home / ".codex" / "state_5.sqlite"
-    if not db_path.exists():
-        return []
-    rows = _query_sqlite(
-        db_path,
-        """
-        select id, cwd, title, created_at_ms, updated_at_ms, git_branch,
-               cli_version, first_user_message, model, agent_role
-        from threads
-        order by updated_at_ms desc
-        limit 250
-        """,
-    )
     sessions: list[AgentSession] = []
-    for row in rows:
-        session_workspace = _string_value(row[1]) or str(workspace)
-        if not _same_path(session_workspace, workspace):
+    seen_ids: set[str] = set()
+
+    if db_path.exists():
+        rows = _query_sqlite(
+            db_path,
+            """
+            select id, cwd, title, created_at_ms, updated_at_ms, git_branch,
+                   cli_version, first_user_message, model, agent_role
+            from threads
+            order by updated_at_ms desc
+            limit 250
+            """,
+        )
+        for row in rows:
+            session_workspace = _string_value(row[1]) or str(workspace)
+            if not _same_path(session_workspace, workspace):
+                continue
+            session_id = _string_value(row[0])
+            if not session_id:
+                continue
+            metadata = jsonl_metadata.get(session_id, {})
+            title = _clean_session_title(_string_value(row[2]) or _string_value(row[7]) or _metadata_string(metadata, "first_user_message")) or "Codex session"
+            branch = _nullable_string(row[5]) or _metadata_string(metadata, "git_branch")
+            model = _nullable_string(row[8]) or _metadata_string(metadata, "model")
+            cli_version = _nullable_string(row[6]) or _metadata_string(metadata, "cli_version")
+            enriched = {**metadata, "cli_version": cli_version} if cli_version else metadata
+            sessions.append(
+                AgentSession(
+                    id=session_id,
+                    provider="codex",
+                    title=title,
+                    workspace=session_workspace,
+                    branch=branch,
+                    model=model,
+                    agent=_nullable_string(row[9]) or _metadata_string(metadata, "personality"),
+                    created_at=_metadata_string(metadata, "created_at") or _from_epoch(row[3]),
+                    updated_at=max((_metadata_string(metadata, "updated_at") or _from_epoch(row[4]), _from_epoch(row[4])), key=_date_sort_key),
+                    status="historical",
+                    terminal_id=None,
+                    pid=None,
+                    resume_command=f"codex resume --cd {_quote_shell_arg(str(workspace))} {_quote_shell_arg(session_id)}",
+                    metadata=enriched,
+                )
+            )
+            seen_ids.add(session_id)
+
+    for session_id, metadata in jsonl_metadata.items():
+        if session_id in seen_ids:
             continue
-        session_id = _string_value(row[0])
-        if not session_id:
-            continue
-        title = _clean_session_title(_string_value(row[2]) or _string_value(row[7])) or "Codex session"
+        session_workspace = _metadata_string(metadata, "cwd") or str(workspace)
         sessions.append(
             AgentSession(
                 id=session_id,
                 provider="codex",
-                title=title,
+                title=_clean_session_title(_metadata_string(metadata, "first_user_message")) or "Codex session",
                 workspace=session_workspace,
-                branch=_nullable_string(row[5]),
-                model=_nullable_string(row[8]),
-                agent=_nullable_string(row[9]),
-                created_at=_from_epoch(row[3]),
-                updated_at=_from_epoch(row[4]),
+                branch=_metadata_string(metadata, "git_branch"),
+                model=_metadata_string(metadata, "model"),
+                agent=_metadata_string(metadata, "personality"),
+                created_at=_metadata_string(metadata, "created_at") or datetime.fromtimestamp(0, timezone.utc).isoformat().replace("+00:00", "Z"),
+                updated_at=_metadata_string(metadata, "updated_at") or _metadata_string(metadata, "created_at") or datetime.fromtimestamp(0, timezone.utc).isoformat().replace("+00:00", "Z"),
                 status="historical",
                 terminal_id=None,
                 pid=None,
                 resume_command=f"codex resume --cd {_quote_shell_arg(str(workspace))} {_quote_shell_arg(session_id)}",
+                metadata=metadata,
             )
         )
     return sessions
+
+
+def _read_codex_jsonl_metadata(workspace: Path, home: Path) -> dict[str, dict[str, Any]]:
+    sessions_dir = home / ".codex" / "sessions"
+    if not sessions_dir.exists():
+        return {}
+
+    metadata_by_id: dict[str, dict[str, Any]] = {}
+    for file_path in _recent_jsonl_files(sessions_dir, limit=400):
+        metadata = _read_codex_jsonl_file_metadata(file_path)
+        session_id = _metadata_string(metadata, "session_id")
+        session_workspace = _metadata_string(metadata, "cwd")
+        if not session_id or not session_workspace or not _same_path(session_workspace, workspace):
+            continue
+        metadata_by_id[session_id] = metadata
+    return metadata_by_id
+
+
+def _recent_jsonl_files(root: Path, *, limit: int) -> list[Path]:
+    try:
+        files = [path for path in root.rglob("*.jsonl") if path.is_file()]
+    except OSError:
+        return []
+    return sorted(files, key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)[:limit]
+
+
+def _read_codex_jsonl_file_metadata(file_path: Path) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"jsonl_path": str(file_path)}
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for index, line in enumerate(handle):
+                if index >= 240:
+                    break
+                entry = _parse_json_object(line)
+                if not entry:
+                    continue
+                timestamp = _string_property(entry, "timestamp")
+                if timestamp:
+                    metadata.setdefault("created_at", timestamp)
+                    metadata["updated_at"] = timestamp
+                entry_type = _string_property(entry, "type")
+                payload = _object_property(entry, "payload")
+                if entry_type == "session_meta":
+                    _merge_codex_session_meta(metadata, payload)
+                elif entry_type == "turn_context":
+                    _merge_codex_turn_context(metadata, payload)
+                elif entry_type == "event_msg" and not metadata.get("first_user_message"):
+                    message_type = _string_property(payload, "type")
+                    message = _string_property(payload, "message")
+                    if message_type == "user_message" and message:
+                        metadata["first_user_message"] = message
+    except OSError:
+        return metadata
+    return metadata
+
+
+def _merge_codex_session_meta(metadata: dict[str, Any], payload: dict[str, Any] | None) -> None:
+    if not payload:
+        return
+    _copy_string_fields(
+        metadata,
+        payload,
+        {
+            "id": "session_id",
+            "cwd": "cwd",
+            "cli_version": "cli_version",
+            "model_provider": "model_provider",
+            "originator": "originator",
+            "source": "source",
+            "thread_source": "thread_source",
+            "timestamp": "created_at",
+        },
+    )
+    base_instructions = _object_property(payload, "base_instructions")
+    base_text = _string_property(base_instructions, "text")
+    if base_text:
+        metadata["system_prompt_excerpt"] = _bounded_text(base_text, max_bytes=4096, tail=False)
+
+
+def _merge_codex_turn_context(metadata: dict[str, Any], payload: dict[str, Any] | None) -> None:
+    if not payload:
+        return
+    _copy_string_fields(
+        metadata,
+        payload,
+        {
+            "cwd": "cwd",
+            "model": "model",
+            "personality": "personality",
+            "approval_policy": "approval_policy",
+            "timezone": "timezone",
+            "current_date": "current_date",
+        },
+    )
+    sandbox = _object_property(payload, "sandbox_policy")
+    sandbox_type = _string_property(sandbox, "type")
+    if sandbox_type:
+        metadata["sandbox_policy"] = sandbox_type
+    collaboration = _object_property(payload, "collaboration_mode")
+    collaboration_mode = _string_property(collaboration, "mode")
+    if collaboration_mode:
+        metadata["collaboration_mode"] = collaboration_mode
+    git = _object_property(payload, "git")
+    _copy_string_fields(metadata, git, {"branch": "git_branch", "commit_hash": "git_commit_hash", "commit": "git_commit_hash"})
+
+
+def _copy_string_fields(metadata: dict[str, Any], source: dict[str, Any] | None, mapping: dict[str, str]) -> None:
+    if not source:
+        return
+    for source_key, target_key in mapping.items():
+        value = _string_property(source, source_key)
+        if value:
+            metadata[target_key] = value
+
+
+def _read_codex_transcript(session_id: str, home: Path) -> str:
+    metadata_by_id = _read_codex_jsonl_metadata_for_all(home)
+    metadata = metadata_by_id.get(session_id)
+    file_path_text = _metadata_string(metadata or {}, "jsonl_path")
+    if not file_path_text:
+        return ""
+    file_path = Path(file_path_text)
+    if not file_path.exists():
+        return ""
+
+    lines = [f"# Codex Session Transcript\n\n- session: {session_id}"]
+    for label, key in (
+        ("workspace", "cwd"),
+        ("model", "model"),
+        ("model provider", "model_provider"),
+        ("cli version", "cli_version"),
+        ("personality", "personality"),
+        ("collaboration mode", "collaboration_mode"),
+        ("approval policy", "approval_policy"),
+        ("sandbox", "sandbox_policy"),
+        ("git branch", "git_branch"),
+        ("git commit", "git_commit_hash"),
+        ("jsonl", "jsonl_path"),
+    ):
+        value = _metadata_string(metadata or {}, key)
+        if value:
+            lines.append(f"- {label}: {value}")
+    system_prompt = _metadata_string(metadata or {}, "system_prompt_excerpt")
+    if system_prompt:
+        lines.extend(["", "## System Prompt Excerpt", "", system_prompt])
+    lines.extend(["", "## Events", ""])
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                entry = _parse_json_object(line)
+                if not entry:
+                    continue
+                rendered = _render_codex_event(entry)
+                if rendered:
+                    lines.append(rendered)
+    except OSError:
+        return ""
+    return "\n\n".join(lines)
+
+
+def _read_codex_jsonl_metadata_for_all(home: Path) -> dict[str, dict[str, Any]]:
+    sessions_dir = home / ".codex" / "sessions"
+    if not sessions_dir.exists():
+        return {}
+    metadata_by_id: dict[str, dict[str, Any]] = {}
+    for file_path in _recent_jsonl_files(sessions_dir, limit=800):
+        metadata = _read_codex_jsonl_file_metadata(file_path)
+        session_id = _metadata_string(metadata, "session_id")
+        if session_id:
+            metadata_by_id[session_id] = metadata
+    return metadata_by_id
+
+
+def _render_codex_event(entry: dict[str, Any]) -> str | None:
+    timestamp = _string_property(entry, "timestamp")
+    entry_type = _string_property(entry, "type") or "event"
+    payload = _object_property(entry, "payload")
+    prefix = f"### {timestamp} {entry_type}" if timestamp else f"### {entry_type}"
+    if entry_type == "event_msg":
+        message_type = _string_property(payload, "type")
+        message = _string_property(payload, "message")
+        if message:
+            return f"{prefix}: {message_type or 'message'}\n\n{message}"
+    if entry_type == "response_item":
+        item_type = _string_property(payload, "type")
+        if item_type == "message":
+            content = payload.get("content") if payload else None
+            if isinstance(content, list):
+                text = "\n".join(_string_property(item, "text") or _string_property(item, "output_text") or "" for item in content if isinstance(item, dict))
+                if text.strip():
+                    return f"{prefix}: assistant\n\n{text.strip()}"
+        name = _string_property(payload, "name")
+        arguments = _string_property(payload, "arguments")
+        output = _string_property(payload, "output")
+        if name or arguments or output:
+            body = "\n".join(part for part in (f"tool: {name}" if name else "", arguments or "", output or "") if part)
+            return f"{prefix}: {item_type or 'response'}\n\n{body}"
+    if entry_type in {"session_meta", "turn_context"}:
+        return ""
+    return None
 
 
 def _read_opencode_sessions(workspace: Path, home: Path) -> list[AgentSession]:
@@ -596,6 +831,7 @@ def _matches_query(session: AgentSession, query: str) -> bool:
             session.branch or "",
             session.model or "",
             session.agent or "",
+            " ".join(str(item) for item in session.metadata.values() if isinstance(item, (str, int, float))),
         )
         if value
     ).lower()
@@ -677,6 +913,11 @@ def _object_property(value: dict[str, Any] | None, key: str) -> dict[str, Any] |
 
 def _string_property(value: dict[str, Any] | None, key: str) -> str | None:
     item = value.get(key) if value else None
+    return item.strip() if isinstance(item, str) and item.strip() else None
+
+
+def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:
+    item = metadata.get(key)
     return item.strip() if isinstance(item, str) and item.strip() else None
 
 

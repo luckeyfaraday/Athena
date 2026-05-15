@@ -85,7 +85,9 @@ async function createWindow(): Promise<void> {
     height: 820,
     minWidth: 960,
     minHeight: 640,
-    backgroundColor: "#f6f7f9",
+    frame: false,
+    titleBarStyle: "hidden",
+    backgroundColor: "#07120f",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -134,6 +136,11 @@ app.whenReady().then(async () => {
 });
 
 function installApplicationMenu(): void {
+  if (process.platform !== "darwin") {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+
   const editMenu: MenuItemConstructorOptions = {
     label: "Edit",
     submenu: [

@@ -28,6 +28,19 @@ import {
 } from "./embedded-terminal.js";
 
 export function registerIpcHandlers(appRoot: string): void {
+  ipcMain.handle("window:minimize", (event): void => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+  ipcMain.handle("window:toggleMaximize", (event): boolean => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return false;
+    if (window.isMaximized()) window.unmaximize();
+    else window.maximize();
+    return window.isMaximized();
+  });
+  ipcMain.handle("window:close", (event): void => {
+    BrowserWindow.fromWebContents(event.sender)?.close();
+  });
   ipcMain.handle("backend:getState", (): BackendState => getBackendState());
   ipcMain.handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
   ipcMain.handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));

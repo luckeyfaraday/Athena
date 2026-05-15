@@ -260,8 +260,8 @@ export function CommandRoom({
           </span>
         </div>
         <div className="buttonRow">
-          <button className="ghostButton" onClick={() => onFocusChange(!focused)} title={focused ? "Exit terminal focus" : "Focus terminals"}>
-            {focused ? <Minimize2 size={15} /> : <Maximize2 size={15} />} {focused ? "Exit Focus" : "Focus"}
+          <button className="ghostButton" onClick={() => onFocusChange(!focused)} title={focused ? "Exit shell focus (Esc)" : "Enter shell focus"}>
+            {focused ? <Minimize2 size={15} /> : <Maximize2 size={15} />} {focused ? "Exit Focus" : "Shell Focus"}
           </button>
           <button className="ghostButton" onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
             <TerminalSquare size={15} /> New Shell

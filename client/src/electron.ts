@@ -108,6 +108,9 @@ type WorkspaceApi = {
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalStatus) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
+  minimizeWindow: () => Promise<void>;
+  toggleMaximizeWindow: () => Promise<boolean>;
+  closeWindow: () => Promise<void>;
 };
 
 declare global {
@@ -177,6 +180,9 @@ const browserFallback: WorkspaceApi = {
   onCodexTerminalData() { return () => undefined; },
   onCodexTerminalState() { return () => undefined; },
   async selectWorkspace() { return fallbackWorkspacePath(); },
+  async minimizeWindow() { return undefined; },
+  async toggleMaximizeWindow() { return false; },
+  async closeWindow() { return undefined; },
 };
 
 function fallbackBackendState(): BackendStatus {

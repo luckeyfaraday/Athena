@@ -1,4 +1,4 @@
-import { MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
+import { Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, HermesStatus, RecallStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
 import { formatAge, recallAuditLines } from "../session-utils";
@@ -12,10 +12,12 @@ export function SettingsRoom({
   busy,
   refreshing,
   interfaceMode,
+  terminalFocus,
   onSelectWorkspace,
   onRestartBackend,
   onRefreshRecall,
   onInterfaceModeChange,
+  onTerminalFocusChange,
 }: {
   workspace: string;
   backend: BackendStatus | null;
@@ -25,10 +27,12 @@ export function SettingsRoom({
   busy: boolean;
   refreshing: boolean;
   interfaceMode: "terminal" | "chat";
+  terminalFocus: boolean;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
   onRefreshRecall: () => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
+  onTerminalFocusChange: (focused: boolean) => void;
 }) {
   const backendStatus = backendStatusView(backend);
   const hermesStatus = hermesStatusView(hermes);
@@ -86,6 +90,28 @@ export function SettingsRoom({
               onClick={() => onInterfaceModeChange("chat")}
             >
               <MessageSquare size={14} /> Chat
+            </button>
+          </div>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Shell focus</strong>
+            <span>{terminalFocus ? "Command Room terminals fill the app while surrounding workspace chrome is hidden. Press Esc to restore the full workspace." : "The full Athena workspace is visible around the terminal grid."}</span>
+          </div>
+          <div className="segmentedControl" role="group" aria-label="Shell focus">
+            <button
+              type="button"
+              className={!terminalFocus ? "active" : ""}
+              onClick={() => onTerminalFocusChange(false)}
+            >
+              <TerminalSquare size={14} /> Normal
+            </button>
+            <button
+              type="button"
+              className={terminalFocus ? "active" : ""}
+              onClick={() => onTerminalFocusChange(true)}
+            >
+              <Maximize2 size={14} /> Focus
             </button>
           </div>
         </article>

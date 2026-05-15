@@ -18,6 +18,7 @@ import {
   Users,
 } from "lucide-react";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
+import { EmbeddedChatTerminal } from "../components/EmbeddedChatTerminal";
 import { EmbeddedTerminal } from "../components/EmbeddedTerminal";
 import {
   agentSessionKey,
@@ -43,6 +44,7 @@ export function CommandRoom({
   busy,
   focused,
   layoutResetNonce,
+  interfaceMode,
   onFocusChange,
   onLaunch,
   onClose,
@@ -59,6 +61,7 @@ export function CommandRoom({
   busy: boolean;
   focused: boolean;
   layoutResetNonce: number;
+  interfaceMode: "terminal" | "chat";
   onFocusChange: (focused: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
@@ -252,7 +255,9 @@ export function CommandRoom({
         <div>
           <span className="tinyLabel">Embedded PTY control</span>
           <h3>Real terminals inside the workspace</h3>
-          <span className="panelMeta">{sessions.length ? `${shownCount} running sessions` : "No sessions running"}</span>
+          <span className="panelMeta">
+            {sessions.length ? `${shownCount} running sessions` : "No sessions running"}{interfaceMode === "chat" ? " · Chat view" : ""}
+          </span>
         </div>
         <div className="buttonRow">
           <button className="ghostButton" onClick={() => onFocusChange(!focused)} title={focused ? "Exit terminal focus" : "Focus terminals"}>
@@ -338,7 +343,11 @@ export function CommandRoom({
                   <FileText size={13} />
                 </button>
               </div>
-              {!collapsedPaneIds.has(session.id) && <EmbeddedTerminal session={session} />}
+              {!collapsedPaneIds.has(session.id) && (
+                interfaceMode === "chat"
+                  ? <EmbeddedChatTerminal session={session} />
+                  : <EmbeddedTerminal session={session} />
+              )}
             </div>
           ))}
           {visibleSessions.length === 0 && (

@@ -1,4 +1,4 @@
-import { FolderOpen, RefreshCw } from "lucide-react";
+import { MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, HermesStatus, RecallStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
 import { formatAge, recallAuditLines } from "../session-utils";
@@ -11,9 +11,11 @@ export function SettingsRoom({
   adapters,
   busy,
   refreshing,
+  interfaceMode,
   onSelectWorkspace,
   onRestartBackend,
   onRefreshRecall,
+  onInterfaceModeChange,
 }: {
   workspace: string;
   backend: BackendStatus | null;
@@ -22,9 +24,11 @@ export function SettingsRoom({
   adapters: Record<string, AdapterStatus>;
   busy: boolean;
   refreshing: boolean;
+  interfaceMode: "terminal" | "chat";
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
   onRefreshRecall: () => void;
+  onInterfaceModeChange: (mode: "terminal" | "chat") => void;
 }) {
   const backendStatus = backendStatusView(backend);
   const hermesStatus = hermesStatusView(hermes);
@@ -62,6 +66,28 @@ export function SettingsRoom({
           <button className="ghostButton" type="button" onClick={() => void onRestartBackend()} disabled={busy}>
             <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
           </button>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Interface mode</strong>
+            <span>{interfaceMode === "chat" ? "All instances use the chat visual layer. Terminal processes still run underneath." : "All instances use the current embedded terminal view."}</span>
+          </div>
+          <div className="segmentedControl" role="group" aria-label="Interface mode">
+            <button
+              type="button"
+              className={interfaceMode === "terminal" ? "active" : ""}
+              onClick={() => onInterfaceModeChange("terminal")}
+            >
+              <TerminalSquare size={14} /> Terminal
+            </button>
+            <button
+              type="button"
+              className={interfaceMode === "chat" ? "active" : ""}
+              onClick={() => onInterfaceModeChange("chat")}
+            >
+              <MessageSquare size={14} /> Chat
+            </button>
+          </div>
         </article>
         <article className="settingsSection">
           <div>

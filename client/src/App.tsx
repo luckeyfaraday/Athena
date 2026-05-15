@@ -34,6 +34,8 @@ type LoadState = {
   memory: string[];
 };
 
+type InterfaceMode = "terminal" | "chat";
+
 const emptyLoadState: LoadState = {
   hermes: null,
   recall: null,
@@ -43,6 +45,7 @@ const emptyLoadState: LoadState = {
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 const workspaceListStorageKey = "context-workspace:workspaces";
+const interfaceModeStorageKey = "context-workspace:interfaceMode";
 const nativeSessionRefreshIntervalMs = 30_000;
 
 function storedWorkspaceValue(): string | null {
@@ -85,6 +88,22 @@ function writeWorkspaceList(workspaces: WorkspacePath[]): void {
   }
 }
 
+function readInterfaceMode(): InterfaceMode {
+  try {
+    return window.localStorage.getItem(interfaceModeStorageKey) === "chat" ? "chat" : "terminal";
+  } catch {
+    return "terminal";
+  }
+}
+
+function writeInterfaceMode(mode: InterfaceMode): void {
+  try {
+    window.localStorage.setItem(interfaceModeStorageKey, mode);
+  } catch {
+    // Ignore storage failures; the selected mode still works for this session.
+  }
+}
+
 function upsertWorkspace(workspaces: WorkspacePath[], workspace: WorkspacePath): WorkspacePath[] {
   const key = workspaceKey(workspace);
   return [workspace, ...workspaces.filter((item) => workspaceKey(item) !== key)].slice(0, 12);
@@ -101,6 +120,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
   const [terminalFocus, setTerminalFocus] = useState(false);
+  const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
@@ -113,6 +133,11 @@ export function App() {
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const workspace = workspacePath?.nativePath ?? "";
   const workspaceDisplay = workspacePath?.displayPath ?? workspace;
+
+  function setInterfaceMode(mode: InterfaceMode) {
+    setInterfaceModeState(mode);
+    writeInterfaceMode(mode);
+  }
 
   const client = useMemo(() => {
     return backend?.healthy && backend.baseUrl ? new BackendClient(backend.baseUrl) : null;
@@ -591,6 +616,7 @@ export function App() {
                 busy={busy}
                 focused={terminalFocus}
                 layoutResetNonce={layoutResetNonce}
+                interfaceMode={interfaceMode}
                 onFocusChange={setTerminalFocus}
                 onLaunch={launchEmbedded}
                 onClose={closeEmbeddedTerminal}
@@ -673,9 +699,11 @@ export function App() {
                 adapters={state.adapters}
                 busy={busy}
                 refreshing={recallRefreshing}
+                interfaceMode={interfaceMode}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
+                onInterfaceModeChange={setInterfaceMode}
               />
             )}
 

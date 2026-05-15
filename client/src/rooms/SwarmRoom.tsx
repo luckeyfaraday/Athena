@@ -4,7 +4,7 @@ import type { AgentSession, EmbeddedTerminalSession } from "../electron";
 import { StatusDot } from "../components/status";
 import { formatSessionTime, providerLabel, selectedAgentSessionKey } from "../session-utils";
 
-type AgentRole = {
+export type AgentRole = {
   role: string;
   type: string;
   icon: ReactNode;

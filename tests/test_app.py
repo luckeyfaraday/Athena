@@ -229,6 +229,8 @@ def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
             "project_dir": str(tmp_path),
             "markdown": "# Athena Session Handoff\n\n- Continue from selected sessions.",
             "source": "test-handoff",
+            "source_count": 2,
+            "source_titles": ["Codex Builder", "OpenCode Reviewer"],
         },
     )
 
@@ -238,11 +240,33 @@ def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
     recall = response.json()["recall"]
     assert recall["status"] == "fresh"
     assert recall["source"] == "test-handoff"
+    assert recall["source_count"] == 2
+    assert recall["source_titles"] == ["Codex Builder", "OpenCode Reviewer"]
     assert recall_path.read_text(encoding="utf-8").endswith("\n")
     assert "Continue from selected sessions" in recall_path.read_text(encoding="utf-8")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["source"] == "test-handoff"
     assert metadata["bytes"] == recall_path.stat().st_size
+    assert metadata["source_count"] == 2
+
+
+def test_hermes_recall_mark_used_updates_metadata(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/hermes/recall/write",
+        json={
+            "project_dir": str(tmp_path),
+            "markdown": "# Recall\n\nReady.",
+            "source": "test-handoff",
+        },
+    )
+
+    response = client.post("/hermes/recall/mark-used", json={"project_dir": str(tmp_path), "agent": "codex"})
+
+    assert response.status_code == 200
+    recall = response.json()["recall"]
+    assert recall["last_launch_agent"] == "codex"
+    assert recall["used_for_launch_at"]
 
 
 def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> None:

@@ -32,7 +32,6 @@
 html, body, #root { min-height: 100%; }
 body {
   margin: 0;
-  min-width: 1120px;
   min-height: 720px;
   overflow: hidden;
   background: #0f1c16;
@@ -43,7 +42,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 
 .appFrame {
   height: 100vh;
-  min-width: 1120px;
+  min-width: 0;
   display: grid;
   grid-template-rows: 34px minmax(0, 1fr);
   overflow: hidden;

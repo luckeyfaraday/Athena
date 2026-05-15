@@ -1,6 +1,6 @@
 # Context Workspace Product Backlog
 
-Last verified: 2026-05-15 on `main` after PR #30 plus local transparent-shell focus work.
+Last verified: 2026-05-16 on `main` after PR #30 plus PR #31 shell-focus work.
 
 This backlog converts the raw task list into implementation milestones. It separates verified current behavior from proposed work so new features do not duplicate already-merged PRs.
 
@@ -39,7 +39,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 | Codex JSONL session context gap | Done | Codex sessions are enriched from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
 | Frontend architecture cleanup | Done | PRs #22-24 and #28 split rooms, sidebar, dashboard panels, workspace tabs, status UI, formatters, and shared helpers out of `App.tsx`. |
 | `#ce14092c` settings chat/shell mode | Done | PR #30 added a persistent terminal/chat interface preference with Settings controls and Command Room rendering. |
-| `#9d14b31e` transparent shell focus mode | Done locally | Command Room can enter a persisted shell-focus mode, hide surrounding workspace chrome, and restore with the toolbar or Esc. |
+| `#9d14b31e` transparent shell focus mode | Done in PR #31 | Command Room can enter a persisted shell-focus mode, hide surrounding workspace chrome, and restore with the toolbar or Esc. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -59,8 +59,8 @@ Goal: reduce friction in the existing workspace UI before adding new product sur
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#9d14b31e` transparent shell focus mode | Done locally | User can hide surrounding UI chrome while preserving shell panes and restore with Esc or the Command Room toolbar. |
-| Improve terminal focus ergonomics | Done locally | Focus, maximize, minimize, drag, grid arrange, and transparent shell focus are implemented. |
+| `#9d14b31e` transparent shell focus mode | Done in PR #31 | User can hide surrounding UI chrome while preserving shell panes and restore with Esc or the Command Room toolbar. |
+| Improve terminal focus ergonomics | Done in PR #31 | Focus, maximize, minimize, drag, grid arrange, and transparent shell focus are implemented. |
 
 ## Milestone 3: Architecture Cleanup
 

@@ -1,57 +1,37 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  CheckCircle2,
-  ChevronRight,
-  Code2,
-  Database,
   Eye,
-  FileText,
-  FolderOpen,
-  RefreshCw,
   Search,
   ShieldCheck,
-  Sparkles,
-  TerminalSquare,
-  Users,
   Wrench,
-  XCircle,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
-import { StatusDot, StatusPill } from "./components/status";
+import { AppSidebar, AthenaMark } from "./components/AppSidebar";
+import { ActiveAgents, ContextGlance, LiveWorkflow, MemoryTimeline, SharedMemorySnapshot } from "./components/DashboardPanels";
+import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { CommandRoom } from "./rooms/CommandRoom";
 import { MemoryRoom } from "./rooms/MemoryRoom";
 import { ReviewRoom } from "./rooms/ReviewRoom";
 import { SettingsRoom } from "./rooms/SettingsRoom";
-import { SwarmRoom } from "./rooms/SwarmRoom";
+import { SwarmRoom, type AgentRole } from "./rooms/SwarmRoom";
 import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
-import { roomRouteById, roomRoutes, type ActiveRoom } from "./routes";
+import { roomRouteById, type ActiveRoom } from "./routes";
 import {
   embeddedSessionKey,
-  formatAge,
   providerLabel,
-  recallAuditLines,
   selectedAgentSessionKey,
   terminalGridTitles,
   type AgentTranscriptState,
   type HandoffPreview,
 } from "./session-utils";
-import athenaMarkUrl from "./assets/athena-mark.png";
-import athenaWordmarkUrl from "./assets/athena-wordmark.png";
+import { normalizeWorkspaceKey, sameWorkspacePath, workspaceDisplayName, workspaceKey } from "./workspace-utils";
 
 type LoadState = {
   hermes: HermesStatus | null;
   recall: RecallStatus | null;
   adapters: Record<string, AdapterStatus>;
   memory: string[];
-};
-
-type AgentRole = {
-  role: string;
-  type: string;
-  icon: ReactNode;
-  status: "ready" | "running" | "waiting" | "offline";
-  brief: string;
 };
 
 const emptyLoadState: LoadState = {
@@ -80,23 +60,6 @@ function parseStoredWorkspace(value: string | null): string | null {
   } catch {
     return value;
   }
-}
-
-function normalizeWorkspaceKey(value: string): string {
-  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-}
-
-function sameWorkspacePath(left: string, right: string): boolean {
-  return Boolean(left && right && normalizeWorkspaceKey(left) === normalizeWorkspaceKey(right));
-}
-
-function workspaceDisplayName(workspace: WorkspacePath): string {
-  const normalized = workspace.displayPath.replace(/\\/g, "/").replace(/\/+$/, "");
-  return normalized.split("/").filter(Boolean).at(-1) ?? workspace.displayPath;
-}
-
-function workspaceKey(workspace: WorkspacePath): string {
-  return normalizeWorkspaceKey(workspace.nativePath);
 }
 
 function readWorkspaceList(): WorkspacePath[] {
@@ -587,37 +550,12 @@ export function App() {
 
   return (
     <main className="workspaceSurface">
-      <aside className="appSidebar" aria-label="Workspace navigation">
-        <div className="brandLockup">
-          <AthenaMark />
-          <img className="athenaWordmark" src={athenaWordmarkUrl} alt="ATHENA" />
-        </div>
-        <nav className="sidebarNav">
-          <span>Workspace</span>
-          {roomRoutes.map((route) => (
-            <SidebarButton
-              key={route.id}
-              active={activeRoom === route.id}
-              icon={route.icon}
-              label={route.sidebarLabel}
-              onClick={() => setActiveRoom(route.id)}
-            />
-          ))}
-        </nav>
-        <div className="sidebarStatus">
-          <span>Status</span>
-          <StatusLine label="Backend" ok={Boolean(backend?.healthy)} />
-          <StatusLine label="Hermes" ok={Boolean(state.hermes?.installed)} />
-        </div>
-        <div className="sidebarUser">
-          <div className="avatar">A</div>
-          <div>
-            <strong>Alan</strong>
-            <span>Pro</span>
-          </div>
-          <ChevronRight size={14} />
-        </div>
-      </aside>
+      <AppSidebar
+        activeRoom={activeRoom}
+        backendOnline={Boolean(backend?.healthy)}
+        hermesOnline={Boolean(state.hermes?.installed)}
+        onNavigate={setActiveRoom}
+      />
 
       <section className={terminalFocus && activeRoom === "command" ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
         {(error || (!backend?.healthy && backend?.lastError)) && <div className="noticeBar">{error ?? backend?.lastError}</div>}
@@ -766,265 +704,6 @@ export function App() {
         </section>
       </section>
     </main>
-  );
-}
-
-function SidebarButton({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
-  return (
-    <button className={active ? "sidebarButton active" : "sidebarButton"} onClick={onClick}>
-      {icon}
-      <span>{label}</span>
-    </button>
-  );
-}
-
-function AthenaMark({ small = false }: { small?: boolean }) {
-  return (
-    <span className={small ? "athenaMark small" : "athenaMark"} aria-hidden="true">
-      <img src={athenaMarkUrl} alt="" />
-    </span>
-  );
-}
-
-function StatusLine({ label, ok }: { label: string; ok: boolean }) {
-  return (
-    <div className="statusLine">
-      <span><i className={ok ? "ok" : "bad"} />{label}</span>
-      <strong>{ok ? "Online" : "Offline"}</strong>
-    </div>
-  );
-}
-
-function WorkspaceTabs({
-  workspaces,
-  activeWorkspace,
-  terminalSessions,
-  onSelect,
-  onClose,
-  onAdd,
-}: {
-  workspaces: WorkspacePath[];
-  activeWorkspace: WorkspacePath | null;
-  terminalSessions: EmbeddedTerminalSession[];
-  onSelect: (workspace: WorkspacePath) => void;
-  onClose: (workspace: WorkspacePath) => void;
-  onAdd: () => Promise<void>;
-}) {
-  return (
-    <div className="workspaceTabs" aria-label="Open workspaces">
-      <div className="workspaceTabList">
-        {workspaces.map((workspace) => {
-          const active = activeWorkspace ? workspaceKey(activeWorkspace) === workspaceKey(workspace) : false;
-          const running = terminalSessions.filter((session) => sameWorkspacePath(session.workspace, workspace.nativePath) && session.status === "running").length;
-          return (
-            <div key={workspace.nativePath} className={active ? "workspaceTab active" : "workspaceTab"}>
-              <button type="button" onClick={() => onSelect(workspace)} title={workspace.displayPath}>
-                <span>
-                  <strong>{workspaceDisplayName(workspace)}</strong>
-                  <small>{running} running</small>
-                </span>
-              </button>
-              {workspaces.length > 1 && (
-                <button
-                  type="button"
-                  className="workspaceTabClose"
-                  aria-label={`Close ${workspaceDisplayName(workspace)}`}
-                  onClick={() => onClose(workspace)}
-                >
-                  <XCircle size={12} />
-                </button>
-              )}
-            </div>
-          );
-        })}
-        {workspaces.length === 0 && <span className="workspaceTabEmpty">No workspace selected</span>}
-      </div>
-      <button type="button" className="workspaceAddButton" onClick={() => void onAdd()} title="Add workspace">
-        <FolderOpen size={13} /> Add
-      </button>
-    </div>
-  );
-}
-
-function FlowStep({ icon, label, active }: { icon: ReactNode; label: string; active?: boolean }) {
-  return (
-    <div className={active ? "flowStep active" : "flowStep"}>
-      {icon}
-      <span>{label}</span>
-    </div>
-  );
-}
-
-function ContextGlance({
-  tasks,
-  active,
-  agents,
-  memory,
-  reviews,
-  onNavigate,
-}: {
-  tasks: number;
-  active: number;
-  agents: number;
-  memory: number;
-  reviews: number;
-  onNavigate: (room: ActiveRoom) => void;
-}) {
-  return (
-    <section className="dashboardCard contextGlance">
-      <div className="cardHeader">
-        <span>ATHENA at a glance</span>
-      </div>
-      <MetricRow icon={<CheckCircle2 size={15} />} tone="green" label="Sessions" value={tasks} detail={`${active} running`} onClick={() => onNavigate("swarm")} />
-      <MetricRow icon={<Users size={15} />} tone="violet" label="Adapters" value={agents} detail="Installed locally" onClick={() => onNavigate("swarm")} />
-      <MetricRow icon={<Database size={15} />} tone="blue" label="Memory Entries" value={memory} detail="Recent memory" onClick={() => onNavigate("memory")} />
-      <MetricRow icon={<ShieldCheck size={15} />} tone="orange" label="Reviews" value={reviews} detail="Inspectable sessions" onClick={() => onNavigate("review")} />
-    </section>
-  );
-}
-
-function MetricRow({ icon, tone, label, value, detail, onClick }: { icon: ReactNode; tone: string; label: string; value: number; detail: string; onClick: () => void }) {
-  return (
-    <button type="button" className="metricRow" onClick={onClick}>
-      <span className={`metricIcon ${tone}`}>{icon}</span>
-      <div>
-        <strong>{label}</strong>
-        <b>{value}</b>
-        <small>{detail}</small>
-      </div>
-      <ChevronRight size={15} />
-    </button>
-  );
-}
-
-function LiveWorkflow({ activeSessions, reviewSessions, memoryCount }: { activeSessions: number; reviewSessions: number; memoryCount: number }) {
-  return (
-    <section className="dashboardCard liveWorkflow">
-      <div className="cardHeader">
-        <span>Session Workflow</span>
-      </div>
-      <div className="workflowTrack">
-        <FlowStep icon={<FileText size={14} />} label="Session" active />
-        <ChevronRight size={18} />
-        <FlowStep icon={<Users size={14} />} label="Agents" active={activeSessions > 0} />
-        <ChevronRight size={18} />
-        <FlowStep icon={<ShieldCheck size={14} />} label="Review" active={reviewSessions > 0} />
-        <ChevronRight size={18} />
-        <FlowStep icon={<Database size={14} />} label="Memory" active={memoryCount > 0} />
-      </div>
-    </section>
-  );
-}
-
-function ActiveAgents({ roles, embeddedSessions }: { roles: AgentRole[]; embeddedSessions: EmbeddedTerminalSession[] }) {
-  const liveByRole = new Set<string>(embeddedSessions.filter((session) => session.status === "running").map((session) => session.kind));
-  return (
-    <section className="dashboardCard activeAgents">
-      <div className="cardHeader">
-        <span>Active Agents</span>
-      </div>
-      <div className="agentRows">
-        {roles.map((role) => {
-          const busy = role.status === "running" || liveByRole.has(role.type);
-          return (
-            <article key={role.role}>
-              <span className={`agentBadge ${busy ? "busy" : role.status}`}>{role.icon}</span>
-              <div>
-                <strong>{role.role}</strong>
-                <small>{role.brief}</small>
-              </div>
-              <em className={busy ? "busy" : role.status}>{busy ? "Busy" : role.status === "ready" ? "Online" : role.status}</em>
-              <ChevronRight size={14} />
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function MemoryTimeline({ entries, embeddedSessions, agentSessions }: { entries: string[]; embeddedSessions: EmbeddedTerminalSession[]; agentSessions: AgentSession[] }) {
-  const latestSession = embeddedSessions.at(-1) ?? agentSessions.at(0) ?? null;
-  const runningSessions = embeddedSessions.filter((session) => session.status === "running").length;
-  const timeline = [
-    { time: "Now", label: "ATHENA Updated", detail: entries[0] ?? "Shared context is ready", tone: "memory" },
-    { time: "Session", label: "Latest Session", detail: latestSession?.title ?? "No session started yet", tone: "run" },
-    { time: "Agent", label: "Agent State", detail: `${runningSessions} live sessions`, tone: "agent" },
-    { time: "Memory", label: "Hermes Sync", detail: `${entries.length} memory entries available`, tone: "system" },
-  ];
-  return (
-    <section className="dashboardCard memoryTimeline">
-      <div className="cardHeader">
-        <span>Memory Timeline</span>
-      </div>
-      <div className="timelineList">
-        {timeline.map((item) => (
-          <article key={item.label}>
-            <time>{item.time}</time>
-            <span className={`timelineDot ${item.tone}`}><Sparkles size={13} /></span>
-            <div>
-              <strong>{item.label}</strong>
-              <small>{item.detail}</small>
-            </div>
-            <em>{item.tone}</em>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function SharedMemorySnapshot({
-  workspace,
-  entries,
-  hermes,
-  recall,
-  embeddedSessions,
-  agentSessions,
-  refreshing,
-  onRefresh,
-}: {
-  workspace: string;
-  entries: string[];
-  hermes: HermesStatus | null;
-  recall: RecallStatus | null;
-  embeddedSessions: EmbeddedTerminalSession[];
-  agentSessions: AgentSession[];
-  refreshing: boolean;
-  onRefresh: () => void;
-}) {
-  const recallLabel = recall ? recall.status : "unknown";
-  const recallAge = recall?.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds);
-  const latestSession = embeddedSessions.at(-1) ?? agentSessions.at(0) ?? null;
-  const runningSessions = embeddedSessions.filter((session) => session.status === "running").length;
-  const lines = [
-    "# ATHENA",
-    `- Workspace: ${workspace || "not selected"}`,
-    `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
-    `- Recall: ${recallLabel} (${recallAge})`,
-    `- Recall refresh: ${recall?.refresh_configured ? "configured" : "not configured"}`,
-    ...recallAuditLines(recall).map((line) => `- ${line}`),
-    `- Live sessions: ${runningSessions}`,
-    `- Latest session: ${latestSession ? latestSession.title : "none"}`,
-    `- Memory entries: ${entries.length}`,
-    ...(entries[0] ? [`- Latest memory: ${entries[0]}`] : []),
-  ];
-  const recallTone = !recall ? "warn" : recall.status === "fresh" ? "ok" : recall.status === "missing" ? "bad" : "warn";
-  return (
-    <section className="dashboardCard sharedSnapshot">
-      <div className="cardHeader">
-        <span>Shared Memory Snapshot</span>
-        <div className="cardHeaderActions">
-          <StatusPill tone={recallTone}>Recall {recallLabel}</StatusPill>
-          <button type="button" onClick={onRefresh} disabled={refreshing}>
-            <RefreshCw size={13} /> {refreshing ? "Refreshing" : "Refresh recall"}
-          </button>
-        </div>
-      </div>
-      <div className="snapshotBody">
-        <pre>{lines.join("\n")}</pre>
-      </div>
-    </section>
   );
 }
 

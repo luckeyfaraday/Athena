@@ -24,6 +24,7 @@ import { MemoryRoom } from "./rooms/MemoryRoom";
 import { ReviewRoom } from "./rooms/ReviewRoom";
 import { SettingsRoom } from "./rooms/SettingsRoom";
 import { SwarmRoom } from "./rooms/SwarmRoom";
+import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
 import { roomRouteById, roomRoutes, type ActiveRoom } from "./routes";
 import {
   embeddedSessionKey,
@@ -333,6 +334,16 @@ export function App() {
     });
   }
 
+  function renameWorkspaceTab(tab: WorkspacePath) {
+    const nextName = window.prompt("Workspace display name", workspaceDisplayName(tab));
+    const trimmed = nextName?.trim();
+    if (!trimmed) return;
+    setWorkspaceTabs((current) =>
+      current.map((item) => workspaceKey(item) === workspaceKey(tab) ? { ...item, displayPath: trimmed } : item),
+    );
+    setWorkspacePath((current) => current && workspaceKey(current) === workspaceKey(tab) ? { ...current, displayPath: trimmed } : current);
+  }
+
   async function refreshRecall(taskHint = "Manual recall refresh", options: { surfaceError?: boolean } = {}) {
     if (!client || !workspace || recallRefreshing) return null;
     const surfaceError = options.surfaceError ?? true;
@@ -496,6 +507,35 @@ export function App() {
   const liveSessionCount = activeEmbeddedSessions.filter((session) => session.status === "running").length;
   const reviewSessionCount = activeEmbeddedSessions.length + agentSessions.length;
   const activeRoute = roomRouteById[activeRoom];
+  const workspaceSummaries = useMemo<WorkspaceSummary[]>(() => {
+    return workspaceTabs.map((tab) => {
+      const tabTerminals = embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, tab.nativePath));
+      const active = workspacePath ? workspaceKey(workspacePath) === workspaceKey(tab) : false;
+      const latestTerminalAt = tabTerminals
+        .map((session) => session.createdAt)
+        .filter(Boolean)
+        .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
+      const latestAgentAt = active
+        ? agentSessions
+            .map((session) => session.updatedAt)
+            .filter(Boolean)
+            .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null
+        : null;
+      const lastActiveAt = [latestTerminalAt, latestAgentAt]
+        .filter((value): value is string => Boolean(value))
+        .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
+      return {
+        workspace: tab,
+        active,
+        runningTerminals: tabTerminals.filter((session) => session.status === "running").length,
+        totalTerminals: tabTerminals.length,
+        agentSessions: active ? agentSessions.length : null,
+        memoryEntries: active ? state.memory.length : null,
+        recall: active ? state.recall : null,
+        lastActiveAt,
+      };
+    });
+  }, [agentSessions, embeddedSessions, state.memory.length, state.recall, workspacePath, workspaceTabs]);
 
   const loadAgentTranscript = useCallback(async (session: AgentSession) => {
     const key = selectedAgentSessionKey(session);
@@ -621,6 +661,20 @@ export function App() {
                 }}
                 onViewAgentTranscript={loadAgentTranscript}
                 emptyMark={<AthenaMark />}
+              />
+            )}
+            {activeRoom === "workspace" && (
+              <WorkspaceRoom
+                summaries={workspaceSummaries}
+                activeWorkspace={workspacePath}
+                terminalSessions={embeddedSessions}
+                agentSessions={agentSessions}
+                busy={busy || recallRefreshing}
+                onAdd={selectWorkspace}
+                onOpen={activateWorkspace}
+                onRemove={closeWorkspaceTab}
+                onRename={renameWorkspaceTab}
+                onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
               />
             )}
             {activeRoom === "swarm" && (

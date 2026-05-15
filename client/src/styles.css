@@ -347,6 +347,180 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-size: 10px;
   font-weight: 800;
 }
+.workspaceRoom {
+  min-height: 0;
+  overflow: hidden;
+}
+.workspaceRoomHero {
+  min-height: 92px;
+  padding: 18px 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+}
+.workspaceRoomHero h3,
+.workspaceRoomHero p {
+  margin: 0;
+}
+.workspaceRoomHero h3 {
+  max-width: 760px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1.2;
+}
+.workspaceRoomHero p {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.workspaceStats {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  border-bottom: 1px solid var(--line);
+}
+.workspaceStats article {
+  min-height: 74px;
+  padding: 12px;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #071d17;
+}
+.workspaceStats span,
+.workspaceStats small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+}
+.workspaceStats span {
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.workspaceStats strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+}
+.workspaceTable {
+  min-height: 320px;
+  overflow: auto;
+}
+.workspaceTableHeader,
+.workspaceRow {
+  min-width: 930px;
+  display: grid;
+  grid-template-columns: minmax(240px, 1.6fr) 86px 92px 112px 86px 92px minmax(230px, auto);
+  gap: 10px;
+  align-items: center;
+}
+.workspaceTableHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgba(226,214,183,.1);
+  background: #071d17;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.workspaceRow {
+  min-height: 82px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(226,214,183,.08);
+}
+.workspaceRow.active {
+  background: rgba(46, 90, 70, .16);
+}
+.workspaceIdentity,
+.workspaceCount {
+  min-width: 0;
+}
+.workspaceIdentity strong,
+.workspaceIdentity span,
+.workspaceIdentity small,
+.workspaceCount strong,
+.workspaceCount small,
+.workspaceLastActive {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspaceIdentity strong,
+.workspaceCount strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.workspaceIdentity span,
+.workspaceIdentity small,
+.workspaceCount small,
+.workspaceLastActive {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.workspaceActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.workspaceActions button {
+  height: 26px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(226,214,183,.1);
+  border-radius: 5px;
+  background: #071d17;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.workspaceActions button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+.workspaceActions button.danger {
+  border-color: rgba(251, 113, 133, .22);
+  color: #fecdd3;
+}
+.workspaceActions button.danger:hover:not(:disabled) {
+  background: rgba(251, 113, 133, .1);
+}
+.workspaceEmpty {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  color: var(--muted);
+  text-align: center;
+}
+.workspaceEmpty svg { color: var(--blue); }
+.workspaceEmpty strong { color: var(--text); font-size: 14px; }
+.workspaceEmpty span { max-width: 430px; font-size: 11px; line-height: 1.5; }
 .iconButton,
 .primaryButton,
 .ghostButton,
@@ -1735,6 +1909,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 
 @media (max-width: 1180px) {
+  .workspaceRoomHero {
+    flex-direction: column;
+  }
+  .workspaceStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .agentRoleGrid,
   .reviewColumns {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1867,6 +2047,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .contextGlance { margin-top: 0; }
   .sharedSnapshot { grid-column: auto; }
   .rightColumn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workspaceStats {
+    grid-template-columns: 1fr;
+  }
   .broadcastComposer {
     grid-template-columns: minmax(0, 1fr);
   }

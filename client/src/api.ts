@@ -31,6 +31,10 @@ export type RecallStatus = {
   age_seconds: number | null;
   stale_after_seconds: number;
   source: string | null;
+  source_count: number | null;
+  source_titles: string[];
+  used_for_launch_at: string | null;
+  last_launch_agent: string | null;
   refresh_configured: boolean;
 };
 
@@ -112,7 +116,12 @@ export class BackendClient {
     });
   }
 
-  async writeRecall(projectDir: string, markdown: string, source = "athena-session-handoff"): Promise<RecallWriteResult> {
+  async writeRecall(
+    projectDir: string,
+    markdown: string,
+    source = "athena-session-handoff",
+    metadata: { source_count?: number; source_titles?: string[] } = {},
+  ): Promise<RecallWriteResult> {
     return this.json("/hermes/recall/write", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -120,6 +129,19 @@ export class BackendClient {
         project_dir: projectDir,
         markdown,
         source,
+        source_count: metadata.source_count,
+        source_titles: metadata.source_titles ?? [],
+      }),
+    });
+  }
+
+  async markRecallUsed(projectDir: string, agent: string): Promise<RecallWriteResult> {
+    return this.json("/hermes/recall/mark-used", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_dir: projectDir,
+        agent,
       }),
     });
   }

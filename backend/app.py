@@ -60,6 +60,13 @@ class HermesRecallWriteRequest(BaseModel):
     project_dir: str
     markdown: str = Field(min_length=1, max_length=131072)
     source: str = Field(default="athena-session-handoff", min_length=1, max_length=120)
+    source_count: int | None = Field(default=None, ge=0, le=500)
+    source_titles: list[str] = Field(default_factory=list, max_length=500)
+
+
+class HermesRecallMarkUsedRequest(BaseModel):
+    project_dir: str
+    agent: str = Field(min_length=1, max_length=80)
 
 
 RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
@@ -145,7 +152,22 @@ def create_app(
         if not markdown:
             raise HTTPException(status_code=400, detail="Recall markdown cannot be empty.")
 
-        recall = _write_recall_cache(project, markdown, source=request.source.strip())
+        recall = _write_recall_cache(
+            project,
+            markdown,
+            source=request.source.strip(),
+            source_count=request.source_count,
+            source_titles=request.source_titles,
+        )
+        return {"recall": recall}
+
+    @app.post("/hermes/recall/mark-used")
+    def mark_hermes_recall_used(request: HermesRecallMarkUsedRequest) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(request.project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        recall = _mark_recall_used(project, agent=request.agent.strip())
         return {"recall": recall}
 
     @app.post("/hermes/install")
@@ -480,11 +502,22 @@ def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
         "age_seconds": age_seconds,
         "stale_after_seconds": RECALL_STALE_AFTER_SECONDS,
         "source": metadata.get("source") if isinstance(metadata.get("source"), str) else None,
+        "source_count": metadata.get("source_count") if isinstance(metadata.get("source_count"), int) else None,
+        "source_titles": metadata.get("source_titles") if isinstance(metadata.get("source_titles"), list) else [],
+        "used_for_launch_at": metadata.get("used_for_launch_at") if isinstance(metadata.get("used_for_launch_at"), str) else None,
+        "last_launch_agent": metadata.get("last_launch_agent") if isinstance(metadata.get("last_launch_agent"), str) else None,
         "refresh_configured": bool(os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()),
     }
 
 
-def _write_recall_cache(project_dir: Path, markdown: str, *, source: str) -> dict[str, Any]:
+def _write_recall_cache(
+    project_dir: Path,
+    markdown: str,
+    *,
+    source: str,
+    source_count: int | None = None,
+    source_titles: list[str] | None = None,
+) -> dict[str, Any]:
     cache_dir = project_dir / ".context-workspace" / "hermes"
     cache_dir.mkdir(parents=True, exist_ok=True)
     recall_path = cache_dir / "session-recall.md"
@@ -496,6 +529,21 @@ def _write_recall_cache(project_dir: Path, markdown: str, *, source: str) -> dic
         "source": source or "athena-session-handoff",
         "bytes": len(text.encode("utf-8")),
     }
+    if source_count is not None:
+        metadata["source_count"] = source_count
+    if source_titles:
+        metadata["source_titles"] = [str(title)[:160] for title in source_titles[:20]]
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    return _recall_status_payload(project_dir)
+
+
+def _mark_recall_used(project_dir: Path, *, agent: str) -> dict[str, Any]:
+    cache_dir = project_dir / ".context-workspace" / "hermes"
+    metadata_path = cache_dir / "last-refresh.json"
+    metadata = _read_json_object(metadata_path)
+    metadata["used_for_launch_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    metadata["last_launch_agent"] = agent
+    cache_dir.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return _recall_status_payload(project_dir)
 

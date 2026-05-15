@@ -99,6 +99,7 @@ type HandoffPreview = {
   markdown: string;
   bytes: number;
   sourceCount: number;
+  sourceTitles: string[];
   workspace: string;
 };
 
@@ -441,6 +442,11 @@ export function App() {
           );
           if (!proceed) return;
         }
+        if (recall && !recall.stale) {
+          void client?.markRecallUsed(workspace, kind).then((result) => {
+            setState((current) => ({ ...current, recall: result.recall }));
+          }).catch(() => undefined);
+        }
       }
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
@@ -542,9 +548,12 @@ export function App() {
     }
   }
 
-  async function saveHandoffToRecall(markdown: string) {
+  async function saveHandoffToRecall(markdown: string, metadata: { sourceCount?: number; sourceTitles?: string[] } = {}) {
     if (!client || !workspace) throw new Error("Backend or workspace is not available.");
-    const result = await client.writeRecall(workspace, markdown);
+    const result = await client.writeRecall(workspace, markdown, "athena-session-handoff", {
+      source_count: metadata.sourceCount,
+      source_titles: metadata.sourceTitles,
+    });
     setState((current) => ({ ...current, recall: result.recall }));
     setError(null);
   }
@@ -715,9 +724,15 @@ export function App() {
                 onSelectEmbeddedSession={(session) => setSelectedSessionKey(embeddedSessionKey(session))}
                 onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
                 onLoadAgentTranscript={loadAgentTranscript}
-                onSaveHandoff={saveHandoffToRecall}
-                onStartFreshFromHandoff={async (kind, markdown) => {
-                  await saveHandoffToRecall(markdown);
+                onSaveHandoff={(preview) => saveHandoffToRecall(preview.markdown, {
+                  sourceCount: preview.sourceCount,
+                  sourceTitles: preview.sourceTitles,
+                })}
+                onStartFreshFromHandoff={async (kind, preview) => {
+                  await saveHandoffToRecall(preview.markdown, {
+                    sourceCount: preview.sourceCount,
+                    sourceTitles: preview.sourceTitles,
+                  });
                   await launchEmbedded(kind, 1);
                 }}
               />
@@ -1077,6 +1092,7 @@ function SharedMemorySnapshot({
     `- Hermes: ${hermes?.installed ? "online" : "setup required"}`,
     `- Recall: ${recallLabel} (${recallAge})`,
     `- Recall refresh: ${recall?.refresh_configured ? "configured" : "not configured"}`,
+    ...recallAuditLines(recall).map((line) => `- ${line}`),
     `- Live sessions: ${runningSessions}`,
     `- Latest session: ${latestSession ? latestSession.title : "none"}`,
     `- Memory entries: ${entries.length}`,
@@ -1184,7 +1200,7 @@ function SettingsRoom({
                     `Cache: ${recall.path}`,
                     `Age: ${recall.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds)}`,
                     `Refresh command: ${recall.refresh_configured ? "configured" : "not configured"}`,
-                    recall.source ? `Source: ${recall.source}` : null,
+                    ...recallAuditLines(recall),
                   ].filter(Boolean).join("\n")
                 : "No recall status"}
             </span>
@@ -1213,6 +1229,24 @@ function formatAge(ageSeconds: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
+}
+
+function recallAuditLines(recall: RecallStatus | null): string[] {
+  if (!recall) return [];
+  return [
+    recall.source ? `Source: ${recall.source}` : null,
+    recall.source_count != null ? `Sources: ${recall.source_count}` : null,
+    recall.source_titles.length ? `Source titles: ${recall.source_titles.slice(0, 3).join("; ")}` : null,
+    recall.used_for_launch_at
+      ? `Used for launch: ${formatAbsoluteTime(recall.used_for_launch_at)}${recall.last_launch_agent ? ` (${recall.last_launch_agent})` : ""}`
+      : "Used for launch: not yet",
+  ].filter((line): line is string => Boolean(line));
+}
+
+function formatAbsoluteTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  return new Date(timestamp).toLocaleString();
 }
 
 function CommandRoom({
@@ -1960,8 +1994,8 @@ function ReviewRoom({
   onSelectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onSelectAgentSession: (session: AgentSession) => void;
   onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
-  onSaveHandoff: (markdown: string) => Promise<void>;
-  onStartFreshFromHandoff: (kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">, markdown: string) => Promise<void>;
+  onSaveHandoff: (preview: HandoffPreview) => Promise<void>;
+  onStartFreshFromHandoff: (kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">, preview: HandoffPreview) => Promise<void>;
 }) {
   const [handoffSelection, setHandoffSelection] = useState<Set<string>>(() => new Set());
   const [handoffPreview, setHandoffPreview] = useState<HandoffPreview | null>(null);
@@ -2064,6 +2098,7 @@ function ReviewRoom({
         markdown,
         bytes: byteLength(markdown),
         sourceCount: evidence.length,
+        sourceTitles: evidence.map((source) => source.title),
         workspace,
       });
     } catch (err) {
@@ -2078,7 +2113,7 @@ function ReviewRoom({
     setHandoffSaving(true);
     setHandoffError(null);
     try {
-      await onSaveHandoff(handoffPreview.markdown);
+      await onSaveHandoff(handoffPreview);
       setHandoffSavedAt(new Date().toLocaleTimeString());
     } catch (err) {
       setHandoffError(String(err));
@@ -2092,7 +2127,7 @@ function ReviewRoom({
     setHandoffLaunching(kind);
     setHandoffError(null);
     try {
-      await onStartFreshFromHandoff(kind, handoffPreview.markdown);
+      await onStartFreshFromHandoff(kind, handoffPreview);
       setHandoffSavedAt(new Date().toLocaleTimeString());
     } catch (err) {
       setHandoffError(String(err));

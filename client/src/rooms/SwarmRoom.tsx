@@ -1,14 +1,14 @@
 import type { ReactNode } from "react";
 import { ChevronRight, Code2, FileText, TerminalSquare } from "lucide-react";
 import type { AgentSession, EmbeddedTerminalSession } from "../electron";
-import { StatusDot } from "../components/status";
+import { agentRoleLabel, embeddedSessionDotStatus, StatusDot, type DotStatus } from "../components/status";
 import { formatSessionTime, providerLabel, selectedAgentSessionKey } from "../session-utils";
 
 export type AgentRole = {
   role: string;
   type: string;
   icon: ReactNode;
-  status: "ready" | "running" | "waiting" | "offline";
+  status: DotStatus;
   brief: string;
 };
 
@@ -42,7 +42,7 @@ export function SwarmRoom({
             <h3>{agent.role}</h3>
             <p>{agent.brief}</p>
             <div className="agentCardFooter">
-              <span>{agent.status}</span>
+              <span>{agentRoleLabel(agent.status)}</span>
               <ChevronRight size={16} />
             </div>
           </article>
@@ -62,7 +62,7 @@ export function SwarmRoom({
         <div className="agentSessionBoard">
           {liveAgentSessions.map((session) => (
             <article key={session.id}>
-              <StatusDot status={session.status === "running" ? "running" : "offline"} />
+              <StatusDot status={embeddedSessionDotStatus(session.status)} />
               <div>
                 <strong>{session.title}</strong>
                 <p>{session.kind} · {session.status}{session.sessionLabel ? ` · ${session.sessionLabel}` : ""}</p>

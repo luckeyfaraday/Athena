@@ -1,6 +1,7 @@
 import { ExternalLink, TerminalSquare } from "lucide-react";
 import { useEffect, useState } from "react";
 import { desktop, type NativeTerminalSession } from "../electron";
+import { nativeTerminalStatusView, StatusPill } from "./status";
 
 export function CodexTerminal({ workspace }: { workspace: string }) {
   const [sessions, setSessions] = useState<NativeTerminalSession[]>([]);
@@ -83,18 +84,18 @@ export function CodexTerminal({ workspace }: { workspace: string }) {
           </div>
         </div>
         <div className="sessionRows">
-          {sessions.map((session) => (
-            <article key={session.id} className="sessionRow">
-              <div>
-                <strong>{session.workspace}</strong>
-                <span>{session.mode === "grid" ? `${session.panes} pane grid` : session.promptPath ?? "No memory prompt file"}</span>
-              </div>
-              <span className={session.status === "launched" ? "statusPill ok" : "statusPill bad"}>
-                <span />
-                {session.pid ? `pid ${session.pid}` : session.status}
-              </span>
-            </article>
-          ))}
+          {sessions.map((session) => {
+            const status = nativeTerminalStatusView(session);
+            return (
+              <article key={session.id} className="sessionRow">
+                <div>
+                  <strong>{session.workspace}</strong>
+                  <span>{session.mode === "grid" ? `${session.panes} pane grid` : session.promptPath ?? "No memory prompt file"}</span>
+                </div>
+                <StatusPill tone={status.tone}>{status.label}</StatusPill>
+              </article>
+            );
+          })}
           {sessions.length === 0 && <p className="empty">No native terminal sessions launched yet.</p>}
         </div>
       </div>

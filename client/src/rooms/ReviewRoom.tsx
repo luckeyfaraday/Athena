@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Activity, Bot, CheckCircle2, Code2, FileText, Play, ScrollText, Sparkles, TerminalSquare, XCircle } from "lucide-react";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "../electron";
-import { StatusDot, StatusPill } from "../components/status";
+import { agentSessionDotStatus, embeddedSessionDotStatus, inspectorStatusView, StatusDot, StatusPill } from "../components/status";
 import {
   byteLength,
   embeddedSessionKey,
@@ -321,7 +321,7 @@ export function ReviewRoom({
               {handoffSelection.has(embeddedSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
               {handoffSelection.has(embeddedSessionKey(session)) ? "Selected" : "Include"}
             </button>
-            <StatusDot status={session.status === "running" ? "running" : "offline"} />
+            <StatusDot status={embeddedSessionDotStatus(session.status)} />
             <div>
               <strong>{session.title}</strong>
               <span>{session.kind} · {session.status}{session.promptPath ? " · prompt attached" : ""}</span>
@@ -353,7 +353,7 @@ export function ReviewRoom({
               {handoffSelection.has(selectedAgentSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
               {handoffSelection.has(selectedAgentSessionKey(session)) ? "Selected" : "Include"}
             </button>
-            <StatusDot status={session.status === "running" ? "running" : session.status === "exited" ? "offline" : "ready"} />
+            <StatusDot status={agentSessionDotStatus(session.status)} />
             <div>
               <strong>{session.title}</strong>
               <span>{providerLabel(session.provider)} · {session.id}</span>
@@ -395,6 +395,11 @@ function SessionInspector({
   const terminalId = embeddedSession?.id ?? agentSession?.terminalId ?? null;
   const transcriptKey = agentSession ? selectedAgentSessionKey(agentSession) : null;
   const transcript = transcriptKey && agentTranscript?.key === transcriptKey ? agentTranscript : null;
+  const inspectorStatus = inspectorStatusView({
+    terminalId,
+    hasTranscript: Boolean(transcript?.text),
+    hasAgentSession: Boolean(agentSession),
+  });
 
   useEffect(() => {
     if (!terminalId) {
@@ -465,9 +470,7 @@ function SessionInspector({
               <ScrollText size={14} /> {transcript?.loading ? "Loading" : "Transcript"}
             </button>
           )}
-          <StatusPill tone={terminalId ? "ok" : transcript?.text ? "ok" : agentSession ? "warn" : "bad"}>
-            {terminalId ? "Live buffer" : transcript?.text ? "Transcript" : agentSession ? "Metadata only" : "Empty"}
-          </StatusPill>
+          <StatusPill tone={inspectorStatus.tone}>{inspectorStatus.label}</StatusPill>
         </div>
       </div>
       <div className="sessionInspectorGrid">

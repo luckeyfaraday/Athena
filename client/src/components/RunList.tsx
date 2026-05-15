@@ -1,5 +1,6 @@
 import { Square } from "lucide-react";
 import type { Run } from "../api";
+import { isTerminalRunStatus } from "./status";
 
 type Props = {
   runs: Run[];
@@ -7,8 +8,6 @@ type Props = {
   onSelect: (runId: string) => void;
   onCancel: (runId: string) => Promise<void>;
 };
-
-const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 
 export function RunList({ runs, selectedRunId, onSelect, onCancel }: Props) {
   return (
@@ -29,7 +28,7 @@ export function RunList({ runs, selectedRunId, onSelect, onCancel }: Props) {
               <strong>{run.agent_id}</strong>
               <small>{run.task}</small>
             </span>
-            {!terminalStatuses.has(run.status) && (
+            {!isTerminalRunStatus(run.status) && (
               <span
                 className="rowIcon"
                 title="Cancel run"

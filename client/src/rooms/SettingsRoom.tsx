@@ -1,6 +1,6 @@
 import { FolderOpen, RefreshCw } from "lucide-react";
 import type { AdapterStatus, BackendStatus, HermesStatus, RecallStatus } from "../api";
-import { StatusPill } from "../components/status";
+import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
 import { formatAge, recallAuditLines } from "../session-utils";
 
 export function SettingsRoom({
@@ -26,11 +26,11 @@ export function SettingsRoom({
   onRestartBackend: () => Promise<void>;
   onRefreshRecall: () => void;
 }) {
-  const recallTone = !recall ? "warn" : recall.status === "fresh" ? "ok" : recall.status === "missing" ? "bad" : "warn";
-  const backendTone = backend?.healthy ? "ok" : backend?.running ? "warn" : "bad";
-  const hermesTone = hermes?.installed ? "ok" : "bad";
+  const backendStatus = backendStatusView(backend);
+  const hermesStatus = hermesStatusView(hermes);
+  const recallStatus = recallStatusView(recall);
   const adapterList = Object.values(adapters);
-  const installedAdapters = adapterList.filter((adapter) => adapter.installed);
+  const adapterStatus = adapterInstallStatusView(adapterList);
   const adapterSummary = adapterList.length
     ? adapterList.map((adapter) => `${adapter.agent_type}: ${adapter.installed ? adapter.command_path ?? adapter.executable : "missing"}`).join("\n")
     : "No adapter status loaded";
@@ -58,7 +58,7 @@ export function SettingsRoom({
             <strong>Backend</strong>
             <span>{backend?.baseUrl ?? "Not connected"}</span>
           </div>
-          <StatusPill tone={backendTone}>{backend?.healthy ? "Healthy" : backend?.running ? "Starting" : "Offline"}</StatusPill>
+          <StatusPill tone={backendStatus.tone}>{backendStatus.label}</StatusPill>
           <button className="ghostButton" type="button" onClick={() => void onRestartBackend()} disabled={busy}>
             <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
           </button>
@@ -75,7 +75,7 @@ export function SettingsRoom({
               ].filter(Boolean).join("\n")}
             </span>
           </div>
-          <StatusPill tone={hermesTone}>{hermes?.installed ? hermes.version ?? "Installed" : "Missing"}</StatusPill>
+          <StatusPill tone={hermesStatus.tone}>{hermesStatus.label}</StatusPill>
         </article>
         <article className="settingsSection">
           <div>
@@ -91,7 +91,7 @@ export function SettingsRoom({
                 : "No recall status"}
             </span>
           </div>
-          <StatusPill tone={recallTone}>{recall?.status ?? "Unknown"}</StatusPill>
+          <StatusPill tone={recallStatus.tone}>{recallStatus.label}</StatusPill>
           <button className="ghostButton" type="button" onClick={onRefreshRecall} disabled={refreshing || !recall?.refresh_configured}>
             <RefreshCw size={14} /> {refreshing ? "Refreshing" : "Refresh"}
           </button>
@@ -101,7 +101,7 @@ export function SettingsRoom({
             <strong>Agent adapters</strong>
             <span>{adapterSummary}</span>
           </div>
-          <StatusPill tone={installedAdapters.length ? "ok" : "warn"}>{installedAdapters.length}/{adapterList.length || 0} installed</StatusPill>
+          <StatusPill tone={adapterStatus.tone}>{adapterStatus.label}</StatusPill>
         </article>
       </div>
     </section>

@@ -1,7 +1,7 @@
 import { Edit3, FolderOpen, Play, RefreshCw, TerminalSquare, Trash2 } from "lucide-react";
 import type { RecallStatus } from "../api";
 import type { AgentSession, EmbeddedTerminalSession, WorkspacePath } from "../electron";
-import { StatusPill } from "../components/status";
+import { recallStatusView, StatusPill } from "../components/status";
 import { formatAge } from "../session-utils";
 
 export type WorkspaceSummary = {
@@ -40,7 +40,8 @@ export function WorkspaceRoom({
 }) {
   const activeSummary = summaries.find((summary) => summary.active) ?? null;
   const totalRunning = summaries.reduce((count, summary) => count + summary.runningTerminals, 0);
-  const staleActiveRecall = activeSummary?.recall?.status && activeSummary.recall.status !== "fresh";
+  const activeRecallStatus = recallStatusView(activeSummary?.recall ?? null, { active: Boolean(activeSummary) });
+  const staleActiveRecall = activeRecallStatus.label !== "fresh";
 
   return (
     <section className="roomPanel workspaceRoom">
@@ -64,7 +65,7 @@ export function WorkspaceRoom({
         <WorkspaceStat label="Saved Workspaces" value={summaries.length} detail={activeWorkspace ? "1 active" : "none active"} />
         <WorkspaceStat label="Live Terminals" value={totalRunning} detail={`${terminalSessions.length} total panes`} />
         <WorkspaceStat label="Native Sessions" value={agentSessions.length} detail="active workspace" />
-        <WorkspaceStat label="Recall" value={activeSummary?.recall?.status ?? "unknown"} detail={staleActiveRecall ? "needs attention" : "active workspace"} />
+        <WorkspaceStat label="Recall" value={activeRecallStatus.label} detail={staleActiveRecall ? "needs attention" : "active workspace"} />
       </div>
 
       <div className="workspaceTable" role="table" aria-label="Saved workspaces">
@@ -78,29 +79,14 @@ export function WorkspaceRoom({
           <span>Actions</span>
         </div>
         {summaries.map((summary) => (
-          <article key={summary.workspace.nativePath} className={summary.active ? "workspaceRow active" : "workspaceRow"} role="row">
-            <div className="workspaceIdentity">
-              <strong>{workspaceName(summary.workspace)}</strong>
-              <span>{summary.workspace.displayPath}</span>
-              {summary.workspace.wslPath && <small>{summary.workspace.wslPath}</small>}
-            </div>
-            <WorkspaceCount value={summary.runningTerminals} detail={`${summary.totalTerminals} total`} />
-            <WorkspaceCount value={summary.agentSessions ?? "Open"} detail={summary.agentSessions == null ? "to load" : "native"} />
-            <StatusPill tone={recallTone(summary.recall, summary.active)}>{summary.active ? summary.recall?.status ?? "Unknown" : "Open to check"}</StatusPill>
-            <WorkspaceCount value={summary.memoryEntries ?? "Open"} detail={summary.memoryEntries == null ? "to load" : "entries"} />
-            <span className="workspaceLastActive">{summary.lastActiveAt ? formatWorkspaceAge(summary.lastActiveAt) : "No activity"}</span>
-            <div className="workspaceActions">
-              <button type="button" onClick={() => onOpen(summary.workspace)} disabled={summary.active}>
-                <Play size={13} /> {summary.active ? "Active" : "Open"}
-              </button>
-              <button type="button" onClick={() => onRename(summary.workspace)}>
-                <Edit3 size={13} /> Rename
-              </button>
-              <button type="button" className="danger" onClick={() => onRemove(summary.workspace)} disabled={summary.active && summaries.length === 1}>
-                <Trash2 size={13} /> Remove
-              </button>
-            </div>
-          </article>
+          <WorkspaceRow
+            key={summary.workspace.nativePath}
+            summary={summary}
+            onOpen={onOpen}
+            onRename={onRename}
+            onRemove={onRemove}
+            onlyWorkspace={summaries.length === 1}
+          />
         ))}
         {summaries.length === 0 && (
           <div className="workspaceEmpty">
@@ -111,6 +97,47 @@ export function WorkspaceRoom({
         )}
       </div>
     </section>
+  );
+}
+
+function WorkspaceRow({
+  summary,
+  onOpen,
+  onRename,
+  onRemove,
+  onlyWorkspace,
+}: {
+  summary: WorkspaceSummary;
+  onOpen: (workspace: WorkspacePath) => void;
+  onRename: (workspace: WorkspacePath) => void;
+  onRemove: (workspace: WorkspacePath) => void;
+  onlyWorkspace: boolean;
+}) {
+  const recallStatus = recallStatusView(summary.recall, { active: summary.active });
+  return (
+    <article className={summary.active ? "workspaceRow active" : "workspaceRow"} role="row">
+      <div className="workspaceIdentity">
+        <strong>{workspaceName(summary.workspace)}</strong>
+        <span>{summary.workspace.displayPath}</span>
+        {summary.workspace.wslPath && <small>{summary.workspace.wslPath}</small>}
+      </div>
+      <WorkspaceCount value={summary.runningTerminals} detail={`${summary.totalTerminals} total`} />
+      <WorkspaceCount value={summary.agentSessions ?? "Open"} detail={summary.agentSessions == null ? "to load" : "native"} />
+      <StatusPill tone={recallStatus.tone}>{recallStatus.label}</StatusPill>
+      <WorkspaceCount value={summary.memoryEntries ?? "Open"} detail={summary.memoryEntries == null ? "to load" : "entries"} />
+      <span className="workspaceLastActive">{summary.lastActiveAt ? formatWorkspaceAge(summary.lastActiveAt) : "No activity"}</span>
+      <div className="workspaceActions">
+        <button type="button" onClick={() => onOpen(summary.workspace)} disabled={summary.active}>
+          <Play size={13} /> {summary.active ? "Active" : "Open"}
+        </button>
+        <button type="button" onClick={() => onRename(summary.workspace)}>
+          <Edit3 size={13} /> Rename
+        </button>
+        <button type="button" className="danger" onClick={() => onRemove(summary.workspace)} disabled={summary.active && onlyWorkspace}>
+          <Trash2 size={13} /> Remove
+        </button>
+      </div>
+    </article>
   );
 }
 
@@ -144,10 +171,3 @@ function formatWorkspaceAge(value: string): string {
   return formatAge(Math.max(0, (Date.now() - timestamp) / 1000));
 }
 
-function recallTone(recall: RecallStatus | null, active: boolean): "ok" | "warn" | "bad" {
-  if (!active) return "warn";
-  if (!recall) return "warn";
-  if (recall.status === "fresh") return "ok";
-  if (recall.status === "missing") return "bad";
-  return "warn";
-}

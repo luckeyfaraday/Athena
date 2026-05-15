@@ -4,7 +4,7 @@ import type { HermesStatus, RecallStatus } from "../api";
 import type { AgentSession, EmbeddedTerminalSession } from "../electron";
 import type { ActiveRoom } from "../routes";
 import type { AgentRole } from "../rooms/SwarmRoom";
-import { StatusPill } from "./status";
+import { activeAgentStatusView, recallStatusView, StatusPill } from "./status";
 import { formatAge, recallAuditLines } from "../session-utils";
 
 export function ContextGlance({
@@ -64,14 +64,15 @@ export function ActiveAgents({ roles, embeddedSessions }: { roles: AgentRole[]; 
       <div className="agentRows">
         {roles.map((role) => {
           const busy = role.status === "running" || liveByRole.has(role.type);
+          const status = activeAgentStatusView(role.status, busy);
           return (
             <article key={role.role}>
-              <span className={`agentBadge ${busy ? "busy" : role.status}`}>{role.icon}</span>
+              <span className={`agentBadge ${status.tone}`}>{role.icon}</span>
               <div>
                 <strong>{role.role}</strong>
                 <small>{role.brief}</small>
               </div>
-              <em className={busy ? "busy" : role.status}>{busy ? "Busy" : role.status === "ready" ? "Online" : role.status}</em>
+              <em className={status.tone}>{status.label}</em>
               <ChevronRight size={14} />
             </article>
           );
@@ -132,6 +133,7 @@ export function SharedMemorySnapshot({
   onRefresh: () => void;
 }) {
   const recallLabel = recall ? recall.status : "unknown";
+  const recallStatus = recallStatusView(recall);
   const recallAge = recall?.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds);
   const latestSession = embeddedSessions.at(-1) ?? agentSessions.at(0) ?? null;
   const runningSessions = embeddedSessions.filter((session) => session.status === "running").length;
@@ -147,13 +149,12 @@ export function SharedMemorySnapshot({
     `- Memory entries: ${entries.length}`,
     ...(entries[0] ? [`- Latest memory: ${entries[0]}`] : []),
   ];
-  const recallTone = !recall ? "warn" : recall.status === "fresh" ? "ok" : recall.status === "missing" ? "bad" : "warn";
   return (
     <section className="dashboardCard sharedSnapshot">
       <div className="cardHeader">
         <span>Shared Memory Snapshot</span>
         <div className="cardHeaderActions">
-          <StatusPill tone={recallTone}>Recall {recallLabel}</StatusPill>
+          <StatusPill tone={recallStatus.tone}>Recall {recallLabel}</StatusPill>
           <button type="button" onClick={onRefresh} disabled={refreshing}>
             <RefreshCw size={13} /> {refreshing ? "Refreshing" : "Refresh recall"}
           </button>

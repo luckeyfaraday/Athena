@@ -374,6 +374,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .commandColumn {
   min-width: 0;
+  grid-row: 1 / -1;
 }
 .dashboardHeader {
   min-height: 68px;
@@ -1027,7 +1028,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-bottom-color: rgba(226,214,183,.08);
   background: rgba(6, 17, 13, .88);
 }
-.commandRoom.focused .commandRoomTabs,
 .commandRoom.focused .embeddedSessionStrip,
 .commandRoom.focused .broadcastComposer {
   display: none;
@@ -1720,7 +1720,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 
 .sharedSnapshot {
-  grid-column: 1 / -1;
+  grid-column: 2 / -1;
   min-height: 0;
 }
 .snapshotBody {
@@ -2377,6 +2377,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     height: 100%;
   }
   .contextGlance { margin-top: 0; }
+  .commandColumn { grid-row: auto; }
   .sharedSnapshot { grid-column: auto; }
   .rightColumn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspaceStats {

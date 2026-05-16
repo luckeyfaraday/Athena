@@ -14,6 +14,11 @@ const appRoot = path.resolve(__dirname, "..");
 
 let mainWindow: BrowserWindow | null = null;
 let viteProc: ChildProcess | null = null;
+const singleInstanceLock = app.isPackaged ? app.requestSingleInstanceLock() : true;
+
+if (!singleInstanceLock) {
+  app.quit();
+}
 
 function shouldUseHeadlessGraphicsMode(): boolean {
   return process.env.CI === "true"
@@ -120,20 +125,29 @@ if (shouldUseHeadlessGraphicsMode()) {
   app.disableHardwareAcceleration();
 }
 
-app.whenReady().then(async () => {
-  installApplicationMenu();
-  registerIpcHandlers(appRoot);
-  void startControlServer().catch((error) => {
-    console.error("Electron control server failed to start:", error);
-  });
-  await createWindow();
-
-  app.on("activate", async () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      await createWindow();
-    }
-  });
+app.on("second-instance", () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
 });
+
+if (singleInstanceLock) {
+  app.whenReady().then(async () => {
+    installApplicationMenu();
+    registerIpcHandlers(appRoot);
+    void startControlServer().catch((error) => {
+      console.error("Electron control server failed to start:", error);
+    });
+    await createWindow();
+
+    app.on("activate", async () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        await createWindow();
+      }
+    });
+  });
+}
 
 function installApplicationMenu(): void {
   if (process.platform !== "darwin") {

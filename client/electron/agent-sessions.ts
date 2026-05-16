@@ -27,7 +27,7 @@ export type AgentSession = {
 type SqliteValue = string | number | null;
 
 const execFileAsync = promisify(execFile);
-const CACHE_TTL_MS = 5000;
+const CACHE_TTL_MS = 30_000;
 const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
 
 export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {

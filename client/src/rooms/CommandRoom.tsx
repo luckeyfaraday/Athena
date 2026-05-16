@@ -69,7 +69,7 @@ export function CommandRoom({
   onResumeSession: (session: AgentSession) => Promise<void>;
   onInspectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onInspectAgentSession: (session: AgentSession) => void;
-  onViewAgentTranscript: (session: AgentSession) => Promise<void>;
+  onViewAgentTranscript: (session: AgentSession) => Promise<string>;
   emptyMark: ReactNode;
 }) {
   const [paneOrder, setPaneOrder] = useState<string[]>([]);

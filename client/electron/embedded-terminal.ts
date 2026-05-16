@@ -49,6 +49,35 @@ type ManagedTerminal = {
 const terminals = new Map<string, ManagedTerminal>();
 const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
+const PTY_FLUSH_INTERVAL_MS = 16;
+const pendingOutput = new Map<string, string>();
+let outputFlushTimer: NodeJS.Timeout | null = null;
+const perfCounters = {
+  ptyChunks: 0,
+  ptyBytes: 0,
+  ipcBatches: 0,
+  ipcBytes: 0,
+  lastBatchAt: null as string | null,
+  sampleStartedAt: Date.now(),
+  rates: {
+    ptyChunksPerSecond: 0,
+    ptyBytesPerSecond: 0,
+    ipcBatchesPerSecond: 0,
+    ipcBytesPerSecond: 0,
+  },
+};
+
+export type PerformanceDiagnostics = {
+  activeTerminals: number;
+  bufferedTerminalChars: number;
+  pendingOutputBytes: number;
+  maxBufferChars: number;
+  ptyChunksPerSecond: number;
+  ptyBytesPerSecond: number;
+  ipcBatchesPerSecond: number;
+  ipcBytesPerSecond: number;
+  lastOutputBatchAt: string | null;
+};
 
 export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
   return Array.from(terminals.values())
@@ -58,6 +87,23 @@ export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
 
 export function getEmbeddedTerminalBuffer(id: string): string {
   return outputBuffers.get(id) ?? "";
+}
+
+export function getPerformanceDiagnostics(): PerformanceDiagnostics {
+  updatePerformanceRates();
+  const pendingOutputBytes = Array.from(pendingOutput.values()).reduce((total, value) => total + Buffer.byteLength(value), 0);
+  const bufferedTerminalChars = Array.from(outputBuffers.values()).reduce((total, value) => total + value.length, 0);
+  return {
+    activeTerminals: terminals.size,
+    bufferedTerminalChars,
+    pendingOutputBytes,
+    maxBufferChars: MAX_BUFFER_CHARS,
+    ptyChunksPerSecond: perfCounters.rates.ptyChunksPerSecond,
+    ptyBytesPerSecond: perfCounters.rates.ptyBytesPerSecond,
+    ipcBatchesPerSecond: perfCounters.rates.ipcBatchesPerSecond,
+    ipcBytesPerSecond: perfCounters.rates.ipcBytesPerSecond,
+    lastOutputBatchAt: perfCounters.lastBatchAt,
+  };
 }
 
 export async function spawnEmbeddedTerminal(
@@ -114,10 +160,11 @@ export async function spawnEmbeddedTerminal(
 
     term.onData((data) => {
       appendBuffer(id, data);
-      emit("embedded-terminal:data", { id, data });
+      queueOutput(id, data);
     });
 
     term.onExit(({ exitCode }) => {
+      flushOutput(id);
       const entry = terminals.get(id);
       if (entry) {
         entry.session = { ...entry.session, status: "exited", exitCode };
@@ -160,6 +207,60 @@ export function killEmbeddedTerminal(id: string): EmbeddedTerminalSession {
 function appendBuffer(id: string, data: string): void {
   const next = `${outputBuffers.get(id) ?? ""}${data}`;
   outputBuffers.set(id, next.length > MAX_BUFFER_CHARS ? next.slice(-MAX_BUFFER_CHARS) : next);
+}
+
+function queueOutput(id: string, data: string): void {
+  updatePerformanceRates();
+  perfCounters.ptyChunks += 1;
+  perfCounters.ptyBytes += Buffer.byteLength(data);
+  pendingOutput.set(id, `${pendingOutput.get(id) ?? ""}${data}`);
+  if (outputFlushTimer) return;
+  outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
+}
+
+function flushOutput(id?: string): void {
+  updatePerformanceRates();
+  if (outputFlushTimer) {
+    clearTimeout(outputFlushTimer);
+    outputFlushTimer = null;
+  }
+
+  const entries = id ? [[id, pendingOutput.get(id) ?? ""] as const] : Array.from(pendingOutput.entries());
+  for (const [terminalId, data] of entries) {
+    if (!data) continue;
+    pendingOutput.delete(terminalId);
+    perfCounters.ipcBatches += 1;
+    perfCounters.ipcBytes += Buffer.byteLength(data);
+    perfCounters.lastBatchAt = new Date().toISOString();
+    emit("embedded-terminal:data", { id: terminalId, data });
+  }
+
+  if (!id) return;
+  if (pendingOutput.size > 0 && !outputFlushTimer) {
+    outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
+  }
+}
+
+function roundRate(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function updatePerformanceRates(): void {
+  const now = Date.now();
+  const elapsedMs = now - perfCounters.sampleStartedAt;
+  if (elapsedMs < 1000) return;
+  const elapsedSeconds = elapsedMs / 1000;
+  perfCounters.rates = {
+    ptyChunksPerSecond: roundRate(perfCounters.ptyChunks / elapsedSeconds),
+    ptyBytesPerSecond: roundRate(perfCounters.ptyBytes / elapsedSeconds),
+    ipcBatchesPerSecond: roundRate(perfCounters.ipcBatches / elapsedSeconds),
+    ipcBytesPerSecond: roundRate(perfCounters.ipcBytes / elapsedSeconds),
+  };
+  perfCounters.ptyChunks = 0;
+  perfCounters.ptyBytes = 0;
+  perfCounters.ipcBatches = 0;
+  perfCounters.ipcBytes = 0;
+  perfCounters.sampleStartedAt = now;
 }
 
 function requireTerminal(id: string): ManagedTerminal {

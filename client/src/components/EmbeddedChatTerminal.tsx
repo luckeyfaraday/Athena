@@ -6,6 +6,8 @@ type Props = {
   session: EmbeddedTerminalSession;
 };
 
+const MAX_CHAT_BUFFER_CHARS = 80_000;
+
 export function EmbeddedChatTerminal({ session }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
@@ -17,16 +19,16 @@ export function EmbeddedChatTerminal({ session }: Props) {
     let mounted = true;
     void desktop.getEmbeddedTerminalBuffer(session.id)
       .then((nextBuffer) => {
-        if (mounted) setBuffer(nextBuffer);
+        if (mounted) setBuffer(capChatBuffer(nextBuffer));
       })
       .catch(() => undefined);
 
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
-      if (payload.id === session.id) setBuffer((current) => `${current}${payload.data}`);
+      if (payload.id === session.id) setBuffer((current) => capChatBuffer(`${current}${payload.data}`));
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       if (payload.id === session.id) {
-        setBuffer((current) => `${current}\n[process exited: ${payload.exitCode ?? "unknown"}]\n`);
+        setBuffer((current) => capChatBuffer(`${current}\n[process exited: ${payload.exitCode ?? "unknown"}]\n`));
       }
     });
 
@@ -133,6 +135,10 @@ function terminalTextToTranscript(value: string): string {
     .join("\n")
     .trim()
     .slice(-12_000);
+}
+
+function capChatBuffer(value: string): string {
+  return value.length > MAX_CHAT_BUFFER_CHARS ? value.slice(-MAX_CHAT_BUFFER_CHARS) : value;
 }
 
 function stripAnsi(value: string): string {

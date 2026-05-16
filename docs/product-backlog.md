@@ -1,6 +1,6 @@
 # Context Workspace Product Backlog
 
-Last verified: 2026-05-16 on `main` after PR #30 plus PR #31 shell-focus work.
+Last verified: 2026-05-16 on `main` after PR #33.
 
 This backlog converts the raw task list into implementation milestones. It separates verified current behavior from proposed work so new features do not duplicate already-merged PRs.
 
@@ -39,7 +39,10 @@ This backlog converts the raw task list into implementation milestones. It separ
 | Codex JSONL session context gap | Done | Codex sessions are enriched from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
 | Frontend architecture cleanup | Done | PRs #22-24 and #28 split rooms, sidebar, dashboard panels, workspace tabs, status UI, formatters, and shared helpers out of `App.tsx`. |
 | `#ce14092c` settings chat/shell mode | Done | PR #30 added a persistent terminal/chat interface preference with Settings controls and Command Room rendering. |
-| `#9d14b31e` transparent shell focus mode | Done in PR #31 | Command Room can enter a persisted shell-focus mode, hide surrounding workspace chrome, and restore with the toolbar or Esc. |
+| `#9d14b31e` transparent shell focus mode | Done in PR #32/#33 | Command Room can enter a persisted shell-focus mode, hide surrounding workspace chrome, restore with the toolbar or Esc, and keep Command Room tabs usable while focused. |
+| `#8af0e23e` Codex JSONL session source of truth | Done | PR #25 enriches Codex sessions from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
+| `#0ae98ecb` workspace tabs / multi-project support | Done | PR #23 added persisted workspace tabs and workspace-scoped terminals, sessions, recall, and memory. |
+| `#ec62ad60` merge sessions / start fresh | Done | PR #14/#17/#19/#20 added session handoff selection, preview, save-to-recall, start-fresh launch, and recall audit metadata. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -59,8 +62,8 @@ Goal: reduce friction in the existing workspace UI before adding new product sur
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#9d14b31e` transparent shell focus mode | Done in PR #31 | User can hide surrounding UI chrome while preserving shell panes and restore with Esc or the Command Room toolbar. |
-| Improve terminal focus ergonomics | Done in PR #31 | Focus, maximize, minimize, drag, grid arrange, and transparent shell focus are implemented. |
+| `#9d14b31e` transparent shell focus mode | Done in PR #32/#33 | User can hide surrounding UI chrome while preserving shell panes, keep Command Room tabs available, and restore with Esc or the Command Room toolbar. |
+| Improve terminal focus ergonomics | Done in PR #32/#33 | Focus, maximize, minimize, drag, grid arrange, transparent shell focus, larger Command Room workspace, and focus-mode tab switching are implemented. |
 
 ## Milestone 3: Architecture Cleanup
 
@@ -124,12 +127,22 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 | Hermes screen-context curator | P3 | Hermes receives local OCR/snapshot facts and optional VLM summaries, then writes only task-relevant compact context to recall. |
 | Selective screen context injection | P3 | Only curated, task-relevant summaries can enter recall or spawn prompts. User can inspect, redact, pause, and disable capture. |
 
+## Milestone 9: Memory Layer Research
+
+Goal: evaluate external memory layers without weakening Athena's controlled recall and handoff workflow.
+
+| Task | Priority | Acceptance criteria |
+|---|---:|---|
+| `#418751b2` AgentMemory optional integration | Research | Evaluate `rohitg00/agentmemory` as an optional secondary cross-agent memory/index layer for Athena/Hermes. Keep Hermes recall as the policy owner. Possible Athena integration: Settings status, Memory Room search tab, curated handoff writes, and bounded spawn recall. Do not stream raw PTY output by default, and do not replace Hermes `MEMORY.md` until the value is proven. |
+| `#a4b66aa9` make handoff artifacts substantively useful | P1 | Current concern: context-workspace handoff artifacts are low-value when they only contain a couple of tool calls and no substantive task evidence. Improve handoff generation so artifacts capture decisions, failed approaches, changed files, commands/results, open questions, and next-step context worth injecting into a fresh session. |
+
 ## Parking Lot
 
 | Task | Status | Notes |
 |---|---|---|
 | `#1fcdc98a` OpenClaw integration | Research only | Too vague for implementation. Define what OpenClaw contributes before adding code. |
 | `#078b61c7` open-source direction | Strategic | Needs licensing, repo hygiene, security review, contribution model, and public positioning before implementation. |
+| `#61ae50de` Athena article / public call to action | Strategic | Create a substantial article explaining what Athena is, how it works, the vision, and how developers can help build it. Depends on the open-source positioning work. |
 | `#a0e82258` ACE, Agentic Collaboration Environment | Product concept | Keep as direction-level framing until concrete agent-to-agent workflows are defined. |
 | `#b2e7bca5` GitHub organization | Research | Decide naming, ownership, repo split, and release policy before creating an org. |
 

@@ -42,8 +42,21 @@ type HandoffSessionSource =
 
 type HandoffEvidence = HandoffSessionSource & {
   evidence: string;
+  analysis: HandoffAnalysis;
   usable: boolean;
   note: string | null;
+};
+
+type HandoffAnalysis = {
+  score: number;
+  files: string[];
+  commands: string[];
+  outcomes: string[];
+  failures: string[];
+  decisions: string[];
+  questions: string[];
+  nextSteps: string[];
+  notable: string[];
 };
 
 export function ReviewRoom({
@@ -57,6 +70,7 @@ export function ReviewRoom({
   onSelectEmbeddedSession,
   onSelectAgentSession,
   onLoadAgentTranscript,
+  onReadAgentTranscript,
   onSaveHandoff,
   onStartFreshFromHandoff,
 }: {
@@ -69,7 +83,8 @@ export function ReviewRoom({
   workspace: string;
   onSelectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onSelectAgentSession: (session: AgentSession) => void;
-  onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
+  onLoadAgentTranscript: (session: AgentSession) => Promise<string>;
+  onReadAgentTranscript: (session: AgentSession) => Promise<string>;
   onSaveHandoff: (preview: HandoffPreview) => Promise<void>;
   onStartFreshFromHandoff: (kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">, preview: HandoffPreview) => Promise<void>;
 }) {
@@ -163,7 +178,7 @@ export function ReviewRoom({
     setHandoffGenerating(true);
     setHandoffError(null);
     try {
-      const evidence = await Promise.all(selectedHandoffSources.map(loadHandoffEvidence));
+      const evidence = await Promise.all(selectedHandoffSources.map((source) => loadHandoffEvidence(source, onReadAgentTranscript)));
       if (!evidence.some((source) => source.usable)) {
         setHandoffPreview(null);
         setHandoffError("No usable handoff evidence found. Pick live sessions with task output or sessions with readable transcripts.");
@@ -392,7 +407,7 @@ function SessionInspector({
   embeddedSession: EmbeddedTerminalSession | null;
   agentSession: AgentSession | null;
   agentTranscript: AgentTranscriptState | null;
-  onLoadAgentTranscript: (session: AgentSession) => Promise<void>;
+  onLoadAgentTranscript: (session: AgentSession) => Promise<string>;
 }) {
   const [buffer, setBuffer] = useState("");
   const pendingBufferRef = useRef("");
@@ -537,29 +552,54 @@ function ReviewCard({ title, icon, items }: { title: string; icon: ReactNode; it
   );
 }
 
-async function loadHandoffEvidence(source: HandoffSessionSource): Promise<HandoffEvidence> {
+async function loadHandoffEvidence(source: HandoffSessionSource, readAgentTranscript: (session: AgentSession) => Promise<string>): Promise<HandoffEvidence> {
   const terminalId = source.kind === "embedded" ? source.session.id : source.session.terminalId;
   if (!terminalId) {
+    if (source.kind === "native") {
+      try {
+        const transcript = await readAgentTranscript(source.session);
+        const analysis = analyzeHandoffEvidence(transcript, source);
+        return {
+          ...source,
+          evidence: analysis.notable.join("\n"),
+          analysis,
+          usable: isUsableHandoffAnalysis(analysis),
+          note: isUsableHandoffAnalysis(analysis) ? null : "Native transcript was readable, but it did not contain enough task evidence for a useful handoff.",
+        };
+      } catch (err) {
+        return {
+          ...source,
+          evidence: "",
+          analysis: emptyHandoffAnalysis(),
+          usable: false,
+          note: `Unable to read native transcript: ${String(err)}`,
+        };
+      }
+    }
     return {
       ...source,
       evidence: "",
+      analysis: emptyHandoffAnalysis(),
       usable: false,
       note: "No live terminal buffer is attached to this session.",
     };
   }
   try {
     const buffer = await desktop.getEmbeddedTerminalBuffer(terminalId);
-    const evidence = extractHandoffEvidence(buffer);
+    const analysis = analyzeHandoffEvidence(buffer, source);
+    const evidence = analysis.notable.join("\n");
     return {
       ...source,
       evidence,
-      usable: evidence.length > 0,
-      note: evidence.length > 0 ? null : "No usable task evidence could be extracted from the terminal buffer.",
+      analysis,
+      usable: isUsableHandoffAnalysis(analysis),
+      note: isUsableHandoffAnalysis(analysis) ? null : "No usable task evidence could be extracted from the terminal buffer.",
     };
   } catch (err) {
     return {
       ...source,
       evidence: "",
+      analysis: emptyHandoffAnalysis(),
       usable: false,
       note: `Unable to read live buffer: ${String(err)}`,
     };
@@ -570,48 +610,102 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
   const generated = new Date().toISOString();
   const usableSources = sources.filter((source) => source.usable);
   const unusableSources = sources.filter((source) => !source.usable);
+  const combined = combineHandoffAnalyses(usableSources.map((source) => source.analysis));
   const selectedSessions = sources
-    .map((source) => `- ${source.label}: ${source.title} (${source.status}, ${source.id})${source.usable ? "" : " - no usable evidence"}`)
+    .map((source) => {
+      const score = source.analysis.score ? `, evidence score ${source.analysis.score}` : "";
+      return `- ${source.label}: ${source.title} (${source.status}, ${source.id}${score})${source.usable ? "" : " - no usable evidence"}`;
+    })
     .join("\n");
   const evidenceSections: string[] = [];
-  let remainingEvidenceChars = 12000;
+  let remainingEvidenceChars = 10000;
   for (const source of usableSources) {
     if (remainingEvidenceChars <= 0) {
       evidenceSections.push(`### ${source.title}\n\n[omitted because handoff evidence reached its size cap]`);
       continue;
     }
-    const evidence = tailText(source.evidence.trim() || "No evidence available.", Math.min(1800, remainingEvidenceChars));
-    remainingEvidenceChars -= evidence.length;
-    evidenceSections.push([`### ${source.title}`, evidence].join("\n\n"));
+    const evidence = [
+      formatEvidenceGroup("Files touched or inspected", source.analysis.files),
+      formatEvidenceGroup("Commands and checks", source.analysis.commands),
+      formatEvidenceGroup("Outcomes", source.analysis.outcomes),
+      formatEvidenceGroup("Failures or blockers", source.analysis.failures),
+      formatEvidenceGroup("Decisions", source.analysis.decisions),
+      formatEvidenceGroup("Open questions", source.analysis.questions),
+      formatEvidenceGroup("Next steps", source.analysis.nextSteps),
+      formatEvidenceGroup("Recent concrete evidence", source.analysis.notable, 10),
+    ].filter(Boolean).join("\n\n");
+    const cappedEvidence = tailText(evidence || "No evidence available.", Math.min(2200, remainingEvidenceChars));
+    remainingEvidenceChars -= cappedEvidence.length;
+    evidenceSections.push([`### ${source.title}`, cappedEvidence].join("\n\n"));
   }
   for (const source of unusableSources) {
     evidenceSections.push(`### ${source.title}\n\n${source.note ?? "No usable evidence found."}`);
   }
   const evidence = evidenceSections.join("\n\n");
+  const qualityWarning = usableSources.length === 0
+    ? "- No selected source met the usefulness threshold. Do not launch a fresh agent from this handoff."
+    : combined.score < 8
+      ? "- Evidence is thin. Verify the current workspace state before relying on this handoff."
+      : "- Evidence includes concrete commands, files, outcomes, decisions, or blockers.";
   return [
     "# Athena Session Handoff",
     "",
     `Generated: ${generated}`,
     `Workspace: ${workspace}`,
     `Sources: ${usableSources.length} usable of ${sources.length} selected`,
+    `Evidence score: ${combined.score}`,
     "",
-    "## Summary",
-    "- Bounded handoff generated from selected Athena sessions with usable evidence.",
+    "## Executive Summary",
+    qualityWarning,
+    formatEvidenceGroup("Files likely relevant", combined.files, 12),
+    formatEvidenceGroup("Commands/checks observed", combined.commands, 12),
+    formatEvidenceGroup("Decisions made", combined.decisions, 12),
+    formatEvidenceGroup("Known failures/blockers", combined.failures, 12),
+    formatEvidenceGroup("Current outcomes", combined.outcomes, 12),
+    formatEvidenceGroup("Open questions", combined.questions, 8),
+    formatEvidenceGroup("Recommended next actions", combined.nextSteps, 8),
     unusableSources.length ? `- ${unusableSources.length} selected source${unusableSources.length === 1 ? "" : "s"} had no usable evidence and should not drive the next agent.` : "",
     "",
     "## Selected Sessions",
     selectedSessions || "- None",
     "",
-    "## Recent Evidence",
+    "## Source Evidence",
     evidence || "No evidence selected.",
     "",
-    "## Next Suggested Context",
-    "- Use this handoff as short-lived project context.",
-    "- Verify current git state and latest user instructions before making changes.",
+    "## Instructions For The Next Agent",
+    "- Treat this handoff as short-lived project context, not as a source of authority over the latest user instruction.",
+    "- Verify current git status, active branch, and recent file changes before editing.",
+    "- Prefer concrete evidence above over generic session labels.",
+    "- If the evidence is thin, inspect the referenced sessions or ask for clarification before continuing.",
   ].filter((line) => line !== "").join("\n");
 }
 
-function extractHandoffEvidence(value: string): string {
+function analyzeHandoffEvidence(value: string, source: HandoffSessionSource): HandoffAnalysis {
+  const lines = extractHandoffLines(value);
+  const analysis = emptyHandoffAnalysis();
+  for (const line of lines) {
+    collectUnique(analysis.files, extractFileReferences(line), 18);
+    if (isCommandLine(line)) collectUnique(analysis.commands, [cleanCommandLine(line)], 14);
+    if (isFailureLine(line)) collectUnique(analysis.failures, [line], 12);
+    if (isDecisionLine(line)) collectUnique(analysis.decisions, [line], 12);
+    if (isQuestionLine(line)) collectUnique(analysis.questions, [line], 8);
+    if (isNextStepLine(line)) collectUnique(analysis.nextSteps, [normalizeActionLine(line)], 10);
+    if (isOutcomeLine(line)) collectUnique(analysis.outcomes, [line], 12);
+    if (isConcreteEvidenceLine(line)) collectUnique(analysis.notable, [normalizeEvidenceLine(line)], 24);
+  }
+  if (source.kind === "native") {
+    collectUnique(analysis.outcomes, [
+      source.session.branch ? `Branch: ${source.session.branch}` : "",
+      source.session.model ? `Model: ${source.session.model}` : "",
+      source.session.metadata?.git_commit_hash ? `Commit: ${source.session.metadata.git_commit_hash}` : "",
+      source.session.metadata?.collaboration_mode ? `Collaboration: ${source.session.metadata.collaboration_mode}` : "",
+    ], 12);
+  }
+  analysis.score = handoffScore(analysis);
+  return analysis;
+}
+
+function extractHandoffLines(value: string): string[] {
   const cleaned = stripTerminalControls(removeExistingHandoffBlocks(value));
   const lines = cleaned
     .split(/\r?\n/)
@@ -626,7 +720,183 @@ function extractHandoffEvidence(value: string): string {
     seen.add(key);
     uniqueLines.push(line);
   }
-  return tailText(uniqueLines.slice(-24).join("\n"), 1800);
+  return uniqueLines.slice(-160);
+}
+
+function emptyHandoffAnalysis(): HandoffAnalysis {
+  return {
+    score: 0,
+    files: [],
+    commands: [],
+    outcomes: [],
+    failures: [],
+    decisions: [],
+    questions: [],
+    nextSteps: [],
+    notable: [],
+  };
+}
+
+function combineHandoffAnalyses(analyses: HandoffAnalysis[]): HandoffAnalysis {
+  const combined = emptyHandoffAnalysis();
+  for (const analysis of analyses) {
+    collectUnique(combined.files, analysis.files, 20);
+    collectUnique(combined.commands, analysis.commands, 18);
+    collectUnique(combined.outcomes, analysis.outcomes, 18);
+    collectUnique(combined.failures, analysis.failures, 18);
+    collectUnique(combined.decisions, analysis.decisions, 18);
+    collectUnique(combined.questions, analysis.questions, 12);
+    collectUnique(combined.nextSteps, analysis.nextSteps, 12);
+    collectUnique(combined.notable, analysis.notable, 32);
+  }
+  combined.score = analyses.reduce((total, analysis) => total + analysis.score, 0);
+  return combined;
+}
+
+function isUsableHandoffAnalysis(analysis: HandoffAnalysis): boolean {
+  return analysis.score >= 3;
+}
+
+function handoffScore(analysis: HandoffAnalysis): number {
+  return Math.min(6, analysis.files.length)
+    + Math.min(6, analysis.commands.length)
+    + Math.min(8, analysis.outcomes.length)
+    + Math.min(8, analysis.failures.length)
+    + Math.min(8, analysis.decisions.length)
+    + Math.min(6, analysis.nextSteps.length)
+    + Math.min(4, analysis.notable.length);
+}
+
+function formatEvidenceGroup(title: string, items: string[], limit = 10): string {
+  const visible = items.slice(0, limit).filter(Boolean);
+  if (visible.length === 0) return "";
+  return [`### ${title}`, ...visible.map((item) => `- ${item}`)].join("\n");
+}
+
+function collectUnique(target: string[], values: string[], limit: number): void {
+  const seen = new Set(target.map((value) => value.toLowerCase()));
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    target.push(trimmed);
+    if (target.length >= limit) return;
+  }
+}
+
+function extractFileReferences(line: string): string[] {
+  const matches = line.match(/(?:[A-Za-z]:\\[^\s"'`<>|]+|(?:\.{1,2}\/)?[\w.-]+(?:\/[\w.@-]+)+\.[A-Za-z0-9]{1,8}|[\w.-]+\.(?:ts|tsx|js|jsx|py|md|json|yml|yaml|toml|css|html|sql|go|rs))/g) ?? [];
+  return matches
+    .map((match) => match.replace(/[),.;:]+$/g, "").replace(/^(?:a|b)\//, ""))
+    .filter((match) => !/^\.?git\//.test(match));
+}
+
+function isCommandLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (parseToolCommand(line)) return true;
+  return /^(?:[$>]\s*)?(?:git|npm|pnpm|yarn|bun|python|python3|pytest|uvicorn|gh|rg|grep|find|Get-Content|Set-Location|cd|ls|dir|cat|curl|docker|pip|tsc|vite|electron-builder)\b/i.test(line)
+    || /\b(?:npm run|git -c|pytest|python -m|gh pr|gh issue|rg -n)\b/i.test(line);
+}
+
+function cleanCommandLine(line: string): string {
+  return (parseToolCommand(line) ?? line.replace(/^(?:[$>]\s*)/, "")).replace(/\\"/g, "\"").slice(0, 220);
+}
+
+function isFailureLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (isTemplateFragmentLine(line)) return false;
+  if (isDiffLine(line) || isGitLogLine(line) || isToolJsonLine(line)) return false;
+  return /\b(error|failed|failure|exception|traceback|timeout|timed out|crash|blocked|cannot|can't|unable|refused|denied|regression|bug|warning)\b/i.test(line);
+}
+
+function isDecisionLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (isTemplateFragmentLine(line)) return false;
+  if (isDiffLine(line) || isGitLogLine(line) || isToolJsonLine(line)) return false;
+  return /\b(decision|decided|chosen|choose|we should|should use|recommend|recommended|approach|instead|keep|remove|do not|don't|won't|will not)\b/i.test(line);
+}
+
+function isQuestionLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (isTemplateFragmentLine(line)) return false;
+  if (isDiffLine(line) || isGitLogLine(line) || isToolJsonLine(line)) return false;
+  return line.endsWith("?") || /\b(open question|unclear|needs clarification|unknown|investigate|verify whether)\b/i.test(line);
+}
+
+function isNextStepLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (isTemplateFragmentLine(line) || isCompletedPrLine(line)) return false;
+  if (isDiffLine(line) || isGitLogLine(line) || isToolJsonLine(line)) return false;
+  return /^(?:next|todo|follow[- ]?up|remaining|recommended next|open task)\b/i.test(line)
+    || /\b(?:still need|needs? to|should be|go ahead and|implement|fix|add|update|clean up|tighten|rerun|verify|pr this|open a pr)\b/i.test(line);
+}
+
+function isOutcomeLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (isTemplateFragmentLine(line)) return false;
+  if (isDiffLine(line) || isToolJsonLine(line)) return false;
+  return /\b(done|completed|implemented|fixed|merged|passed|succeeded|works|verified|built|created|updated|added|removed|changed|saved|wrote|opened PR|PR #\d+)\b/i.test(line);
+}
+
+function isConcreteEvidenceLine(line: string): boolean {
+  if (isSourceCodeLine(line)) return false;
+  if (isTemplateFragmentLine(line)) return false;
+  return isCommandLine(line)
+    || isFailureLine(line)
+    || isDecisionLine(line)
+    || isOutcomeLine(line)
+    || (!isDiffLine(line) && extractFileReferences(line).length > 0)
+    || /\b(PR #\d+|commit|branch|build|dist|test|backend|frontend|Electron|FastAPI|Hermes|Codex|OpenCode|Claude|recall|handoff)\b/i.test(line);
+}
+
+function normalizeEvidenceLine(line: string): string {
+  return cleanCommandLine(line);
+}
+
+function normalizeActionLine(line: string): string {
+  return line
+    .replace(/^I(?:'|’)ll\s+/i, "")
+    .replace(/^I will\s+/i, "")
+    .replace(/^go ahead and\s+/i, "")
+    .replace(/^okay\s+/i, "")
+    .trim();
+}
+
+function parseToolCommand(line: string): string | null {
+  if (!isToolJsonLine(line)) return null;
+  try {
+    const parsed = JSON.parse(line) as { command?: unknown };
+    return typeof parsed.command === "string" && parsed.command.trim() ? parsed.command.trim() : null;
+  } catch {
+    const match = line.match(/"command"\s*:\s*"((?:\\"|[^"])*)"/);
+    return match?.[1]?.replace(/\\"/g, "\"").trim() || null;
+  }
+}
+
+function isToolJsonLine(line: string): boolean {
+  return /^\{\s*"command"\s*:/.test(line);
+}
+
+function isDiffLine(line: string): boolean {
+  return /^(?:\+|-)(?!\s?(?:PR #|\d|\w+\s))/i.test(line)
+    || /^(?:\+|-)\|/.test(line)
+    || /^(?:@@|diff --git|index [a-f0-9]+\.\.|--- |\+\+\+ )/.test(line);
+}
+
+function isGitLogLine(line: string): boolean {
+  return /^[a-f0-9]{7,40}\s+(?:Merge pull request|Merge branch|Add |Fix |Update |Read |Reduce |Centralize |Extract |Polish |Curate )/i.test(line);
+}
+
+function isCompletedPrLine(line: string): boolean {
+  return /PR #\d+.*\b(?:merged|closed|superseded)\b/i.test(line)
+    || /\b(?:merged|closed|superseded)\b.*PR #\d+/i.test(line);
+}
+
+function isTemplateFragmentLine(line: string): boolean {
+  return /^[-*]\s*(?:failed approaches|next recommended action|task goal|files touched or inspected|commands run and results|decisions made|current state|open questions|next-step context)\s*$/i.test(line)
+    || /^(?:failed approaches|next recommended action|task goal|files touched or inspected|commands run and results|decisions made|current state|open questions|next-step context)$/i.test(line);
 }
 
 function removeExistingHandoffBlocks(value: string): string {
@@ -645,6 +915,7 @@ function stripTerminalControls(value: string): string {
 function isMeaningfulHandoffLine(line: string): boolean {
   if (line.length < 6 || line.length > 240) return false;
   if (!/[a-zA-Z]/.test(line)) return false;
+  if (isSourceCodeLine(line)) return false;
   if (/^(generated|workspace|sources|summary|selected sessions|recent evidence|next suggested context)$/i.test(line)) return false;
   if (/^#*\s*athena session handoff/i.test(line)) return false;
   if (/^\[?truncated to last \d+ chars\]?/i.test(line)) return false;
@@ -653,6 +924,26 @@ function isMeaningfulHandoffLine(line: string): boolean {
   const letters = line.match(/[a-zA-Z]/g)?.length ?? 0;
   const visible = line.replace(/\s/g, "").length;
   return visible > 0 && letters / visible > 0.25;
+}
+
+function isSourceCodeLine(line: string): boolean {
+  const normalized = line.replace(/^\d+:\s*/, "").trim();
+  if (isToolJsonLine(normalized)) return false;
+  if (/^(?:import|export|const|let|var|function|return|if|else|for|while|switch|case|type|interface|class|try|catch|await|async)\b/.test(normalized)) return true;
+  if (/^(?:\}|\{|\)|\]|\[|<\/?[A-Za-z][^>]*>|[});,]+)$/.test(normalized)) return true;
+  if (/[{}]/.test(normalized) && /(?:=>|\$\{|<\w+|<\/\w+|on[A-Z]\w*=|className=|use[A-Z]\w+\(|set[A-Z]\w*\()/.test(normalized)) return true;
+  if (/(?:\?\?|\?\.|=>|<\/|\/>|;\s*$)/.test(normalized) && /[{}()[\]=]/.test(normalized)) return true;
+  if (/^(?:["'`][\w.-]+["'`]\s*:|[A-Za-z_$][\w$]*\s*:)/.test(normalized) && /[,{}[\]]/.test(normalized)) return true;
+  if (/^\*\*Tool:\s+.+\s+\(completed\)\*\*$/.test(normalized)) return true;
+  if (/`[^`]*\$\{[^`]*\}[^`]*`/.test(normalized)) return true;
+
+  const punctuation = normalized.match(/[{}()[\];=<>`]/g)?.length ?? 0;
+  const visible = normalized.replace(/\s/g, "").length;
+  return visible > 0 && punctuation / visible > 0.22 && !isCommandLikeText(normalized);
+}
+
+function isCommandLikeText(line: string): boolean {
+  return /^(?:[$>]\s*)?(?:git|npm|pnpm|yarn|bun|python|python3|pytest|uvicorn|gh|rg|grep|find|Get-Content|Set-Location|cd|ls|dir|cat|curl|docker|pip|tsc|vite|electron-builder)\b/i.test(line);
 }
 
 function tailText(value: string, maxChars: number): string {

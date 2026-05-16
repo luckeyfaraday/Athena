@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
-import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
+import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ActiveAgents, ContextGlance, LiveWorkflow, MemoryTimeline, SharedMemorySnapshot } from "./components/DashboardPanels";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -50,7 +50,7 @@ const workspaceStorageKey = "context-workspace:lastWorkspace";
 const workspaceListStorageKey = "context-workspace:workspaces";
 const interfaceModeStorageKey = "context-workspace:interfaceMode";
 const terminalFocusStorageKey = "context-workspace:terminalFocus";
-const nativeSessionRefreshIntervalMs = 30_000;
+const nativeSessionRefreshIntervalMs = 60_000;
 
 function storedWorkspaceValue(): string | null {
   try {
@@ -130,6 +130,21 @@ function upsertWorkspace(workspaces: WorkspacePath[], workspace: WorkspacePath):
   return [workspace, ...workspaces.filter((item) => workspaceKey(item) !== key)].slice(0, 12);
 }
 
+function sameEmbeddedSessions(a: EmbeddedTerminalSession[], b: EmbeddedTerminalSession[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((session, index) => {
+    const other = b[index];
+    return Boolean(other)
+      && session.id === other.id
+      && session.status === other.status
+      && session.exitCode === other.exitCode
+      && session.pid === other.pid
+      && session.title === other.title
+      && session.workspace === other.workspace
+      && session.promptPath === other.promptPath;
+  });
+}
+
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
   const [workspacePath, setWorkspacePath] = useState<WorkspacePath | null>(null);
@@ -146,6 +161,7 @@ export function App() {
   const [recallRefreshing, setRecallRefreshing] = useState(false);
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
   const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptState | null>(null);
+  const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef(false);
@@ -184,7 +200,8 @@ export function App() {
 
   const refreshSessions = useCallback(async () => {
     try {
-      setEmbeddedSessions(await desktop.listEmbeddedTerminals());
+      const nextSessions = await desktop.listEmbeddedTerminals();
+      setEmbeddedSessions((current) => sameEmbeddedSessions(current, nextSessions) ? current : nextSessions);
     } catch (err) {
       setError(String(err));
     }
@@ -208,6 +225,14 @@ export function App() {
       agentSessionsRefreshInFlight.current = false;
     }
   }, [workspace]);
+
+  const refreshPerformanceDiagnostics = useCallback(async () => {
+    try {
+      setPerformanceDiagnostics(await desktop.getPerformanceDiagnostics());
+    } catch {
+      setPerformanceDiagnostics(null);
+    }
+  }, []);
 
   const refreshData = useCallback(async () => {
     if (!client || dataRefreshInFlight.current) return;
@@ -290,12 +315,18 @@ export function App() {
         if (status?.healthy) void refreshData();
       });
       void refreshSessions();
-      if (activeRoom === "command" || activeRoom === "review" || activeRoom === "swarm" || activeRoom === "workspace") {
+      if (activeRoom === "command" || activeRoom === "review" || activeRoom === "swarm") {
         void refreshAgentSessions();
       }
+      if (activeRoom === "settings") void refreshPerformanceDiagnostics();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [activeRoom, refreshBackend, refreshData, refreshSessions, refreshAgentSessions]);
+  }, [activeRoom, refreshBackend, refreshData, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics]);
+
+  useEffect(() => {
+    if (activeRoom !== "settings") return;
+    void refreshPerformanceDiagnostics();
+  }, [activeRoom, refreshPerformanceDiagnostics]);
 
   useEffect(() => {
     if (!terminalFocus) return undefined;
@@ -575,14 +606,21 @@ export function App() {
     setAgentTranscript({ key, text: "", loading: true, error: null });
     if (!client) {
       setAgentTranscript({ key, text: "", loading: false, error: "Backend is not available." });
-      return;
+      return "";
     }
     try {
       const text = await client.agentSessionTranscript(session.provider, session.id);
       setAgentTranscript({ key, text, loading: false, error: null });
+      return text;
     } catch (err) {
       setAgentTranscript({ key, text: "", loading: false, error: String(err) });
+      return "";
     }
+  }, [client]);
+
+  const readAgentTranscript = useCallback(async (session: AgentSession) => {
+    if (!client) return "";
+    return client.agentSessionTranscript(session.provider, session.id);
   }, [client]);
 
   const agentRoles: AgentRole[] = [
@@ -719,6 +757,7 @@ export function App() {
                 onSelectEmbeddedSession={(session) => setSelectedSessionKey(embeddedSessionKey(session))}
                 onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
                 onLoadAgentTranscript={loadAgentTranscript}
+                onReadAgentTranscript={readAgentTranscript}
                 onSaveHandoff={(preview) => saveHandoffToRecall(preview.markdown, {
                   sourceCount: preview.sourceCount,
                   sourceTitles: preview.sourceTitles,
@@ -744,6 +783,7 @@ export function App() {
                 refreshing={recallRefreshing}
                 interfaceMode={interfaceMode}
                 terminalFocus={terminalFocus}
+                performance={performanceDiagnostics}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}

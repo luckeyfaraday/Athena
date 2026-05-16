@@ -1,6 +1,7 @@
 import { Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, HermesStatus, RecallStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
+import type { PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
 export function SettingsRoom({
@@ -13,6 +14,7 @@ export function SettingsRoom({
   refreshing,
   interfaceMode,
   terminalFocus,
+  performance,
   onSelectWorkspace,
   onRestartBackend,
   onRefreshRecall,
@@ -28,6 +30,7 @@ export function SettingsRoom({
   refreshing: boolean;
   interfaceMode: "terminal" | "chat";
   terminalFocus: boolean;
+  performance: PerformanceDiagnostics | null;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
   onRefreshRecall: () => void;
@@ -155,7 +158,31 @@ export function SettingsRoom({
           </div>
           <StatusPill tone={adapterStatus.tone}>{adapterStatus.label}</StatusPill>
         </article>
+        <article className="settingsSection wide">
+          <div>
+            <strong>Performance diagnostics</strong>
+            <span>{performance ? performanceSummary(performance) : "Open Settings while the desktop app is running to sample terminal throughput."}</span>
+          </div>
+          <StatusPill tone={performance?.pendingOutputBytes ? "warn" : "ok"}>{performance ? `${performance.activeTerminals} terminals` : "Unavailable"}</StatusPill>
+        </article>
       </div>
     </section>
   );
+}
+
+function performanceSummary(performance: PerformanceDiagnostics): string {
+  return [
+    `PTY input: ${performance.ptyChunksPerSecond}/s, ${formatBytes(performance.ptyBytesPerSecond)}/s`,
+    `Renderer batches: ${performance.ipcBatchesPerSecond}/s, ${formatBytes(performance.ipcBytesPerSecond)}/s`,
+    `Buffered: ${formatBytes(performance.bufferedTerminalChars)} chars across terminals`,
+    `Pending renderer output: ${formatBytes(performance.pendingOutputBytes)}`,
+    `Per-terminal cap: ${formatBytes(performance.maxBufferChars)} chars`,
+    `Last batch: ${performance.lastOutputBatchAt ?? "none"}`,
+  ].join("\n");
+}
+
+function formatBytes(value: number): string {
+  if (value < 1000) return `${Math.round(value)} B`;
+  if (value < 1_000_000) return `${(value / 1000).toFixed(1)} KB`;
+  return `${(value / 1_000_000).toFixed(1)} MB`;
 }

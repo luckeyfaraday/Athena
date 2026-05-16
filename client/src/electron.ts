@@ -81,6 +81,18 @@ export type AgentSession = {
   metadata: Record<string, string>;
 };
 
+export type PerformanceDiagnostics = {
+  activeTerminals: number;
+  bufferedTerminalChars: number;
+  pendingOutputBytes: number;
+  maxBufferChars: number;
+  ptyChunksPerSecond: number;
+  ptyBytesPerSecond: number;
+  ipcBatchesPerSecond: number;
+  ipcBytesPerSecond: number;
+  lastOutputBatchAt: string | null;
+};
+
 type WorkspaceApi = {
   getBackendState: () => Promise<BackendStatus>;
   checkBackendHealth: () => Promise<BackendStatus>;
@@ -99,6 +111,7 @@ type WorkspaceApi = {
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
+  getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
@@ -152,6 +165,19 @@ const browserFallback: WorkspaceApi = {
   async writeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
+  async getPerformanceDiagnostics() {
+    return {
+      activeTerminals: 0,
+      bufferedTerminalChars: 0,
+      pendingOutputBytes: 0,
+      maxBufferChars: 200_000,
+      ptyChunksPerSecond: 0,
+      ptyBytesPerSecond: 0,
+      ipcBatchesPerSecond: 0,
+      ipcBytesPerSecond: 0,
+      lastOutputBatchAt: null,
+    };
+  },
   async killEmbeddedTerminal() { return { ...(await this.spawnEmbeddedTerminal("/preview")), status: "exited" }; },
   async listAgentSessions(workspace: string) {
     return [

@@ -17,6 +17,7 @@ import {
 } from "./codex-terminal.js";
 import {
   getEmbeddedTerminalBuffer,
+  getPerformanceDiagnostics,
   killEmbeddedTerminal,
   listEmbeddedTerminals,
   resizeEmbeddedTerminal,
@@ -25,6 +26,7 @@ import {
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
   type EmbeddedTerminalSpawnOptions,
+  type PerformanceDiagnostics,
 } from "./embedded-terminal.js";
 
 export function registerIpcHandlers(appRoot: string): void {
@@ -68,6 +70,7 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
   ipcMain.handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
   ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
+  ipcMain.handle("performance:diagnostics", (): PerformanceDiagnostics => getPerformanceDiagnostics());
   ipcMain.handle(
     "embeddedTerminal:spawn",
     (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> =>

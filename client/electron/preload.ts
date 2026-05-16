@@ -5,6 +5,18 @@ import type { CodexTerminalState, NativeTerminalResult, NativeTerminalSession } 
 import type { EmbeddedTerminalKind, EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
 import type { WorkspacePath } from "./platform.js";
 
+export type PerformanceDiagnostics = {
+  activeTerminals: number;
+  bufferedTerminalChars: number;
+  pendingOutputBytes: number;
+  maxBufferChars: number;
+  ptyChunksPerSecond: number;
+  ptyBytesPerSecond: number;
+  ipcBatchesPerSecond: number;
+  ipcBytesPerSecond: number;
+  lastOutputBatchAt: string | null;
+};
+
 export type WorkspaceApi = {
   getBackendState: () => Promise<BackendState>;
   checkBackendHealth: () => Promise<BackendState>;
@@ -23,6 +35,7 @@ export type WorkspaceApi = {
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
+  getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
@@ -55,6 +68,7 @@ const api: WorkspaceApi = {
   writeEmbeddedTerminal: (id, data) => ipcRenderer.invoke("embeddedTerminal:write", id, data),
   resizeEmbeddedTerminal: (id, cols, rows) => ipcRenderer.invoke("embeddedTerminal:resize", id, cols, rows),
   getEmbeddedTerminalBuffer: (id) => ipcRenderer.invoke("embeddedTerminal:buffer", id),
+  getPerformanceDiagnostics: () => ipcRenderer.invoke("performance:diagnostics"),
   killEmbeddedTerminal: (id) => ipcRenderer.invoke("embeddedTerminal:kill", id),
   listAgentSessions: (workspace) => ipcRenderer.invoke("agentSessions:list", workspace),
   getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),

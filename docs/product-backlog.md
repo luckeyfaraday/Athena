@@ -106,7 +106,19 @@ Goal: make chat mode a strong visual alternative to terminal mode while keeping 
 | Chat composer parity | P1 | Chat mode supports the same practical interactions as terminal mode where possible: prompt send, prompt-all compatibility, image path drop, running/exited state, and keyboard ergonomics. |
 | Provider-aware chat polish | P2 | Codex, OpenCode, Claude, Hermes, and Shell output each get conservative display cleanup without changing spawn/runtime behavior. |
 
-## Milestone 7: Voice
+## Milestone 7: Robustness Pass
+
+Goal: harden existing user-facing workflows before adding new product surfaces.
+
+| Task | Priority | Acceptance criteria |
+|---|---:|---|
+| `#robustness` run full robustness matrix | P0 | Complete `docs/robustness-pass.md` across terminal/chat modes, spawns, resumes, sessions, handoffs, workspace isolation, build, dist, and AppImage launch. |
+| Chat mode regression pass | P0 | Hermes, Codex, OpenCode, Claude, and Shell chat output render useful answers in separate turns, hide startup/control chrome, and preserve terminal execution behavior. |
+| Spawn/resume regression pass | P0 | Shell, Hermes, Codex, OpenCode, Claude, grids, native resumes, and MCP visible spawn work or fail with clear actionable errors. |
+| Workspace/session state regression pass | P1 | No duplicate live/historical sessions, deleted sessions stay hidden per workspace, and switching workspaces never leaks recall/memory/session state. |
+| Packaged-app confidence | P1 | `pytest`, `npm run build`, `npm run dist`, and fresh AppImage launch are verified after fully quitting old Athena instances. |
+
+## Milestone 8: Voice
 
 Goal: consolidate voice work into one deliberate product milestone.
 
@@ -117,7 +129,7 @@ Goal: consolidate voice work into one deliberate product milestone.
 | `#218d43d4` Athena Whisper | Superseded | Fold into Athena Voice Loop. |
 | `#1d318701` orchestrator LLM connected to voice | Superseded | Fold into Athena Voice Loop. |
 
-## Milestone 8: Ambient Context
+## Milestone 9: Ambient Context
 
 Goal: explore ambient capture only after privacy and relevance rules are explicit.
 
@@ -129,7 +141,7 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 | Hermes screen-context curator | P3 | Hermes receives local OCR/snapshot facts and optional VLM summaries, then writes only task-relevant compact context to recall. |
 | Selective screen context injection | P3 | Only curated, task-relevant summaries can enter recall or spawn prompts. User can inspect, redact, pause, and disable capture. |
 
-## Milestone 9: Memory Layer Research
+## Milestone 10: Memory Layer Research
 
 Goal: evaluate external memory layers without weakening Athena's controlled recall and handoff workflow.
 
@@ -151,6 +163,6 @@ Goal: evaluate external memory layers without weakening Athena's controlled reca
 
 Current recommended order:
 
-1. Review and polish the shell-focus mode in a live desktop session.
-2. Improve global chat mode rendering and composer behavior without changing the PTY execution path.
-3. Keep `#d4b192ce` as research until privacy, relevance, platform adapter, and cost boundaries are written down.
+1. Complete the robustness matrix in `docs/robustness-pass.md`.
+2. Fix any regressions found in chat mode, spawn/resume, session state, workspace isolation, or packaged builds.
+3. Keep `#d4b192ce`, voice, and external memory systems paused until the existing app is reliable.

@@ -43,6 +43,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 | `#8af0e23e` Codex JSONL session source of truth | Done | PR #25 enriches Codex sessions from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
 | `#0ae98ecb` workspace tabs / multi-project support | Done | PR #23 added persisted workspace tabs and workspace-scoped terminals, sessions, recall, and memory. |
 | `#ec62ad60` merge sessions / start fresh | Done | PR #14/#17/#19/#20 added session handoff selection, preview, save-to-recall, start-fresh launch, and recall audit metadata. |
+| `#a4b66aa9` make handoff artifacts substantively useful | Done | PR #34 improved handoff generation with native transcript reads, evidence extraction, scoring, noise filtering, and sections for files, commands, outcomes, failures, decisions, questions, and next actions. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -95,14 +96,15 @@ Goal: support users working across several projects without mixing context.
 | Persist workspace list | P2 | Done: workspace tabs survive restart and can be closed/reopened. |
 | Prevent context bleed | P1 | Done: recall cache, session discovery, terminal views, and project memory use the selected workspace. |
 
-## Milestone 6: Hermes UI Layer
+## Milestone 6: Chat Mode Quality
 
-Goal: improve Hermes interaction without blocking the core workspace.
+Goal: make chat mode a strong visual alternative to terminal mode while keeping the same PTY-backed execution model.
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#6e789407` custom Hermes TUI layer | Research | Produce a protocol/design note first: PTY parsing vs structured events, tool-call card model, status bar, failure modes. |
-| Render Hermes tool calls as cards | P3 | Only after a reliable event source exists; do not parse brittle terminal text as the permanent interface. |
+| `#6e789407` improve chat mode rendering | P1 | Replace the Hermes-specific TUI idea with better global chat mode: clearer message grouping, readable streaming output, status/error blocks, and graceful fallback to raw transcript when parsing is uncertain. |
+| Chat composer parity | P1 | Chat mode supports the same practical interactions as terminal mode where possible: prompt send, prompt-all compatibility, image path drop, running/exited state, and keyboard ergonomics. |
+| Provider-aware chat polish | P2 | Codex, OpenCode, Claude, Hermes, and Shell output each get conservative display cleanup without changing spawn/runtime behavior. |
 
 ## Milestone 7: Voice
 
@@ -134,7 +136,6 @@ Goal: evaluate external memory layers without weakening Athena's controlled reca
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
 | `#418751b2` AgentMemory optional integration | Research | Evaluate `rohitg00/agentmemory` as an optional secondary cross-agent memory/index layer for Athena/Hermes. Keep Hermes recall as the policy owner. Possible Athena integration: Settings status, Memory Room search tab, curated handoff writes, and bounded spawn recall. Do not stream raw PTY output by default, and do not replace Hermes `MEMORY.md` until the value is proven. |
-| `#a4b66aa9` make handoff artifacts substantively useful | P1 | Current concern: context-workspace handoff artifacts are low-value when they only contain a couple of tool calls and no substantive task evidence. Improve handoff generation so artifacts capture decisions, failed approaches, changed files, commands/results, open questions, and next-step context worth injecting into a fresh session. |
 
 ## Parking Lot
 
@@ -151,5 +152,5 @@ Goal: evaluate external memory layers without weakening Athena's controlled reca
 Current recommended order:
 
 1. Review and polish the shell-focus mode in a live desktop session.
-2. Produce a protocol/design note for `#6e789407` custom Hermes TUI before implementation.
+2. Improve global chat mode rendering and composer behavior without changing the PTY execution path.
 3. Keep `#d4b192ce` as research until privacy, relevance, platform adapter, and cost boundaries are written down.

@@ -1,8 +1,44 @@
+<p align="center">
+  <img src="client/src/assets/athena-lockup.png" alt="ATHENA" width="360" />
+</p>
+
+<p align="center">
+  <strong>Local command room for AI coding agents, session recall, and project handoffs.</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/luckeyfaraday/Athena">
+    <img alt="GitHub repo" src="https://img.shields.io/badge/GitHub-Athena-0f1c16?logo=github" />
+  </a>
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.0-d9c48a" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20WSL-2e5a46" />
+  <img alt="Frontend" src="https://img.shields.io/badge/frontend-Electron%20%2B%20React-68c4ff?logo=electron" />
+  <img alt="Backend" src="https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi" />
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-Hermes%20bridge-8b5cf6" />
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a>
+  ·
+  <a href="#core-features">Features</a>
+  ·
+  <a href="#hermes-mcp-bridge">MCP Bridge</a>
+  ·
+  <a href="#testing">Testing</a>
+</p>
+
 # Athena
 
 Athena is a local desktop workspace for orchestrating AI coding agents with shared project context. It gives developers one Electron app for launching Codex, OpenCode, Claude Code, Hermes, and shell sessions; inspecting live terminal output and native session history; generating project handoffs; and keeping short-lived recall context available to the next agent.
 
 In search terms: Athena is an **AI coding agent workspace**, **multi-agent desktop app**, **embedded terminal control room**, **Hermes MCP bridge**, and **session recall manager** for local software development.
+
+## Product Widgets
+
+| Command Room | Session Recall | Agent Coverage | Desktop Runtime |
+|---|---|---|---|
+| Embedded PTY panes, shell focus, terminal/chat modes | Hermes recall cache, audit metadata, bounded handoffs | Codex, OpenCode, Claude Code, Hermes, shell | Electron app with local FastAPI backend |
+| ![Command Room](https://img.shields.io/badge/Command%20Room-embedded%20PTYs-2e5a46) | ![Recall](https://img.shields.io/badge/Recall-project%20local-d9c48a) | ![Agents](https://img.shields.io/badge/Agents-Codex%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Hermes-68c4ff) | ![Desktop](https://img.shields.io/badge/Desktop-AppImage%20ready-0f1c16) |
 
 ## LLM Summary
 
@@ -97,6 +133,17 @@ SPEC.md                  Historical design notes and project specification
 - Optional Hermes Agent install for real shared memory integration
 
 The desktop app can open without every agent CLI installed. Missing adapters appear as unavailable, and related launch commands may fail inside the terminal until the CLI is installed and available on `PATH`.
+
+## Quick Start
+
+```bash
+git clone https://github.com/luckeyfaraday/Athena.git
+cd Athena/client
+npm install
+npm run dev
+```
+
+For the full backend/test environment, use the setup steps below.
 
 ## Setup
 

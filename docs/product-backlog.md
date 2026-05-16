@@ -1,6 +1,6 @@
 # Context Workspace Product Backlog
 
-Last verified: 2026-05-15 on `main` after PR #28.
+Last verified: 2026-05-16 on `main` after PR #30 plus PR #31 shell-focus work.
 
 This backlog converts the raw task list into implementation milestones. It separates verified current behavior from proposed work so new features do not duplicate already-merged PRs.
 
@@ -17,7 +17,7 @@ This backlog converts the raw task list into implementation milestones. It separ
 - Review and Command Room can inspect native session metadata and transcripts.
 - Memory Room can delete exact Hermes memory entries through `/memory/delete`.
 - Current UI is branded Athena.
-- Workspaces, session continuity handoff, recall audit trail, Codex JSONL session context, desktop lag reduction, and frontend room/component extraction are merged.
+- Workspaces, session continuity handoff, recall audit trail, Codex JSONL session context, desktop lag reduction, frontend room/component extraction, and global chat interface mode are merged.
 
 ## Done
 
@@ -38,6 +38,8 @@ This backlog converts the raw task list into implementation milestones. It separ
 | MCP spawn contract clarification | Done | PR #11 clarified that `context_workspace_spawn_agent` is the high-level visible terminal spawn tool and `/agents/spawn` is legacy backend run infrastructure. |
 | Codex JSONL session context gap | Done | Codex sessions are enriched from `~/.codex/sessions/**/*.jsonl`, including session metadata, model provider, collaboration mode, sandbox/approval policy, system prompt excerpt, and native transcript reads. |
 | Frontend architecture cleanup | Done | PRs #22-24 and #28 split rooms, sidebar, dashboard panels, workspace tabs, status UI, formatters, and shared helpers out of `App.tsx`. |
+| `#ce14092c` settings chat/shell mode | Done | PR #30 added a persistent terminal/chat interface preference with Settings controls and Command Room rendering. |
+| `#9d14b31e` transparent shell focus mode | Done in PR #31 | Command Room can enter a persisted shell-focus mode, hide surrounding workspace chrome, and restore with the toolbar or Esc. |
 
 ## Milestone 1: Finish UI Functionality
 
@@ -45,7 +47,7 @@ Goal: every visible control either performs a real action, exposes accurate stat
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#ce14092c` settings chat/shell mode | P1 | Partial: Settings shows real environment/runtime state, but there is no persistent chat-vs-shell mode preference yet. |
+| `#ce14092c` settings chat/shell mode | Done | Persistent chat-vs-terminal interface mode is available in Settings and Command Room. |
 | Add actionable session detail view | P1 | Done: embedded and native sessions can be opened from Command/Reviews to inspect metadata, live terminal buffers, and native transcripts. |
 | Make Review Room real | P1 | Done for session inspection: Review Room shows live buffers, native metadata, and transcripts. Separate future work can derive summaries/checks from those contents. |
 | Make Active Agents real | P1 | Done: Agents is session-first; live embedded sessions and native session discovery drive the visible state. |
@@ -57,8 +59,8 @@ Goal: reduce friction in the existing workspace UI before adding new product sur
 
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
-| `#9d14b31e` transparent shell focus mode | P2 | User can hide surrounding UI chrome while preserving shell panes and restore it predictably. |
-| Improve terminal focus ergonomics | P2 | Partial: focus, maximize, minimize, drag, and grid arrange work; true transparent app mode remains open. |
+| `#9d14b31e` transparent shell focus mode | Done in PR #31 | User can hide surrounding UI chrome while preserving shell panes and restore with Esc or the Command Room toolbar. |
+| Improve terminal focus ergonomics | Done in PR #31 | Focus, maximize, minimize, drag, grid arrange, and transparent shell focus are implemented. |
 
 ## Milestone 3: Architecture Cleanup
 
@@ -135,6 +137,6 @@ Goal: explore ambient capture only after privacy and relevance rules are explici
 
 Current recommended order:
 
-1. Finish `#ce14092c` only if chat-vs-shell mode has a clear product meaning.
-2. Treat `#9d14b31e` as a focused transparent-shell mode, not more general UI polish.
+1. Review and polish the shell-focus mode in a live desktop session.
+2. Produce a protocol/design note for `#6e789407` custom Hermes TUI before implementation.
 3. Keep `#d4b192ce` as research until privacy, relevance, platform adapter, and cost boundaries are written down.

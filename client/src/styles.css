@@ -32,7 +32,6 @@
 html, body, #root { min-height: 100%; }
 body {
   margin: 0;
-  min-width: 1120px;
   min-height: 720px;
   overflow: hidden;
   background: #0f1c16;
@@ -41,8 +40,133 @@ button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .48; }
 
-.workspaceSurface {
+.appFrame {
   height: 100vh;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr);
+  overflow: hidden;
+  background: #07120f;
+}
+.appTitleBar {
+  -webkit-app-region: drag;
+  height: 34px;
+  display: grid;
+  grid-template-columns: 126px minmax(120px, .32fr) minmax(0, 1fr) 112px;
+  align-items: center;
+  border-bottom: 1px solid rgba(243, 237, 227, .08);
+  background: linear-gradient(180deg, #15231d 0%, #08120f 100%);
+  color: var(--text);
+  user-select: none;
+}
+.windowControls,
+.titleStatus,
+.appTitleBar button {
+  -webkit-app-region: no-drag;
+}
+.windowControls {
+  padding-left: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.windowDot {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 99px;
+  color: rgba(7, 18, 15, .8);
+  background: var(--muted);
+}
+.windowDot svg {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.windowControls:hover .windowDot svg,
+.windowDot:focus-visible svg {
+  opacity: .75;
+}
+.windowDot.close { background: #c36b58; }
+.windowDot.minimize { background: #d6c186; }
+.windowDot.maximize { background: #5fa371; }
+.titleBrand {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.titleMark {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  border: 1px solid rgba(217, 196, 138, .42);
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, rgba(217, 196, 138, .28), transparent 54%),
+    #0f1c16;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+}
+.titleBrand strong,
+.titleContext strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.titleContext {
+  min-width: 0;
+  justify-self: center;
+  max-width: min(720px, 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.titleContext span {
+  min-width: 0;
+  overflow: hidden;
+  color: #b9cbb2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titleStatus {
+  justify-self: end;
+  padding-right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.titleStatus span {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  background: var(--red);
+  box-shadow: 0 0 10px rgba(184, 95, 80, .45);
+}
+.titleStatus span.online {
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(77, 155, 117, .55);
+}
+
+.workspaceSurface {
+  height: calc(100vh - 34px);
   padding: 12px;
   display: grid;
   grid-template-columns: 146px minmax(0, 1fr);
@@ -51,6 +175,25 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   background:
     radial-gradient(circle at 8% 8%, rgba(46, 90, 70, .28), transparent 34%),
     linear-gradient(135deg, #0f1c16 0%, #07120f 100%);
+}
+.workspaceSurface.shellFocusSurface {
+  height: calc(100vh - 34px);
+  padding: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  background: #020806;
+}
+.shellFocusSurface .appSidebar,
+.shellFocusSurface .dashboardHeader,
+.shellFocusSurface .workspaceTabs {
+  display: none;
+}
+.shellFocusSurface .dashboardShell {
+  min-height: 100vh;
+}
+.shellFocusSurface .noticeBar {
+  top: 8px;
+  right: 8px;
 }
 
 .appSidebar,
@@ -216,6 +359,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .terminalFocusShell .sharedSnapshot,
 .terminalFocusShell .liveWorkflow {
   display: none;
+}
+.terminalFocusShell .commandColumn {
+  height: 100vh;
+  gap: 0;
 }
 .commandColumn,
 .rightColumn,
@@ -864,7 +1011,32 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   overscroll-behavior: contain;
 }
 .commandRoom.focused .embeddedStage {
-  grid-auto-rows: minmax(430px, auto);
+  padding: 0 8px 8px;
+  grid-auto-rows: minmax(0, 1fr);
+  align-content: stretch;
+}
+.commandRoom.focused {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.commandRoom.focused .roomPanelHeader {
+  min-height: 42px;
+  padding: 7px 9px;
+  border-bottom-color: rgba(226,214,183,.08);
+  background: rgba(6, 17, 13, .88);
+}
+.commandRoom.focused .commandRoomTabs,
+.commandRoom.focused .embeddedSessionStrip,
+.commandRoom.focused .broadcastComposer {
+  display: none;
+}
+.commandRoom.focused .terminalStage {
+  flex: 1;
+}
+.commandRoom.focused .terminalPane {
+  border-radius: 6px;
 }
 .terminalPane {
   min-height: 0;
@@ -890,7 +1062,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   min-height: 520px;
 }
 .commandRoom.focused .slotPane.maximized {
-  min-height: 70vh;
+  min-height: calc(100vh - 56px);
 }
 .slotPane:hover,
 .slotPane.dragging {
@@ -2188,11 +2360,21 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     height: auto;
     min-height: 100vh;
   }
+  .workspaceSurface.shellFocusSurface {
+    height: calc(100vh - 34px);
+    min-height: calc(100vh - 34px);
+  }
   .dashboardShell { overflow: visible; }
+  .shellFocusSurface .dashboardShell {
+    overflow: hidden;
+  }
   .dashboardGrid {
     height: auto;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto;
+  }
+  .shellFocusSurface .dashboardGrid {
+    height: 100%;
   }
   .contextGlance { margin-top: 0; }
   .sharedSnapshot { grid-column: auto; }

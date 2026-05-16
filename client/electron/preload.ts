@@ -32,6 +32,9 @@ export type WorkspaceApi = {
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalState) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
+  minimizeWindow: () => Promise<void>;
+  toggleMaximizeWindow: () => Promise<boolean>;
+  closeWindow: () => Promise<void>;
 };
 
 const api: WorkspaceApi = {
@@ -81,6 +84,9 @@ const api: WorkspaceApi = {
     return () => ipcRenderer.removeListener("codex-terminal:state", listener);
   },
   selectWorkspace: () => ipcRenderer.invoke("dialog:selectWorkspace"),
+  minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
+  toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggleMaximize"),
+  closeWindow: () => ipcRenderer.invoke("window:close"),
 };
 
 contextBridge.exposeInMainWorld("contextWorkspace", api);

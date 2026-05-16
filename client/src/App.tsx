@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Eye,
+  Minus,
   Search,
   ShieldCheck,
+  Square,
   Wrench,
+  X,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type WorkspacePath } from "./electron";
@@ -46,6 +49,7 @@ const emptyLoadState: LoadState = {
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 const workspaceListStorageKey = "context-workspace:workspaces";
 const interfaceModeStorageKey = "context-workspace:interfaceMode";
+const terminalFocusStorageKey = "context-workspace:terminalFocus";
 const nativeSessionRefreshIntervalMs = 30_000;
 
 function storedWorkspaceValue(): string | null {
@@ -104,6 +108,23 @@ function writeInterfaceMode(mode: InterfaceMode): void {
   }
 }
 
+function readTerminalFocus(): boolean {
+  try {
+    return window.localStorage.getItem(terminalFocusStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeTerminalFocus(focused: boolean): void {
+  try {
+    if (focused) window.localStorage.setItem(terminalFocusStorageKey, "1");
+    else window.localStorage.removeItem(terminalFocusStorageKey);
+  } catch {
+    // Ignore storage failures; focus mode still works for this session.
+  }
+}
+
 function upsertWorkspace(workspaces: WorkspacePath[], workspace: WorkspacePath): WorkspacePath[] {
   const key = workspaceKey(workspace);
   return [workspace, ...workspaces.filter((item) => workspaceKey(item) !== key)].slice(0, 12);
@@ -119,7 +140,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
-  const [terminalFocus, setTerminalFocus] = useState(false);
+  const [terminalFocus, setTerminalFocusState] = useState(() => readTerminalFocus());
   const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
@@ -137,6 +158,12 @@ export function App() {
   function setInterfaceMode(mode: InterfaceMode) {
     setInterfaceModeState(mode);
     writeInterfaceMode(mode);
+  }
+
+  function setTerminalFocus(focused: boolean) {
+    setTerminalFocusState(focused);
+    writeTerminalFocus(focused);
+    if (focused) setActiveRoom("command");
   }
 
   const client = useMemo(() => {
@@ -269,6 +296,15 @@ export function App() {
     }, 8000);
     return () => window.clearInterval(timer);
   }, [activeRoom, refreshBackend, refreshData, refreshSessions, refreshAgentSessions]);
+
+  useEffect(() => {
+    if (!terminalFocus) return undefined;
+    const exitOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTerminalFocus(false);
+    };
+    document.addEventListener("keydown", exitOnEscape);
+    return () => document.removeEventListener("keydown", exitOnEscape);
+  }, [terminalFocus]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -581,7 +617,14 @@ export function App() {
   ];
 
   return (
-    <main className="workspaceSurface">
+    <div className="appFrame">
+      <AppTitleBar
+        activeLabel={activeRoute.label}
+        workspace={workspaceDisplay}
+        backendOnline={Boolean(backend?.healthy)}
+        shellFocus={terminalFocus && activeRoom === "command"}
+      />
+      <main className={terminalFocus && activeRoom === "command" ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
       <AppSidebar
         activeRoom={activeRoom}
         backendOnline={Boolean(backend?.healthy)}
@@ -700,10 +743,12 @@ export function App() {
                 busy={busy}
                 refreshing={recallRefreshing}
                 interfaceMode={interfaceMode}
+                terminalFocus={terminalFocus}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
                 onInterfaceModeChange={setInterfaceMode}
+                onTerminalFocusChange={setTerminalFocus}
               />
             )}
 
@@ -738,7 +783,49 @@ export function App() {
           />
         </section>
       </section>
-    </main>
+      </main>
+    </div>
+  );
+}
+
+function AppTitleBar({
+  activeLabel,
+  workspace,
+  backendOnline,
+  shellFocus,
+}: {
+  activeLabel: string;
+  workspace: string;
+  backendOnline: boolean;
+  shellFocus: boolean;
+}) {
+  const detail = workspace ? workspace.split(/[\\/]/).filter(Boolean).at(-1) ?? workspace : "No workspace";
+  return (
+    <header className="appTitleBar">
+      <div className="windowControls" aria-label="Window controls">
+        <button type="button" className="windowDot close" aria-label="Close window" onClick={() => void desktop.closeWindow()}>
+          <X size={9} />
+        </button>
+        <button type="button" className="windowDot minimize" aria-label="Minimize window" onClick={() => void desktop.minimizeWindow()}>
+          <Minus size={9} />
+        </button>
+        <button type="button" className="windowDot maximize" aria-label="Maximize window" onClick={() => void desktop.toggleMaximizeWindow()}>
+          <Square size={8} />
+        </button>
+      </div>
+      <div className="titleBrand">
+        <span className="titleMark" aria-hidden="true" />
+        <strong>ATHENA</strong>
+      </div>
+      <div className="titleContext">
+        <strong>{activeLabel}</strong>
+        <span>{shellFocus ? "Shell focus" : detail}</span>
+      </div>
+      <div className="titleStatus">
+        <span className={backendOnline ? "online" : ""} />
+        {backendOnline ? "Backend" : "Offline"}
+      </div>
+    </header>
   );
 }
 

@@ -11,7 +11,7 @@ import {
 import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
-import { ActiveAgents, ContextGlance, LiveWorkflow, MemoryTimeline, SharedMemorySnapshot } from "./components/DashboardPanels";
+import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { CommandRoom } from "./rooms/CommandRoom";
 import { MemoryRoom } from "./rooms/MemoryRoom";
@@ -804,11 +804,6 @@ export function App() {
               reviews={reviewSessionCount}
               onNavigate={setActiveRoom}
             />
-          </aside>
-
-          <aside className="rightColumn">
-            <ActiveAgents roles={agentRoles} embeddedSessions={activeEmbeddedSessions} />
-            <MemoryTimeline entries={memoryEntries} embeddedSessions={activeEmbeddedSessions} agentSessions={agentSessions} />
           </aside>
 
           <SharedMemorySnapshot

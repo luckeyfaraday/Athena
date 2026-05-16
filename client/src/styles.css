@@ -346,7 +346,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .dashboardGrid {
   height: 100%;
   display: grid;
-  grid-template-columns: minmax(520px, 1fr) 196px 336px;
+  grid-template-columns: minmax(520px, 1fr) 196px;
   grid-template-rows: minmax(0, 1fr) 130px;
   gap: 12px;
 }
@@ -356,7 +356,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   grid-template-rows: minmax(0, 1fr);
 }
 .terminalFocusShell .glanceColumn,
-.terminalFocusShell .rightColumn,
 .terminalFocusShell .sharedSnapshot,
 .terminalFocusShell .liveWorkflow {
   display: none;
@@ -366,7 +365,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   gap: 0;
 }
 .commandColumn,
-.rightColumn,
 .glanceColumn {
   min-height: 0;
   display: flex;
@@ -2441,7 +2439,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .contextGlance { margin-top: 0; }
   .commandColumn { grid-row: auto; }
   .sharedSnapshot { grid-column: auto; }
-  .rightColumn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspaceStats {
     grid-template-columns: 1fr;
   }

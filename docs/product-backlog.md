@@ -113,7 +113,7 @@ Goal: harden existing user-facing workflows before adding new product surfaces.
 | Task | Priority | Acceptance criteria |
 |---|---:|---|
 | `#robustness` run full robustness matrix | P0 | Complete `docs/robustness-pass.md` across terminal/chat modes, spawns, resumes, sessions, handoffs, workspace isolation, build, dist, and AppImage launch. |
-| Hermes MCP and memory injection scenario pass | P0 | Verify real Hermes MCP health/spawn/recall tools plus memory and recall injection scenarios: fresh recall, stale recall, cleared recall, project memory hit/miss, missing backend, and WSL/Windows localhost failure behavior. |
+| Hermes MCP and memory injection scenario pass | P0 | Follow the sequence in `docs/robustness-pass.md`: baseline app state, Hermes MCP health, recall read/write/clear, recall injection sentinel, memory injection sentinel, MCP visible spawn, and workspace isolation sentinels. |
 | Chat mode regression pass | P0 | Hermes, Codex, OpenCode, Claude, and Shell chat output render useful answers in separate turns, hide startup/control chrome, and preserve terminal execution behavior. |
 | Spawn/resume regression pass | P0 | Shell, Hermes, Codex, OpenCode, Claude, grids, native resumes, and MCP visible spawn work or fail with clear actionable errors. |
 | Workspace/session state regression pass | P1 | No duplicate live/historical sessions, deleted sessions stay hidden per workspace, and switching workspaces never leaks recall/memory/session state. |

@@ -10,6 +10,8 @@ This pass is complete only when the checks below pass on a fresh build and a pac
 - Agent spawn and resume flows.
 - Native session discovery and transcripts.
 - Session handoff and recall writes.
+- Hermes MCP bridge behavior.
+- Memory and recall injection into launched agents.
 - Workspace isolation.
 - Build, dist, and packaged-app behavior.
 
@@ -39,6 +41,13 @@ This pass is complete only when the checks below pass on a fresh build and a pac
 | Delete session | Delete a session from Sessions tab | Deleted session stays hidden for the active workspace and does not delete provider-owned history. |
 | Handoff | Select sessions and create handoff | Handoff contains concrete evidence, thin-evidence warnings when appropriate, and saves to recall. |
 | Recall | Refresh recall and launch agent | Recall status updates, generated prompt includes cache path, and launch marks recall as used. |
+| Hermes MCP health | Run Hermes MCP discovery/test for `context_workspace` | MCP server is discoverable, reports health, and gives a clear error when the desktop backend is unavailable. |
+| MCP visible spawn | Spawn Shell/Hermes/Codex/OpenCode/Claude through Hermes MCP | Each MCP spawn opens a visible Athena pane in the active workspace, returns the terminal/session identifiers, and does not use the legacy backend run board. |
+| MCP recall tools | Read, write, clear, and refresh recall through Hermes MCP | Recall file and status update correctly; stale/missing/cleared states are reflected in the UI. |
+| Memory lookup | Query project memory through Athena backend and Hermes MCP | Results are scoped to the active project path and do not leak unrelated workspace memory. |
+| Memory injection | Launch a fresh Codex/OpenCode/Claude session after recall refresh and memory lookup | Generated prompt includes recall cache path, recall contents, and Hermes memory excerpt when available; current user instruction remains higher priority. |
+| Missing memory scenario | Launch agent with no recall cache or no Hermes memory | Prompt includes explicit empty-state text, launch still works, and UI does not imply context was injected. |
+| Stale recall scenario | Start with stale recall, refresh, then spawn agent | Refresh result is visible, prompt uses the refreshed cache, and recall audit marks the launch as using fresh recall. |
 | Workspaces | Switch between two workspace tabs | Terminals, sessions, memory, and recall stay scoped to active workspace. |
 | Shell focus | Enter/exit shell focus | Surrounding chrome hides/restores; tabs still usable; Escape exits focus. |
 | Backend | Restart backend from Settings | Backend recovers and UI reconnects without orphaning visible terminals. |
@@ -64,7 +73,12 @@ This pass is complete only when the checks below pass on a fresh build and a pac
    - Workspace tabs are central to the product now.
    - Every recall, memory, terminal, and session query needs active-workspace scoping.
 
-5. **Packaged app drift**
+5. **Hermes MCP and memory injection drift**
+   - Hermes MCP, Electron control, FastAPI backend, and prompt generation cross process and OS boundaries.
+   - Test real scenarios, not only static health checks: missing backend, stale recall, cleared recall, project memory hit, project memory miss, MCP spawn, and direct UI spawn.
+   - WSL and Windows-localhost behavior must fail clearly instead of silently skipping memory or recall.
+
+6. **Packaged app drift**
    - Running AppImages use bundled code from `/tmp/.mount_ATHENA...`.
    - Always fully quit old instances before judging a fresh build.
 
@@ -86,6 +100,7 @@ npm run dist
 ## Exit Criteria
 
 - All verification matrix rows are manually checked or explicitly marked blocked.
+- Hermes MCP and memory/recall injection scenarios are checked with real launches or documented as blocked with reproduction steps.
 - `pytest` passes.
 - `npm run build` passes.
 - `npm run dist` passes.

@@ -97,6 +97,108 @@ npm run build
 npm run dist
 ```
 
+## Hermes MCP And Memory Injection Scenario Sequence
+
+Use this sequence when validating the Hermes MCP bridge and prompt-context injection. The goal is to prove that real launched agents receive the intended recall and memory context, not just that individual endpoints respond.
+
+### 1. Establish Baseline
+
+1. Fully quit old Athena instances.
+2. Launch the freshly built Athena app.
+3. Open Settings and confirm backend and Hermes status are online or show clear actionable errors.
+4. Confirm the backend state file points to the current healthy backend.
+
+Pass criteria:
+- The UI is connected to the live backend.
+- Stale backend state does not silently pass as healthy.
+- Any Hermes/backend failure is visible in Settings.
+
+### 2. Verify Hermes MCP Health
+
+From Hermes:
+
+```bash
+hermes mcp list
+hermes mcp test context_workspace
+```
+
+Pass criteria:
+- `context_workspace` is enabled.
+- Tools are discovered.
+- `context_workspace_health` reports the Athena backend as reachable.
+- With Athena closed, the MCP tool fails clearly with a backend-unavailable error instead of silently succeeding.
+
+### 3. Verify MCP Recall Tools
+
+Through Hermes MCP, run the equivalent of:
+
+1. `context_workspace_read_recall_cache`
+2. `context_workspace_write_recall_cache` with a known sentinel, for example `TEST_RECALL_SENTINEL_123`
+3. `context_workspace_read_recall_cache`
+4. `context_workspace_clear_recall_cache`
+5. `context_workspace_read_recall_cache`
+
+Pass criteria:
+- Write creates or updates `.context-workspace/hermes/session-recall.md`.
+- Read returns the exact sentinel while present.
+- Clear removes or empties the recall cache.
+- Athena UI recall status reflects written, fresh, missing, stale, or cleared states correctly.
+
+### 4. Verify Recall Injection Into A Fresh Agent
+
+1. Write recall containing `TEST_RECALL_SENTINEL_123`.
+2. Launch a fresh Codex, OpenCode, or Claude pane from Athena.
+3. Inspect the generated prompt path from the terminal/session metadata.
+
+Pass criteria:
+- Prompt contains the recall cache path.
+- Prompt contains `TEST_RECALL_SENTINEL_123`.
+- Recall audit marks the launch as having used recall.
+- Current user instructions remain higher priority than recall text.
+
+### 5. Verify Hermes Memory Injection
+
+1. Add a known Hermes memory entry for the active project, for example `TEST_MEMORY_SENTINEL_456`.
+2. Launch a fresh agent from Athena.
+3. Inspect the generated prompt path.
+
+Pass criteria:
+- Prompt contains a Hermes memory section.
+- Prompt contains `TEST_MEMORY_SENTINEL_456` when project memory lookup matches the active workspace.
+- If project memory has no match, the prompt explicitly states that no Hermes memory entries are available.
+- Memory from unrelated workspaces is not injected.
+
+### 6. Verify MCP Visible Spawn
+
+Through Hermes MCP, spawn visible panes for the installed providers:
+
+1. Shell
+2. Hermes
+3. Codex
+4. OpenCode
+5. Claude
+
+Pass criteria:
+- Athena opens visible panes in the active workspace.
+- MCP responses include terminal/session identifiers that match visible sessions.
+- Sessions tab updates.
+- The flow does not depend on the legacy backend run board.
+- Missing providers fail with clear actionable errors.
+
+### 7. Verify Workspace Isolation
+
+1. Open two workspace tabs.
+2. Write `WORKSPACE_A_RECALL_SENTINEL` to workspace A recall.
+3. Write `WORKSPACE_B_RECALL_SENTINEL` to workspace B recall.
+4. Spawn one fresh agent in each workspace.
+5. Inspect each generated prompt.
+
+Pass criteria:
+- Workspace A prompt contains only `WORKSPACE_A_RECALL_SENTINEL`.
+- Workspace B prompt contains only `WORKSPACE_B_RECALL_SENTINEL`.
+- Sessions, memory, recall, and terminals switch with the active workspace tab.
+- No recall or memory context bleeds across projects.
+
 ## Exit Criteria
 
 - All verification matrix rows are manually checked or explicitly marked blocked.

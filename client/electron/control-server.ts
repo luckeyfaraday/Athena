@@ -4,8 +4,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  findEmbeddedTerminal,
   listEmbeddedTerminals,
   spawnEmbeddedTerminal,
+  submitEmbeddedTerminalInput,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
@@ -28,6 +30,16 @@ type SpawnTerminalRequest = {
   session_label?: string;
   cols?: number;
   rows?: number;
+};
+
+type WriteTerminalRequest = {
+  terminal_id?: string;
+  terminalId?: string;
+  session_id?: string;
+  sessionId?: string;
+  target?: string;
+  text?: string;
+  input?: string;
 };
 
 const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
@@ -89,6 +101,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, { terminals: listEmbeddedTerminals() });
       return;
     }
+    if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/resolve")) {
+      const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/resolve".length));
+      sendJson(response, 200, { terminal: findEmbeddedTerminal(target) });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/terminals/write") {
+      const payload = parseWriteTerminalRequest(await readJsonBody(request));
+      const session = await submitEmbeddedTerminalInput(payload.target, payload.text);
+      sendJson(response, 200, { written: true, terminal: session });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/terminals/spawn") {
       const payload = parseSpawnTerminalRequest(await readJsonBody(request));
       const sessions: EmbeddedTerminalSession[] = [];
@@ -115,6 +138,20 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     writeControlDiscovery();
     sendJson(response, 400, { error: String(error) });
   }
+}
+
+function parseWriteTerminalRequest(body: unknown): { target: string; text: string } {
+  if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
+  const request = body as WriteTerminalRequest;
+  const target = stringValue(request.target)
+    ?? stringValue(request.terminal_id)
+    ?? stringValue(request.terminalId)
+    ?? stringValue(request.session_id)
+    ?? stringValue(request.sessionId);
+  if (!target) throw new Error("terminal_id, session_id, or target is required.");
+  const text = stringValue(request.text) ?? stringValue(request.input);
+  if (!text) throw new Error("text is required.");
+  return { target, text };
 }
 
 function parseSpawnTerminalRequest(body: unknown): {

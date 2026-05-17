@@ -73,6 +73,8 @@ Visible terminal launch tool:
 ```text
 context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?)
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?)
+context_workspace_list_live_terminals(project_dir?)
+context_workspace_inject_terminal_input(target, text)
 context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 ```
 
@@ -82,6 +84,12 @@ through Electron control and injects the task, recall cache, and Hermes memory.
 
 Use `context_workspace_spawn_terminal` only when Hermes needs lower-level
 terminal control, such as opening a shell, Hermes pane, grid, or explicit resume.
+
+Use `context_workspace_list_live_terminals` before live handoffs. Pick the
+returned `id` or `providerSessionId`, then call
+`context_workspace_inject_terminal_input` to submit the next instruction into
+that running PTY. This is for live Codex/OpenCode/Claude/Hermes handoffs, not
+the legacy backend run board.
 
 Do not call Athena's FastAPI `POST /agents/spawn` directly for OpenCode or
 Claude visible terminals. That route is the legacy backend run/artifact path.

@@ -1,5 +1,6 @@
 import { DragEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
+import { Terminal } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
 
 type Props = {
@@ -21,12 +22,14 @@ type SentPromptBlock = ChatBlock & {
   marker: number;
 };
 
+const sentPromptHistoryBySession = new Map<string, SentPromptBlock[]>();
+
 export function EmbeddedChatTerminal({ session }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
   const [buffer, setBuffer] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [sentPrompts, setSentPrompts] = useState<SentPromptBlock[]>([]);
+  const [sentPrompts, setSentPrompts] = useState<SentPromptBlock[]>(() => promptHistoryForSession(session));
   const [imageDropActive, setImageDropActive] = useState(false);
 
   useEffect(() => {
@@ -57,7 +60,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [buffer]);
 
-  const outputBlocks = useMemo(() => terminalTextToBlocks(buffer, session, sentPrompts.map((block) => block.marker)), [buffer, session, sentPrompts]);
+  const outputBlocks = useMemo(() => terminalTextToBlocks(buffer, session, sentPrompts), [buffer, session, sentPrompts]);
   const chatBlocks = useMemo(() => interleaveChatTurns(outputBlocks, sentPrompts).slice(-12), [outputBlocks, sentPrompts]);
 
   async function submitPrompt(event: FormEvent<HTMLFormElement>) {
@@ -66,18 +69,26 @@ export function EmbeddedChatTerminal({ session }: Props) {
     if (!trimmed || session.status !== "running") return;
     const marker = buffer.length;
     setPrompt("");
-    setSentPrompts((current) => [
-      ...current.slice(-4),
-      {
-        id: `prompt-${Date.now()}`,
-        role: "user",
-        label: "You",
-        text: trimmed,
-        marker,
-      },
-    ]);
+    setSentPrompts((current) => {
+      const next = [
+        ...current.slice(-4),
+        {
+          id: `prompt-${Date.now()}`,
+          role: "user" as const,
+          label: "You",
+          text: trimmed,
+          marker,
+        },
+      ];
+      sentPromptHistoryBySession.set(session.id, next);
+      return next;
+    });
     await writePromptToSession(session, trimmed);
   }
+
+  useEffect(() => {
+    setSentPrompts(promptHistoryForSession(session));
+  }, [session.id]);
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) return;
@@ -169,6 +180,22 @@ export function EmbeddedChatTerminal({ session }: Props) {
   );
 }
 
+function promptHistoryForSession(session: EmbeddedTerminalSession): SentPromptBlock[] {
+  const existing = sentPromptHistoryBySession.get(session.id);
+  if (existing) return existing;
+  const initialTask = session.initialTask?.trim();
+  if (!initialTask) return [];
+  const initial = [{
+    id: `prompt-initial-${session.id}`,
+    role: "user" as const,
+    label: "You",
+    text: initialTask,
+    marker: 0,
+  }];
+  sentPromptHistoryBySession.set(session.id, initial);
+  return initial;
+}
+
 async function writePromptToSession(session: EmbeddedTerminalSession, prompt: string): Promise<void> {
   if (session.kind === "codex") {
     await desktop.writeEmbeddedTerminal(session.id, prompt).catch(() => undefined);
@@ -179,19 +206,20 @@ async function writePromptToSession(session: EmbeddedTerminalSession, prompt: st
   await desktop.writeEmbeddedTerminal(session.id, `${prompt}\r`).catch(() => undefined);
 }
 
-function terminalTextToBlocks(value: string, session: EmbeddedTerminalSession, turnMarkers: number[]): ChatBlock[] {
-  const segments = splitBufferIntoTurnSegments(value, turnMarkers);
+function terminalTextToBlocks(value: string, session: EmbeddedTerminalSession, sentPrompts: SentPromptBlock[]): ChatBlock[] {
+  const segments = splitBufferIntoTurnSegments(value, sentPrompts.map((block) => block.marker));
   const blocks: ChatBlock[] = [];
 
   segments.forEach((segment, segmentIndex) => {
     const transcript = normalizeTerminalText(segment);
     if (!transcript) return;
 
+    const promptText = sentPrompts[segmentIndex - 1]?.text;
     const lines = transcript.split("\n");
     const statusLines = lines.filter(isStatusLine).slice(-2);
     const body = lines
       .filter((line) => !isStatusLine(line))
-      .filter((line) => !isPromptEchoLine(line))
+      .filter((line) => !isPromptEchoLine(line, promptText))
       .filter((line) => !isThinkingLine(line))
       .join("\n")
       .trim();
@@ -229,7 +257,7 @@ function interleaveChatTurns(outputBlocks: ChatBlock[], sentPrompts: SentPromptB
     outputBySegment.set(segment, [...(outputBySegment.get(segment) ?? []), block]);
   }
 
-  blocks.push(...(outputBySegment.get(0) ?? []));
+  if (sentPrompts.length === 0) blocks.push(...(outputBySegment.get(0) ?? []));
   sentPrompts.forEach((promptBlock, index) => {
     blocks.push(promptBlock);
     blocks.push(...(outputBySegment.get(index + 1) ?? []));
@@ -247,24 +275,22 @@ function delay(ms: number): Promise<void> {
 
 function splitBufferIntoTurnSegments(value: string, markers: number[]): string[] {
   const validMarkers = [...new Set(markers)]
-    .filter((marker) => marker > 0 && marker < value.length)
+    .filter((marker) => marker >= 0 && marker < value.length)
     .sort((left, right) => left - right);
   if (validMarkers.length === 0) return [value];
 
   const segments: string[] = [];
   let start = 0;
   for (const marker of validMarkers) {
-    const segment = value.slice(start, marker);
-    if (segment.trim()) segments.push(segment);
+    segments.push(value.slice(start, marker));
     start = marker;
   }
-  const last = value.slice(start);
-  if (last.trim()) segments.push(last);
+  segments.push(value.slice(start));
   return segments;
 }
 
 function normalizeTerminalText(value: string): string {
-  const lines = stripAnsi(value)
+  const lines = renderTerminalSnapshot(value)
     .replace(/\r\n/g, "\n")
     .replace(/\r+/g, "\n")
     .split("\n")
@@ -276,6 +302,37 @@ function normalizeTerminalText(value: string): string {
     .trim()
     .slice(-MAX_OUTPUT_CHARS);
   return clean;
+}
+
+function renderTerminalSnapshot(value: string): string {
+  if (!value.trim()) return "";
+  try {
+    const terminal = new Terminal({
+      cols: 120,
+      rows: 80,
+      scrollback: 300,
+      convertEol: true,
+      disableStdin: true,
+      allowProposedApi: true,
+    });
+    const writable = terminal as Terminal & { writeSync?: (data: string, maxSubsequentCalls?: number) => void };
+    if (typeof writable.writeSync === "function") {
+      writable.writeSync(value, 10_000);
+    } else {
+      return stripAnsi(value);
+    }
+    const buffer = terminal.buffer.active;
+    const lines: string[] = [];
+    const start = Math.max(0, buffer.length - 180);
+    for (let index = start; index < buffer.length; index += 1) {
+      const line = buffer.getLine(index)?.translateToString(true) ?? "";
+      lines.push(line);
+    }
+    terminal.dispose();
+    return lines.join("\n");
+  } catch {
+    return stripAnsi(value);
+  }
 }
 
 function capChatBuffer(value: string): string {
@@ -447,13 +504,14 @@ function isTransientControlLine(line: string): boolean {
     || /^Build\s*·/i.test(trimmed)
     || /^Parent up\s+Prev left\s+Next right/i.test(trimmed)
     || /^\d+s\s*·\s*esc to interrupt/i.test(trimmed)
-    || /^esc to interrupt/i.test(trimmed);
+    || /^esc to interrupt/i.test(trimmed)
+    || /^\]?\d+;rgb:[0-9a-f/]+$/i.test(trimmed);
 }
 
 function isThinkingLine(line: string): boolean {
   const trimmed = normalizePromptPrefix(line);
-  return /^\S*[\s)]*(reflecting|reasoning|ruminating|thinking|working)\.{0,3}$/i.test(trimmed)
-    || /^\(.*\)\s*(reflecting|reasoning|ruminating|thinking|working)\.{0,3}$/i.test(trimmed);
+  return /^\S*[\s)]*(reflecting|reasoning|ruminating|thinking|working|formulating|mulling|cogitating)\.{0,3}$/i.test(trimmed)
+    || /^\(.*\)\s*(reflecting|reasoning|ruminating|thinking|working|formulating|mulling|cogitating)\.{0,3}$/i.test(trimmed);
 }
 
 function isLowValueFragment(line: string): boolean {
@@ -491,13 +549,26 @@ function isStatusLine(line: string): boolean {
     || /\b(error|failed|exception|traceback|permission denied|not found)\b/i.test(line);
 }
 
-function isPromptEchoLine(line: string): boolean {
+function isPromptEchoLine(line: string, promptText?: string): boolean {
   const trimmed = normalizePromptPrefix(line);
+  const comparable = normalizeChatComparable(trimmed);
+  const promptComparable = promptText ? normalizeChatComparable(promptText) : "";
   return /^(?:[$#>]\s*)?$/.test(trimmed)
+    || Boolean(promptComparable && comparable === promptComparable)
+    || Boolean(promptComparable && comparable.includes(promptComparable))
+    || Boolean(promptComparable && /^task:\s*/i.test(comparable) && comparable.includes(promptComparable))
     || /^›\s*/.test(line.trim())
     || /^>\s*/.test(line.trim())
     || /^[\w.-]+@[\w.-]+:[^$#]*[$#]\s*$/.test(line)
     || /^Current status:\s*$/i.test(trimmed);
+}
+
+function normalizeChatComparable(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[.。]+$/g, "")
+    .trim()
+    .toLowerCase();
 }
 
 function normalizePromptPrefix(line: string): string {

@@ -59,6 +59,23 @@ def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
     assert schema["required"] == ["project_dir"]
 
 
+def test_list_live_terminals_tool_schema_accepts_optional_project_dir() -> None:
+    schema = server._tool_schema(tools.context_workspace_list_live_terminals)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert "required" not in schema
+
+
+def test_inject_terminal_input_tool_schema_requires_target_and_text() -> None:
+    schema = server._tool_schema(tools.context_workspace_inject_terminal_input)["inputSchema"]
+
+    assert schema["properties"]["target"] == {"type": "string"}
+    assert schema["properties"]["text"] == {"type": "string"}
+    assert schema["required"] == ["target", "text"]
+
+
 def test_read_agent_session_tool_schema() -> None:
     schema = server._tool_schema(tools.context_workspace_read_agent_session)["inputSchema"]
 

@@ -154,6 +154,44 @@ async def context_workspace_spawn_terminal(
     )
 
 
+async def context_workspace_list_live_terminals(project_dir: str | None = None) -> dict[str, Any]:
+    """List visible live Athena PTY sessions managed by the desktop app."""
+    payload = await ContextWorkspaceElectronClient().get("/terminals")
+    if not project_dir:
+        return payload
+    project = str(_resolve_recall_project(project_dir))
+    terminals = payload.get("terminals") if isinstance(payload, dict) else []
+    if not isinstance(terminals, list):
+        return {"terminals": []}
+    return {
+        "terminals": [
+            terminal
+            for terminal in terminals
+            if isinstance(terminal, dict) and terminal.get("workspace") == project
+        ]
+    }
+
+
+async def context_workspace_inject_terminal_input(
+    target: str,
+    text: str,
+) -> dict[str, Any]:
+    """Submit input to a live Athena PTY by terminal id or provider session id.
+
+    Use this for live cross-agent handoffs: first call
+    context_workspace_list_live_terminals, choose a terminal id or provider
+    session id, then inject the next instruction. The desktop app must be
+    running because this routes through Athena's Electron control server.
+    """
+    return await ContextWorkspaceElectronClient().post(
+        "/terminals/write",
+        {
+            "target": target,
+            "text": text,
+        },
+    )
+
+
 async def context_workspace_list_runs() -> dict[str, Any]:
     """List Context Workspace agent runs."""
     return await ContextWorkspaceClient().get("/agents/runs")
@@ -278,6 +316,8 @@ def register_tools(mcp: Any) -> None:
         context_workspace_summarize_agent_sessions,
         context_workspace_spawn_agent,
         context_workspace_spawn_terminal,
+        context_workspace_list_live_terminals,
+        context_workspace_inject_terminal_input,
         context_workspace_list_runs,
         context_workspace_get_run,
         context_workspace_cancel_run,

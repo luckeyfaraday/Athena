@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
 import type { ActiveRoom } from "../routes";
 import { roomRoutes } from "../routes";
 import athenaMarkUrl from "../assets/athena-mark.png";
@@ -38,14 +37,6 @@ export function AppSidebar({
         <span>Status</span>
         <StatusLine label="Backend" ok={backendOnline} />
         <StatusLine label="Hermes" ok={hermesOnline} />
-      </div>
-      <div className="sidebarUser">
-        <div className="avatar">A</div>
-        <div>
-          <strong>Alan</strong>
-          <span>Pro</span>
-        </div>
-        <ChevronRight size={14} />
       </div>
     </aside>
   );

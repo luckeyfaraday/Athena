@@ -114,6 +114,7 @@ Goal: harden existing user-facing workflows before adding new product surfaces.
 |---|---:|---|
 | `#robustness` run full robustness matrix | P0 | Complete `docs/robustness-pass.md` across terminal/chat modes, spawns, resumes, sessions, handoffs, workspace isolation, build, dist, and AppImage launch. |
 | Hermes MCP and memory injection scenario pass | P0 | Follow the sequence in `docs/robustness-pass.md`: baseline app state, Hermes MCP health, recall read/write/clear, recall injection sentinel, memory injection sentinel, MCP visible spawn, and workspace isolation sentinels. |
+| `#f0a0ac9a` MCP live session control | P0 | Done: Hermes can list live Athena PTY sessions and inject submitted input into Codex/OpenCode/Claude/Hermes/Shell panes by terminal id or provider session id through Electron control. |
 | Chat mode regression pass | P0 | Hermes, Codex, OpenCode, Claude, and Shell chat output render useful answers in separate turns, hide startup/control chrome, and preserve terminal execution behavior. |
 | Spawn/resume regression pass | P0 | Shell, Hermes, Codex, OpenCode, Claude, grids, native resumes, and MCP visible spawn work or fail with clear actionable errors. |
 | Workspace/session state regression pass | P1 | No duplicate live/historical sessions, deleted sessions stay hidden per workspace, and switching workspaces never leaks recall/memory/session state. |

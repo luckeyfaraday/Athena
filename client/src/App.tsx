@@ -141,7 +141,8 @@ function sameEmbeddedSessions(a: EmbeddedTerminalSession[], b: EmbeddedTerminalS
       && session.pid === other.pid
       && session.title === other.title
       && session.workspace === other.workspace
-      && session.promptPath === other.promptPath;
+      && session.promptPath === other.promptPath
+      && session.initialTask === other.initialTask;
   });
 }
 

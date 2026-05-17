@@ -194,6 +194,14 @@ Pass criteria:
 - The flow does not depend on the legacy backend run board.
 - Missing providers fail with clear actionable errors.
 
+Manual result on 2026-05-17:
+- Shell: pass, visible session `1779047526339-2e5ef744db6fb`, PID `96017`.
+- Hermes: pass, visible session `1779047609288-9dba47deb5fbe`, PID `96389`.
+- Codex: pass, visible session `1779047610304-9184f844c0221`, PID `96399`.
+- OpenCode: pass, visible session `1779047611342-965fea16267de8`, PID `96658`.
+- Claude: pass, visible session `1779047612370-a640a0573e9f5`, PID `96766`.
+- Workspace verified as `/home/alan/home_ai/projects/context-workspace`.
+
 ### 7. Verify Workspace Isolation
 
 1. Open two workspace tabs.

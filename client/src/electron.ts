@@ -45,6 +45,7 @@ export type EmbeddedTerminalSession = {
   workspace: string;
   pid: number | null;
   promptPath: string | null;
+  initialTask: string | null;
   sessionLabel: string | null;
   providerSessionId: string | null;
   createdAt: string;
@@ -154,6 +155,7 @@ const browserFallback: WorkspaceApi = {
       workspace,
       pid: null,
       promptPath: null,
+      initialTask: options.task?.trim() || null,
       sessionLabel: options.sessionLabel ?? (options.kind && options.kind !== "shell" && options.kind !== "hermes" ? "New" : null),
       providerSessionId: options.providerSessionId ?? options.resumeSessionId ?? null,
       createdAt: new Date().toISOString(),

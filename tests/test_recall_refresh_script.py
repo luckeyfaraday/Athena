@@ -38,6 +38,6 @@ def test_recall_refresh_script_writes_cache(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "Recall refreshed" in completed.stdout
     assert "Manual test" in recall
-    assert "No native agent sessions were found" in recall
+    assert "No relevant native agent sessions were found" in recall
     assert metadata["source"] == "context-workspace-refresh-script"
     assert metadata["bytes"] == len(recall.encode("utf-8"))

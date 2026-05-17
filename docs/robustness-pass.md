@@ -97,6 +97,15 @@ npm run build
 npm run dist
 ```
 
+## Automated Coverage Started
+
+The MCP memory and recall slice now has targeted regression coverage for:
+
+- MCP recall read/write/clear safety and round trips.
+- Backend recall status, refresh, write, and launch-used metadata.
+- Generated context artifacts with recall present, recall missing, memory present, and memory missing.
+- Workspace-scoped recall injection so one workspace's recall sentinel does not appear in another workspace's prompt.
+
 ## Hermes MCP And Memory Injection Scenario Sequence
 
 Use this sequence when validating the Hermes MCP bridge and prompt-context injection. The goal is to prove that real launched agents receive the intended recall and memory context, not just that individual endpoints respond.

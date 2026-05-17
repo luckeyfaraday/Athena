@@ -10,9 +10,12 @@ from pathlib import Path
 def test_recall_refresh_script_writes_cache(tmp_path: Path) -> None:
     script = Path(__file__).resolve().parents[1] / "scripts" / "hermes-refresh-recall.py"
     project = tmp_path / "project"
+    home = tmp_path / "home"
     project.mkdir()
+    home.mkdir()
     env = {
         **os.environ,
+        "HOME": str(home),
         "CONTEXT_WORKSPACE_PROJECT_DIR": str(project),
         "CONTEXT_WORKSPACE_TASK_HINT": "Manual test",
         "CONTEXT_WORKSPACE_BACKEND_URL": "http://127.0.0.1:12345",

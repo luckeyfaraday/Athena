@@ -404,6 +404,53 @@ def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -
     assert "fake final message" in memory_text
 
 
+def test_spawn_context_includes_matching_memory_excerpt(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/memory/store", json={"text": "TEST_MEMORY_SENTINEL_456 belongs in the prompt."})
+
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Use project memory.",
+            "memory_query": "TEST_MEMORY_SENTINEL_456",
+        },
+    )
+
+    assert response.status_code == 202
+    run_id = response.json()["run"]["run_id"]
+    context = client.get(
+        f"/agents/runs/{run_id}/artifacts/context",
+        params={"tail": False},
+    )
+    assert context.status_code == 200
+    assert "TEST_MEMORY_SENTINEL_456 belongs in the prompt." in context.text
+
+
+def test_spawn_context_uses_empty_memory_state_when_no_memory_matches(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "No matching memory.",
+            "memory_query": "missing-memory-sentinel",
+        },
+    )
+
+    assert response.status_code == 202
+    run_id = response.json()["run"]["run_id"]
+    context = client.get(
+        f"/agents/runs/{run_id}/artifacts/context",
+        params={"tail": False},
+    )
+    assert context.status_code == 200
+    assert "No Hermes memory entries matched query: missing-memory-sentinel" in context.text
+
+
 def test_list_runs_endpoint_returns_spawned_runs(tmp_path: Path) -> None:
     client = _client(tmp_path)
     response = client.post(

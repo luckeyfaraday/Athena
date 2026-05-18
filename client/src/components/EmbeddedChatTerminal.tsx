@@ -2,6 +2,13 @@ import { DragEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useSta
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
+import {
+  promptHistoryForSession,
+  recordChatPromptForSession,
+  subscribeChatPromptHistory,
+  type SentPromptBlock,
+  writePromptSequence,
+} from "../chat-mode";
 
 type Props = {
   session: EmbeddedTerminalSession;
@@ -17,12 +24,6 @@ type ChatBlock = {
   label: string;
   text: string;
 };
-
-type SentPromptBlock = ChatBlock & {
-  marker: number;
-};
-
-const sentPromptHistoryBySession = new Map<string, SentPromptBlock[]>();
 
 export function EmbeddedChatTerminal({ session }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -69,25 +70,13 @@ export function EmbeddedChatTerminal({ session }: Props) {
     if (!trimmed || session.status !== "running") return;
     const marker = buffer.length;
     setPrompt("");
-    setSentPrompts((current) => {
-      const next = [
-        ...current.slice(-4),
-        {
-          id: `prompt-${Date.now()}`,
-          role: "user" as const,
-          label: "You",
-          text: trimmed,
-          marker,
-        },
-      ];
-      sentPromptHistoryBySession.set(session.id, next);
-      return next;
-    });
+    setSentPrompts(recordChatPromptForSession(session.id, trimmed, marker));
     await writePromptToSession(session, trimmed);
   }
 
   useEffect(() => {
     setSentPrompts(promptHistoryForSession(session));
+    return subscribeChatPromptHistory(session.id, () => setSentPrompts(promptHistoryForSession(session)));
   }, [session.id]);
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -180,30 +169,13 @@ export function EmbeddedChatTerminal({ session }: Props) {
   );
 }
 
-function promptHistoryForSession(session: EmbeddedTerminalSession): SentPromptBlock[] {
-  const existing = sentPromptHistoryBySession.get(session.id);
-  if (existing) return existing;
-  const initialTask = session.initialTask?.trim();
-  if (!initialTask) return [];
-  const initial = [{
-    id: `prompt-initial-${session.id}`,
-    role: "user" as const,
-    label: "You",
-    text: initialTask,
-    marker: 0,
-  }];
-  sentPromptHistoryBySession.set(session.id, initial);
-  return initial;
-}
-
 async function writePromptToSession(session: EmbeddedTerminalSession, prompt: string): Promise<void> {
-  if (session.kind === "codex") {
-    await desktop.writeEmbeddedTerminal(session.id, prompt).catch(() => undefined);
-    await delay(120);
-    await desktop.writeEmbeddedTerminal(session.id, "\r").catch(() => undefined);
-    return;
-  }
-  await desktop.writeEmbeddedTerminal(session.id, `${prompt}\r`).catch(() => undefined);
+  await writePromptSequence(
+    session.kind,
+    prompt,
+    (data) => desktop.writeEmbeddedTerminal(session.id, data).catch(() => undefined),
+    delay,
+  );
 }
 
 function terminalTextToBlocks(value: string, session: EmbeddedTerminalSession, sentPrompts: SentPromptBlock[]): ChatBlock[] {
@@ -234,6 +206,24 @@ function terminalTextToBlocks(value: string, session: EmbeddedTerminalSession, s
     });
 
     const chunks = splitOutputIntoChunks(body);
+    if (chunks.length === 0) {
+      const fallback = rawTranscriptFallback(lines, promptText);
+      if (fallback) {
+        blocks.push({
+          id: `fallback-status-${segmentIndex}-${fallback.slice(0, 32)}`,
+          role: "status",
+          label: "Fallback",
+          text: "Raw transcript shown because chat parsing could not confidently group this output.",
+        });
+        blocks.push({
+          id: `fallback-${segmentIndex}-${fallback.slice(0, 32)}`,
+          role: "assistant",
+          label: session.title,
+          text: fallback,
+        });
+      }
+      return;
+    }
     chunks.forEach((chunk, index) => {
       blocks.push({
         id: `output-${segmentIndex}-${index}-${chunk.slice(0, 32)}`,
@@ -542,6 +532,30 @@ function splitLargeChunk(value: string, maxChars: number): string[] {
   }
   if (remaining) chunks.push(remaining);
   return chunks;
+}
+
+function rawTranscriptFallback(lines: string[], promptText?: string): string {
+  return lines
+    .map(stripDecorativeBorders)
+    .map((line) => line.trimEnd())
+    .filter((line) => isRawFallbackLine(line, promptText))
+    .join("\n")
+    .trim()
+    .slice(-4000);
+}
+
+function isRawFallbackLine(line: string, promptText?: string): boolean {
+  const trimmed = normalizePromptPrefix(line.trim());
+  if (!trimmed) return false;
+  if (isStatusLine(trimmed)) return false;
+  if (isPromptEchoLine(line, promptText)) return false;
+  if (isThinkingLine(trimmed)) return false;
+  if (isLowValueFragment(trimmed)) return false;
+  if (isBoxDrawingLine(trimmed)) return false;
+  if (isStartupChromeLine(trimmed)) return false;
+  if (isRecallInjectionLine(trimmed)) return false;
+  if (isTransientControlLine(trimmed)) return false;
+  return true;
 }
 
 function isStatusLine(line: string): boolean {

@@ -20,6 +20,7 @@ import { SettingsRoom } from "./rooms/SettingsRoom";
 import { SwarmRoom, type AgentRole } from "./rooms/SwarmRoom";
 import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
 import { roomRouteById, type ActiveRoom } from "./routes";
+import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import {
   embeddedSessionKey,
   providerLabel,
@@ -190,8 +191,9 @@ export function App() {
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
-  const agentSessionsRefreshInFlight = useRef(false);
+  const agentSessionsRefreshInFlight = useRef<string | null>(null);
   const agentSessionsLastRefreshAt = useRef(0);
+  const activeWorkspaceRef = useRef("");
   const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const workspace = workspacePath?.nativePath ?? "";
@@ -243,17 +245,22 @@ export function App() {
       setAgentSessions([]);
       return;
     }
-    if (agentSessionsRefreshInFlight.current) return;
+    const requestedWorkspace = workspace;
+    const requestedWorkspaceKey = normalizeWorkspaceKey(requestedWorkspace);
+    if (agentSessionsRefreshInFlight.current === requestedWorkspaceKey) return;
     const now = Date.now();
     if (!options.force && now - agentSessionsLastRefreshAt.current < nativeSessionRefreshIntervalMs) return;
     agentSessionsLastRefreshAt.current = now;
-    agentSessionsRefreshInFlight.current = true;
+    agentSessionsRefreshInFlight.current = requestedWorkspaceKey;
     try {
-      setAgentSessions(await desktop.listAgentSessions(workspace));
+      const sessions = await desktop.listAgentSessions(requestedWorkspace);
+      if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) {
+        setAgentSessions(sessions);
+      }
     } catch (err) {
-      setError(String(err));
+      if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) setError(String(err));
     } finally {
-      agentSessionsRefreshInFlight.current = false;
+      if (agentSessionsRefreshInFlight.current === requestedWorkspaceKey) agentSessionsRefreshInFlight.current = null;
     }
   }, [workspace]);
 
@@ -350,6 +357,12 @@ export function App() {
   }, [refreshAgentSessions, embeddedSessions]);
 
   useEffect(() => {
+    activeWorkspaceRef.current = workspace;
+    setAgentSessions([]);
+    agentSessionsLastRefreshAt.current = 0;
+  }, [workspace]);
+
+  useEffect(() => {
     void refreshData();
   }, [refreshData]);
 
@@ -438,6 +451,7 @@ export function App() {
     setWorkspacePath(nextWorkspace);
     setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
     setSelectedSessionKey(null);
+    setAgentSessions([]);
     setState((current) => ({ ...current, recall: null }));
   }
 
@@ -449,6 +463,7 @@ export function App() {
         const replacement = next[0] ?? null;
         setWorkspacePath(replacement);
         setSelectedSessionKey(null);
+        setAgentSessions([]);
         setState((currentState) => ({ ...currentState, recall: null }));
       }
       return next;
@@ -577,12 +592,15 @@ export function App() {
     const sessionById = new Map(embeddedSessions.map((session) => [session.id, session]));
     const results = await Promise.allSettled(sessionIds.map(async (id) => {
       const session = sessionById.get(id);
-      if (session?.kind === "codex") {
-        await desktop.writeEmbeddedTerminal(id, trimmed);
-        await delay(120);
-        return desktop.writeEmbeddedTerminal(id, "\r");
-      }
-      return desktop.writeEmbeddedTerminal(id, `${trimmed}\r`);
+      if (!session) throw new Error(`Embedded session ${id} is no longer available.`);
+      const marker = await desktop.getEmbeddedTerminalBuffer(id).then((value) => value.length).catch(() => 0);
+      await writePromptSequence(
+        session.kind,
+        trimmed,
+        (data) => desktop.writeEmbeddedTerminal(id, data),
+        delay,
+      );
+      recordChatPromptForSession(id, trimmed, marker);
     }));
     const failed = results.filter((result) => result.status === "rejected").length;
     if (failed > 0) {

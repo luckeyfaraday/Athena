@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
+import type { ControlState } from "./control-server.js";
 import type { CodexTerminalState, NativeTerminalResult, NativeTerminalSession } from "./codex-terminal.js";
 import type { EmbeddedTerminalKind, EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
 import type { WorkspacePath } from "./platform.js";
@@ -21,6 +22,9 @@ export type WorkspaceApi = {
   getBackendState: () => Promise<BackendState>;
   checkBackendHealth: () => Promise<BackendState>;
   restartBackend: () => Promise<BackendState>;
+  getControlState: () => Promise<ControlState>;
+  checkControlHealth: () => Promise<ControlState>;
+  restartControl: () => Promise<ControlState>;
   getDefaultWorkspace: () => Promise<WorkspacePath>;
   toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalState>;
@@ -54,6 +58,9 @@ const api: WorkspaceApi = {
   getBackendState: () => ipcRenderer.invoke("backend:getState"),
   checkBackendHealth: () => ipcRenderer.invoke("backend:checkHealth"),
   restartBackend: () => ipcRenderer.invoke("backend:restart"),
+  getControlState: () => ipcRenderer.invoke("control:getState"),
+  checkControlHealth: () => ipcRenderer.invoke("control:checkHealth"),
+  restartControl: () => ipcRenderer.invoke("control:restart"),
   getDefaultWorkspace: () => ipcRenderer.invoke("workspace:getDefault"),
   toWorkspacePath: (workspace: string) => ipcRenderer.invoke("workspace:toPath", workspace),
   getCodexTerminalState: () => ipcRenderer.invoke("codexTerminal:getState"),

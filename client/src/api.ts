@@ -6,6 +6,13 @@ export type BackendStatus = {
   lastError: string | null;
 };
 
+export type ElectronControlStatus = {
+  baseUrl: string | null;
+  running: boolean;
+  port: number | null;
+  lastError: string | null;
+};
+
 export type HermesStatus = {
   installed: boolean;
   command_path: string | null;

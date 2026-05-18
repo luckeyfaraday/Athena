@@ -13,6 +13,8 @@ if str(MCP_ROOT) not in sys.path:
 
 import server
 import tools
+import client as mcp_client
+from config import Settings
 from backend.safety import SafetyError
 
 
@@ -57,6 +59,14 @@ def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
     assert schema["required"] == ["project_dir"]
+
+
+def test_spawn_terminals_batch_tool_schema() -> None:
+    schema = server._tool_schema(tools.context_workspace_spawn_terminals_batch)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {"type": "string"}
+    assert schema["properties"]["specs"] == {"type": "array", "items": {"type": "object"}}
+    assert schema["required"] == ["project_dir", "specs"]
 
 
 def test_list_live_terminals_tool_schema_accepts_optional_project_dir() -> None:
@@ -107,6 +117,93 @@ def test_spawn_agent_defaults_to_visible_terminal(monkeypatch: pytest.MonkeyPatc
             "task": "Optimize About page",
         }
     ]
+
+
+def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": f"terminal-{len(calls)}"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    result = asyncio.run(
+        tools.context_workspace_spawn_terminals_batch(
+            str(tmp_path),
+            [
+                {"kind": "opencode", "count": 1, "task": "Investigate videos"},
+                {"kind": "opencode", "count": 1, "task": "Investigate videos"},
+                {"kind": "codex", "count": 1, "task": "Fix build"},
+            ],
+        )
+    )
+
+    assert result["mode"] == "visible_terminal_batch"
+    assert result["spawn_calls"] == 2
+    assert [session["id"] for session in result["sessions"]] == ["terminal-1", "terminal-2"]
+    assert calls == [
+        {
+            "project_dir": str(tmp_path),
+            "kind": "opencode",
+            "count": 2,
+            "title": None,
+            "task": "Investigate videos",
+            "resume_session_id": None,
+            "session_label": "New",
+        },
+        {
+            "project_dir": str(tmp_path),
+            "kind": "codex",
+            "count": 1,
+            "title": None,
+            "task": "Fix build",
+            "resume_session_id": None,
+            "session_label": "New",
+        },
+    ]
+
+
+def test_electron_control_discovery_reports_stale_health(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(
+        '{"baseUrl":"http://127.0.0.1:65535","running":true}',
+        encoding="utf-8",
+    )
+    settings = Settings(electron_control_state_path=state_path)
+
+    def failing_urlopen(*args: object, **kwargs: object) -> object:
+        raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(mcp_client, "urlopen", failing_urlopen)
+
+    status = mcp_client.get_electron_control_status(settings)
+
+    assert status["running"] is False
+    assert status["stale"] is True
+    assert "connection refused" in status["detail"]
+    with pytest.raises(RuntimeError, match="discovery is stale"):
+        mcp_client.get_electron_control_url(settings)
+
+
+def test_electron_control_discovery_reports_stale_running_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(
+        '{"baseUrl":"http://127.0.0.1:65535","running":false}',
+        encoding="utf-8",
+    )
+    settings = Settings(electron_control_state_path=state_path)
+
+    def failing_urlopen(*args: object, **kwargs: object) -> object:
+        raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(mcp_client, "urlopen", failing_urlopen)
+
+    status = mcp_client.get_electron_control_status(settings)
+
+    assert status["running"] is False
+    assert status["stale"] is True
+    assert "running:false" in status["detail"]
 
 
 def test_delete_memory_tool_schema_requires_text() -> None:

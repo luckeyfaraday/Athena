@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from client import ContextWorkspaceClient, ContextWorkspaceElectronClient
+from client import ContextWorkspaceClient, ContextWorkspaceElectronClient, get_electron_control_status
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -22,8 +22,12 @@ TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 async def context_workspace_health() -> dict[str, Any]:
-    """Check Context Workspace backend health."""
-    return await ContextWorkspaceClient().get("/health")
+    """Check Context Workspace backend and Electron control health."""
+    backend = await ContextWorkspaceClient().get("/health")
+    return {
+        "backend": backend,
+        "electron_control": get_electron_control_status(),
+    }
 
 
 async def context_workspace_hermes_status() -> dict[str, Any]:
@@ -152,6 +156,39 @@ async def context_workspace_spawn_terminal(
             "session_label": session_label,
         },
     )
+
+
+async def context_workspace_spawn_terminals_batch(
+    project_dir: str,
+    specs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Spawn multiple visible Athena terminals with one MCP call.
+
+    Use this when a task needs several agents at once, for example two
+    OpenCode panes and one Codex pane. Each spec accepts kind, count, title,
+    task, resume_session_id, and session_label. Athena groups compatible
+    same-provider specs into count-based spawn calls where possible and returns
+    every created terminal id in one response.
+    """
+    if not specs:
+        raise ValueError("specs must include at least one terminal request.")
+
+    grouped_requests = _group_batch_spawn_specs(specs)
+    results: list[dict[str, Any]] = []
+    sessions: list[dict[str, Any]] = []
+    for request in grouped_requests:
+        payload = await context_workspace_spawn_terminal(project_dir=project_dir, **request)
+        result_sessions = payload.get("sessions") if isinstance(payload, dict) else []
+        if isinstance(result_sessions, list):
+            sessions.extend([session for session in result_sessions if isinstance(session, dict)])
+        results.append({"request": request, "result": payload})
+    return {
+        "mode": "visible_terminal_batch",
+        "requested": specs,
+        "spawn_calls": len(grouped_requests),
+        "sessions": sessions,
+        "results": results,
+    }
 
 
 async def context_workspace_list_live_terminals(project_dir: str | None = None) -> dict[str, Any]:
@@ -316,6 +353,7 @@ def register_tools(mcp: Any) -> None:
         context_workspace_summarize_agent_sessions,
         context_workspace_spawn_agent,
         context_workspace_spawn_terminal,
+        context_workspace_spawn_terminals_batch,
         context_workspace_list_live_terminals,
         context_workspace_inject_terminal_input,
         context_workspace_list_runs,
@@ -355,6 +393,60 @@ def _terminal_kind_for_agent(agent_type: str) -> str:
     if normalized not in aliases:
         raise ValueError(f"Unsupported agent type: {agent_type}")
     return aliases[normalized]
+
+
+def _group_batch_spawn_specs(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for spec in specs:
+        request = _normalize_batch_spawn_spec(spec)
+        if (
+            current
+            and _can_merge_batch_spawn_requests(current, request)
+        ):
+            current["count"] += request["count"]
+            continue
+        current = request
+        grouped.append(current)
+    return grouped
+
+
+def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError("Each batch spawn spec must be an object.")
+    kind = _terminal_kind_for_agent(str(spec.get("kind") or spec.get("agent_type") or "codex"))
+    count = int(spec.get("count") or 1)
+    if count < 1:
+        raise ValueError("Batch spawn spec count must be at least 1.")
+    task = _string_or_none(spec.get("task"))
+    title = _string_or_none(spec.get("title"))
+    session_label = _string_or_none(spec.get("session_label"))
+    if session_label is None and kind in {"codex", "opencode", "claude"}:
+        session_label = "New"
+    return {
+        "kind": kind,
+        "count": count,
+        "title": title,
+        "task": task,
+        "resume_session_id": _string_or_none(spec.get("resume_session_id")),
+        "session_label": session_label,
+    }
+
+
+def _can_merge_batch_spawn_requests(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return (
+        left["kind"] == right["kind"]
+        and left.get("task") == right.get("task")
+        and left.get("title") is None
+        and right.get("title") is None
+        and left.get("resume_session_id") is None
+        and right.get("resume_session_id") is None
+        and left.get("session_label") == right.get("session_label")
+    )
+
+
+def _string_or_none(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _title_for_task(kind: str, task: str) -> str:

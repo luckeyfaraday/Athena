@@ -1,6 +1,6 @@
 import { Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
-import type { AdapterStatus, BackendStatus, HermesStatus, RecallStatus } from "../api";
-import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
+import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus } from "../api";
+import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
 import type { PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
@@ -9,6 +9,7 @@ type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
 export function SettingsRoom({
   workspace,
   backend,
+  electronControl,
   hermes,
   recall,
   adapters,
@@ -20,6 +21,7 @@ export function SettingsRoom({
   performance,
   onSelectWorkspace,
   onRestartBackend,
+  onRestartControl,
   onRefreshRecall,
   onInterfaceModeChange,
   onThemeChange,
@@ -27,6 +29,7 @@ export function SettingsRoom({
 }: {
   workspace: string;
   backend: BackendStatus | null;
+  electronControl: ElectronControlStatus | null;
   hermes: HermesStatus | null;
   recall: RecallStatus | null;
   adapters: Record<string, AdapterStatus>;
@@ -38,12 +41,14 @@ export function SettingsRoom({
   performance: PerformanceDiagnostics | null;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
+  onRestartControl: () => Promise<void>;
   onRefreshRecall: () => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
   onTerminalFocusChange: (focused: boolean) => void;
 }) {
   const backendStatus = backendStatusView(backend);
+  const electronControlStatus = electronControlStatusView(electronControl);
   const hermesStatus = hermesStatusView(hermes);
   const recallStatus = recallStatusView(recall);
   const adapterList = Object.values(adapters);
@@ -77,6 +82,16 @@ export function SettingsRoom({
           </div>
           <StatusPill tone={backendStatus.tone}>{backendStatus.label}</StatusPill>
           <button className="ghostButton" type="button" onClick={() => void onRestartBackend()} disabled={busy}>
+            <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
+          </button>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Electron control</strong>
+            <span>{electronControl?.lastError ?? electronControl?.baseUrl ?? "Not connected"}</span>
+          </div>
+          <StatusPill tone={electronControlStatus.tone}>{electronControlStatus.label}</StatusPill>
+          <button className="ghostButton" type="button" onClick={() => void onRestartControl()} disabled={busy}>
             <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
           </button>
         </article>

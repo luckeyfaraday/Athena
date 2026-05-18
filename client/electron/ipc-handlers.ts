@@ -2,6 +2,7 @@ import { BrowserWindow, dialog, ipcMain } from "electron";
 import { listAgentSessionsCached, type AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
+import { checkControlHealth, getControlState, restartControlServer, type ControlState } from "./control-server.js";
 import type { CodexTerminalState } from "./codex-terminal.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import {
@@ -46,6 +47,9 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("backend:getState", (): BackendState => getBackendState());
   ipcMain.handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
   ipcMain.handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));
+  ipcMain.handle("control:getState", (): ControlState => getControlState());
+  ipcMain.handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth());
+  ipcMain.handle("control:restart", (): Promise<ControlState> => restartControlServer());
   ipcMain.handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
   ipcMain.handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
   ipcMain.handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());

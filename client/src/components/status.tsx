@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { AdapterStatus, BackendStatus, HermesStatus, RecallStatus, RunStatus } from "../api";
+import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus, RunStatus } from "../api";
 import type { AgentSession, EmbeddedTerminalSession, NativeTerminalSession } from "../electron";
 
 export type StatusTone = "ok" | "warn" | "bad";
@@ -26,6 +26,12 @@ export function StatusDot({ status }: { status: DotStatus }) {
 export function backendStatusView(backend: BackendStatus | null): StatusView {
   if (backend?.healthy) return { tone: "ok", label: "Healthy" };
   if (backend?.running) return { tone: "warn", label: "Starting" };
+  return { tone: "bad", label: "Offline" };
+}
+
+export function electronControlStatusView(control: ElectronControlStatus | null): StatusView {
+  if (control?.running) return { tone: "ok", label: "Healthy" };
+  if (control?.baseUrl) return { tone: "bad", label: "Stale" };
   return { tone: "bad", label: "Offline" };
 }
 

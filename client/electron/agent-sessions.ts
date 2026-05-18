@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
+import { normalizeComparablePath } from "./platform.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
 
@@ -607,7 +608,7 @@ function isAgentKind(kind: string): kind is AgentSessionProvider {
 }
 
 function samePath(left: string, right: string): boolean {
-  return path.resolve(left) === path.resolve(right);
+  return normalizeComparablePath(left) === normalizeComparablePath(right);
 }
 
 function fromEpoch(value: SqliteValue): string {

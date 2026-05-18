@@ -6,6 +6,7 @@ import {
   isPosixPath,
   isWindowsPath,
   isWslPath,
+  normalizeComparablePath,
   scriptExtensionForPlatform,
   toWorkspacePath,
   windowsPathToWslPath,
@@ -23,6 +24,17 @@ test("detects common Windows, POSIX, and WSL path forms", () => {
 test("converts Windows drive paths to WSL paths and back", () => {
   assert.equal(windowsPathToWslPath("C:\\Users\\dev\\repo"), "/mnt/c/Users/dev/repo");
   assert.equal(wslPathToWindowsPath("/mnt/c/Users/dev/repo"), "C:\\Users\\dev\\repo");
+});
+
+test("normalizes equivalent Windows and WSL workspace keys", () => {
+  assert.equal(normalizeComparablePath("C:\\Users\\dev\\repo\\"), "c:/users/dev/repo");
+  assert.equal(normalizeComparablePath("/mnt/c/Users/dev/repo"), "c:/users/dev/repo");
+  assert.equal(normalizeComparablePath("/C:/Users/dev/repo"), "c:/users/dev/repo");
+});
+
+test("preserves POSIX path case when normalizing comparable paths", () => {
+  assert.equal(normalizeComparablePath("/home/dev/Repo"), "/home/dev/Repo");
+  assert.notEqual(normalizeComparablePath("/home/dev/Repo"), normalizeComparablePath("/home/dev/repo"));
 });
 
 test("keeps Windows workspace paths first-class in the workspace model", () => {

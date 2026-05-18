@@ -1,5 +1,6 @@
 import type { RecallStatus } from "./api";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
+import { normalizeWorkspaceKey } from "./workspace-utils";
 
 export type SessionProviderFilter = AgentSession["provider"] | "all";
 
@@ -21,13 +22,25 @@ export type HandoffPreview = {
 const deletedAgentSessionsStoragePrefix = "context-workspace:deleted-agent-sessions:";
 
 function deletedAgentSessionsStorageKey(workspace: string): string {
+  return `${deletedAgentSessionsStoragePrefix}${workspace ? normalizeWorkspaceKey(workspace) : "none"}`;
+}
+
+function legacyDeletedAgentSessionsStorageKey(workspace: string): string {
   return `${deletedAgentSessionsStoragePrefix}${workspace || "none"}`;
+}
+
+function parseDeletedAgentSessions(value: string | null): string[] {
+  const parsed = JSON.parse(value ?? "[]");
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
 }
 
 export function readDeletedAgentSessions(workspace: string): Set<string> {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(deletedAgentSessionsStorageKey(workspace)) ?? "[]");
-    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
+    const normalizedKey = deletedAgentSessionsStorageKey(workspace);
+    const legacyKey = legacyDeletedAgentSessionsStorageKey(workspace);
+    const values = parseDeletedAgentSessions(window.localStorage.getItem(normalizedKey));
+    if (legacyKey !== normalizedKey) values.push(...parseDeletedAgentSessions(window.localStorage.getItem(legacyKey)));
+    return new Set(values);
   } catch {
     return new Set();
   }

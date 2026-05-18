@@ -39,7 +39,7 @@ type LoadState = {
 };
 
 type InterfaceMode = "terminal" | "chat";
-type UiTheme = "classic" | "monolith" | "press";
+type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
 
 const emptyLoadState: LoadState = {
   hermes: null,
@@ -58,6 +58,8 @@ const uiThemeStyleElementId = "athena-selected-ui-theme";
 const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
   monolith: () => import("./themes/monolith.css?raw"),
   press: () => import("./themes/press.css?raw"),
+  "mono-light": () => import("./themes/mono-light.css?raw"),
+  "mono-dark": () => import("./themes/mono-dark.css?raw"),
 };
 
 function storedWorkspaceValue(): string | null {
@@ -119,7 +121,15 @@ function writeInterfaceMode(mode: InterfaceMode): void {
 function readUiTheme(): UiTheme {
   try {
     const stored = window.localStorage.getItem(uiThemeStorageKey);
-    return stored === "monolith" || stored === "press" ? stored : "classic";
+    if (
+      stored === "monolith" ||
+      stored === "press" ||
+      stored === "mono-light" ||
+      stored === "mono-dark"
+    ) {
+      return stored;
+    }
+    return "classic";
   } catch {
     return "classic";
   }

@@ -4,7 +4,7 @@ import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallSt
 import type { PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
-type UiTheme = "classic" | "monolith" | "press";
+type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
 
 export function SettingsRoom({
   workspace,
@@ -129,6 +129,20 @@ export function SettingsRoom({
             >
               Press
             </button>
+            <button
+              type="button"
+              className={uiTheme === "mono-light" ? "active" : ""}
+              onClick={() => onThemeChange("mono-light")}
+            >
+              Mono Light
+            </button>
+            <button
+              type="button"
+              className={uiTheme === "mono-dark" ? "active" : ""}
+              onClick={() => onThemeChange("mono-dark")}
+            >
+              Mono Dark
+            </button>
           </div>
         </article>
         <article className="settingsSection">
@@ -219,6 +233,8 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
 function themeDescription(theme: UiTheme): string {
   if (theme === "monolith") return "Void black, acid lime, and sharp terminal surfaces.";
   if (theme === "press") return "Warm editorial dark with serif headings and vermillion accents.";
+  if (theme === "mono-light") return "Pure grayscale light theme. System-default typography, no color accents.";
+  if (theme === "mono-dark") return "Pure grayscale dark theme. System-default typography, no color accents.";
   return "Original Athena forest palette and neutral workspace typography.";
 }
 

@@ -468,8 +468,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   margin: 8px 8px 0;
   display: grid;
   flex: 0 0 auto;
-  border-color: rgba(226, 214, 183, .12);
-  background: rgba(6, 17, 13, .9);
 }
 .workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs + .commandRoom.focused {
   min-height: 0;

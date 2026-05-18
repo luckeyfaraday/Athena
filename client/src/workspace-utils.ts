@@ -1,7 +1,11 @@
 import type { WorkspacePath } from "./electron";
 
 export function normalizeWorkspaceKey(value: string): string {
-  return value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  let normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const wslDrive = /^\/mnt\/([a-z])\/(.+)$/.exec(normalized);
+  if (wslDrive) normalized = `${wslDrive[1]}:/${wslDrive[2]}`;
+  if (/^\/[a-z]:\//.test(normalized)) normalized = normalized.slice(1);
+  return normalized;
 }
 
 export function sameWorkspacePath(left: string, right: string): boolean {

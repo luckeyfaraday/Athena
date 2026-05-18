@@ -122,6 +122,14 @@ export function wslPathToWindowsPath(value: string): string | null {
   return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, "\\")}`;
 }
 
+export function normalizeComparablePath(value: string): string {
+  let normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const wslDrive = /^\/mnt\/([a-z])\/(.+)$/.exec(normalized);
+  if (wslDrive) normalized = `${wslDrive[1]}:/${wslDrive[2]}`;
+  if (/^\/[a-z]:\//.test(normalized)) normalized = normalized.slice(1);
+  return normalized;
+}
+
 export function nativeTerminalLaunch(cwd: string, scriptPath: string): TerminalLaunch | null {
   if (isWindows) {
     if (!commandExists("wt.exe")) return null;

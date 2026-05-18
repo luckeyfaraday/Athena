@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { getBackendState } from "./backend.js";
+import { terminalInputWritesForKind } from "./input-sequencing.js";
 import {
   defaultShell,
   isWindows,
@@ -203,11 +204,12 @@ export function writeEmbeddedTerminal(id: string, data: string): EmbeddedTermina
 
 export async function submitEmbeddedTerminalInput(target: string, text: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminalTarget(target);
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("Input text cannot be empty.");
-  entry.process.write(trimmed);
-  if (entry.session.kind === "codex") await delay(120);
-  entry.process.write("\r");
+  if (!text.trim()) throw new Error("Input text cannot be empty.");
+  const writes = terminalInputWritesForKind(entry.session.kind, text);
+  for (const write of writes) {
+    entry.process.write(write.data);
+    if (write.delayAfterMs) await delay(write.delayAfterMs);
+  }
   return { ...entry.session };
 }
 

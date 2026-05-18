@@ -194,31 +194,46 @@ def create_app(
         agent_id: str | None = Query(default=None),
         limit: int = Query(default=10, ge=1, le=1000),
     ) -> str:
-        response = app.state.memory.format_query_response(q, limit=limit)
-        if q.strip():
-            app.state.memory.log_query(agent_id, q)
-        return response
+        try:
+            response = app.state.memory.format_query_response(q, limit=limit)
+            if q.strip():
+                app.state.memory.log_query(agent_id, q)
+            return response
+        except OSError as exc:
+            raise _memory_unavailable_exception(exc) from exc
 
     @app.get("/memory/hermes/project", response_class=PlainTextResponse)
     def hermes_project_memory(
         project_dir: str = Query(min_length=1),
         limit: int = Query(default=10, ge=1, le=100),
     ) -> str:
-        return app.state.memory.format_project_context(project_dir, limit=limit)
+        try:
+            return app.state.memory.format_project_context(project_dir, limit=limit)
+        except OSError as exc:
+            raise _memory_unavailable_exception(exc) from exc
 
     @app.get("/memory/recent")
     def recent_memory(limit: int = Query(default=10, ge=1, le=100)) -> dict[str, Any]:
-        return {"entries": [entry.text for entry in app.state.memory.recent(limit=limit)]}
+        try:
+            return {"entries": [entry.text for entry in app.state.memory.recent(limit=limit)]}
+        except OSError as exc:
+            raise _memory_unavailable_exception(exc) from exc
 
     @app.post("/memory/store")
     def store_memory(request: MemoryStoreRequest) -> dict[str, Any]:
-        entry = app.state.memory.append(request.text)
-        return {"stored": True, "entry": entry.text}
+        try:
+            entry = app.state.memory.append(request.text)
+            return {"stored": True, "entry": entry.text}
+        except OSError as exc:
+            raise _memory_unavailable_exception(exc) from exc
 
     @app.post("/memory/delete")
     def delete_memory(request: MemoryDeleteRequest) -> dict[str, Any]:
-        removed = app.state.memory.remove_exact(request.text)
-        return {"deleted": removed > 0, "removed": removed}
+        try:
+            removed = app.state.memory.remove_exact(request.text)
+            return {"deleted": removed > 0, "removed": removed}
+        except OSError as exc:
+            raise _memory_unavailable_exception(exc) from exc
 
     @app.get("/agents/adapters")
     def get_agent_adapters() -> dict[str, Any]:
@@ -289,8 +304,8 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         memory_query = request.memory_query or request.task
-        memory_excerpt = app.state.memory.format_query_response(memory_query, limit=10)
-        app.state.memory.append(f"[{run.agent_id}] Task: {run.task} | Status: pending")
+        memory_excerpt = _memory_excerpt_for_spawn(app.state.memory, memory_query)
+        _try_append_memory(app.state.memory, f"[{run.agent_id}] Task: {run.task} | Status: pending")
         timeout_seconds = request.timeout_seconds
         if timeout_seconds is None:
             timeout_seconds = app.state.limits.default_timeout_seconds
@@ -329,7 +344,7 @@ def create_app(
 
         updated = app.state.registry.request_cancel(run.run_id)
         terminated = app.state.executor.cancel(run.run_id)
-        app.state.memory.append(f"[{updated.agent_id}] cancellation requested for task: {updated.task}")
+        _try_append_memory(app.state.memory, f"[{updated.agent_id}] cancellation requested for task: {updated.task}")
         return {"cancelled": True, "terminated_process": terminated, "run": _run_payload(updated)}
 
     @app.get("/agents/runs/{run_id}/artifacts/{artifact_name}", response_class=PlainTextResponse)
@@ -368,11 +383,33 @@ def _execute_and_record(
         memory_excerpt=memory_excerpt,
         timeout_seconds=timeout_seconds,
     )
-    memory.append(
+    _try_append_memory(
+        memory,
         f"[{result.run.agent_id}] completed task: {result.run.task} | "
-        f"Status: {result.run.status.value} | Summary: {result.summary}"
+        f"Status: {result.run.status.value} | Summary: {result.summary}",
     )
     return result
+
+
+def _memory_unavailable_exception(exc: OSError) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=f"Hermes memory is unavailable. Check Hermes status and memory path permissions: {exc}",
+    )
+
+
+def _memory_excerpt_for_spawn(memory: HermesMemoryStore, query: str) -> str:
+    try:
+        return memory.format_query_response(query, limit=10)
+    except OSError as exc:
+        return f"Hermes memory lookup failed. Check Hermes status and memory path permissions: {exc}"
+
+
+def _try_append_memory(memory: HermesMemoryStore, text: str) -> None:
+    try:
+        memory.append(text)
+    except OSError:
+        return
 
 
 def _run_payload(run: Run) -> dict[str, Any]:

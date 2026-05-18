@@ -74,6 +74,23 @@ class FakeHermesManager:
         )
 
 
+class FailingMemoryStore:
+    def format_query_response(self, query: str, *, limit: int = 10) -> str:
+        raise PermissionError("memory path denied")
+
+    def format_project_context(self, project_dir: str | Path, *, limit: int = 10) -> str:
+        raise PermissionError("memory path denied")
+
+    def recent(self, *, limit: int = 10) -> list[object]:
+        raise PermissionError("memory path denied")
+
+    def append(self, text: str) -> object:
+        raise PermissionError("memory path denied")
+
+    def remove_exact(self, text: str) -> int:
+        raise PermissionError("memory path denied")
+
+
 def test_health_endpoint(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -349,6 +366,20 @@ def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
     assert missing.text == ""
 
 
+def test_memory_endpoints_report_unavailable_memory_clearly(tmp_path: Path) -> None:
+    client = _client(tmp_path, memory=FailingMemoryStore())
+
+    queried = client.get("/memory/hermes", params={"q": "codex"})
+    project = client.get("/memory/hermes/project", params={"project_dir": str(tmp_path)})
+    recent = client.get("/memory/recent")
+    stored = client.post("/memory/store", json={"text": "Cannot write."})
+    deleted = client.post("/memory/delete", json={"text": "Cannot delete."})
+
+    for response in (queried, project, recent, stored, deleted):
+        assert response.status_code == 503
+        assert "Hermes memory is unavailable" in response.json()["detail"]
+
+
 def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -451,6 +482,28 @@ def test_spawn_context_uses_empty_memory_state_when_no_memory_matches(tmp_path: 
     assert "No Hermes memory entries matched query: missing-memory-sentinel" in context.text
 
 
+def test_spawn_context_records_memory_lookup_failure_without_blocking_launch(tmp_path: Path) -> None:
+    client = _client(tmp_path, memory=FailingMemoryStore())
+
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Continue without writable Hermes memory.",
+        },
+    )
+
+    assert response.status_code == 202
+    run_id = response.json()["run"]["run_id"]
+    context = client.get(
+        f"/agents/runs/{run_id}/artifacts/context",
+        params={"tail": False},
+    )
+    assert context.status_code == 200
+    assert "Hermes memory lookup failed." in context.text
+
+
 def test_list_runs_endpoint_returns_spawned_runs(tmp_path: Path) -> None:
     client = _client(tmp_path)
     response = client.post(
@@ -538,9 +591,10 @@ def _client(
     adapter: FakeAdapter | None = None,
     registry: RunRegistry | None = None,
     limits: RuntimeLimits | None = None,
+    memory: object | None = None,
     execute_inline: bool = True,
 ) -> TestClient:
-    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    memory = memory or HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
     registry = registry or RunRegistry()
     fixture = Path(__file__).parent / "fixtures" / "fake_agent.py"
     app = create_app(

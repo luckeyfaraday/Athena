@@ -1,6 +1,6 @@
 import { DragEvent, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
 import "@xterm/xterm/css/xterm.css";
 
@@ -28,20 +28,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       lineHeight: 1.25,
       scrollback: 10000,
       convertEol: false,
-      theme: {
-        background: "#03050a",
-        foreground: "#dbeafe",
-        cursor: "#22d3ee",
-        selectionBackground: "rgba(34, 211, 238, 0.28)",
-        black: "#020617",
-        blue: "#60a5fa",
-        cyan: "#22d3ee",
-        green: "#22c55e",
-        magenta: "#a78bfa",
-        red: "#fb7185",
-        white: "#e2e8f0",
-        yellow: "#f59e0b",
-      },
+      theme: readTerminalTheme(),
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -79,9 +66,14 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     const observer = new ResizeObserver(resize);
     observer.observe(container);
     window.setTimeout(resize, 50);
+    const themeObserver = new MutationObserver(() => {
+      terminal.options.theme = readTerminalTheme();
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-theme-loaded"] });
 
     return () => {
       observer.disconnect();
+      themeObserver.disconnect();
       removeData();
       removeExit();
       dataDisposable.dispose();
@@ -159,4 +151,40 @@ function isImageFile(file: File): boolean {
 
 function quoteTerminalPath(path: string): string {
   return `"${path.replace(/(["\\$`])/g, "\\$1")}"`;
+}
+
+function readTerminalTheme(): ITheme {
+  const root = getComputedStyle(document.documentElement);
+  const value = (name: string, fallback: string) => root.getPropertyValue(name).trim() || fallback;
+  const accent = value("--accent", value("--blue", "#60a5fa"));
+  return {
+    background: value("--terminal", "#03050a"),
+    foreground: value("--text", "#dbeafe"),
+    cursor: accent,
+    selectionBackground: colorMix(accent, 0.28),
+    black: "#020617",
+    blue: value("--blue", "#60a5fa"),
+    cyan: accent,
+    green: value("--green", "#22c55e"),
+    magenta: value("--violet", "#a78bfa"),
+    red: value("--red", "#fb7185"),
+    white: value("--text", "#e2e8f0"),
+    yellow: value("--orange", "#f59e0b"),
+  };
+}
+
+function colorMix(color: string, alpha: number): string {
+  const trimmed = color.trim();
+  const hex = trimmed.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!hex) {
+    const channels = trimmed.match(/^rgba?\(([^)]+)\)$/i)?.[1]?.split(",").slice(0, 3).map((part) => part.trim());
+    return channels?.length === 3 ? `rgba(${channels.join(", ")}, ${alpha})` : `rgba(96, 165, 250, ${alpha})`;
+  }
+  const raw = hex[1].length === 3
+    ? hex[1].split("").map((char) => `${char}${char}`).join("")
+    : hex[1];
+  const red = Number.parseInt(raw.slice(0, 2), 16);
+  const green = Number.parseInt(raw.slice(2, 4), 16);
+  const blue = Number.parseInt(raw.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
 }

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 import httpx
 
@@ -36,10 +37,65 @@ def get_electron_control_url(settings: Settings | None = None) -> str:
         data = json.loads(settings.electron_control_state_path.read_text(encoding="utf-8"))
         url = data.get("baseUrl")
         running = data.get("running")
-        if isinstance(url, str) and url.strip() and running is not False:
-            return url.rstrip("/")
+        if isinstance(url, str) and url.strip():
+            control_url = _translate_backend_url_for_wsl(url.rstrip("/"), settings)
+            healthy, detail = probe_electron_control_health(control_url, settings)
+            if healthy:
+                return control_url
+            discovery_note = " Discovery file reports running:false." if running is False else ""
+            raise RuntimeError(
+                "Context Workspace Electron control server discovery is stale. "
+                f"{settings.electron_control_state_path} points to {control_url}, but /health failed: {detail}.{discovery_note} "
+                "Restart Athena or reopen the desktop app before using visible terminal tools."
+            )
 
     raise RuntimeError("Context Workspace Electron control server is not available. Start the desktop app first.")
+
+
+def get_electron_control_status(settings: Settings | None = None) -> dict[str, Any]:
+    settings = settings or Settings()
+    if settings.electron_control_url:
+        url = settings.electron_control_url.rstrip("/")
+        healthy, detail = probe_electron_control_health(url, settings)
+        return {"configured": True, "baseUrl": url, "running": healthy, "stale": not healthy, "detail": detail}
+
+    if not settings.electron_control_state_path.exists():
+        return {
+            "configured": False,
+            "baseUrl": None,
+            "running": False,
+            "stale": False,
+            "detail": f"Discovery file does not exist: {settings.electron_control_state_path}",
+        }
+
+    try:
+        data = json.loads(settings.electron_control_state_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return {"configured": False, "baseUrl": None, "running": False, "stale": False, "detail": str(exc)}
+
+    url = data.get("baseUrl")
+    running = data.get("running")
+    if not isinstance(url, str) or not url.strip():
+        return {"configured": False, "baseUrl": None, "running": False, "stale": False, "detail": "Discovery file has no baseUrl."}
+    control_url = _translate_backend_url_for_wsl(url.rstrip("/"), settings)
+    healthy, detail = probe_electron_control_health(control_url, settings)
+    if running is False and not healthy:
+        detail = f"{detail}. Discovery file reports running:false."
+    return {"configured": True, "baseUrl": control_url, "running": healthy, "stale": not healthy, "detail": detail}
+
+
+def probe_electron_control_health(base_url: str, settings: Settings | None = None) -> tuple[bool, str]:
+    settings = settings or Settings()
+    timeout = min(settings.request_timeout_seconds, 2.0)
+    request = Request(f"{base_url.rstrip('/')}/health", method="GET")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", response.getcode())
+            if 200 <= int(status) < 300:
+                return True, "ok"
+            return False, f"HTTP {status}"
+    except Exception as exc:
+        return False, str(exc)
 
 
 class ContextWorkspaceClient:

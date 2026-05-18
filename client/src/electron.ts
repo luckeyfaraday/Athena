@@ -1,4 +1,4 @@
-import type { BackendStatus } from "./api";
+import type { BackendStatus, ElectronControlStatus } from "./api";
 
 export type CodexTerminalStatus = {
   running: boolean;
@@ -98,6 +98,8 @@ type WorkspaceApi = {
   getBackendState: () => Promise<BackendStatus>;
   checkBackendHealth: () => Promise<BackendStatus>;
   restartBackend: () => Promise<BackendStatus>;
+  getControlState: () => Promise<ElectronControlStatus>;
+  checkControlHealth: () => Promise<ElectronControlStatus>;
   getDefaultWorkspace: () => Promise<WorkspacePath>;
   toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalStatus>;
@@ -137,6 +139,8 @@ const browserFallback: WorkspaceApi = {
   async getBackendState() { return fallbackBackendState(); },
   async checkBackendHealth() { return fallbackBackendState(); },
   async restartBackend() { return fallbackBackendState(); },
+  async getControlState() { return fallbackControlState(); },
+  async checkControlHealth() { return fallbackControlState(); },
   async getDefaultWorkspace() { return fallbackWorkspacePath(); },
   async toWorkspacePath(workspace: string) { return toFallbackWorkspacePath(workspace); },
   async getCodexTerminalState() { return { running: false, workspace: null, pid: null, lastError: null }; },
@@ -220,6 +224,15 @@ function fallbackBackendState(): BackendStatus {
     running: false,
     port: null,
     lastError: "Electron preload is unavailable in browser preview. Run the desktop app for live backend control.",
+  };
+}
+
+function fallbackControlState(): ElectronControlStatus {
+  return {
+    baseUrl: null,
+    running: false,
+    port: null,
+    lastError: "Electron preload is unavailable in browser preview. Run the desktop app for Electron control.",
   };
 }
 

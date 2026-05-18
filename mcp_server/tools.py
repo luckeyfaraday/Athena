@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from client import ContextWorkspaceClient, ContextWorkspaceElectronClient
+from client import ContextWorkspaceClient, ContextWorkspaceElectronClient, get_electron_control_status
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -22,8 +22,12 @@ TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 async def context_workspace_health() -> dict[str, Any]:
-    """Check Context Workspace backend health."""
-    return await ContextWorkspaceClient().get("/health")
+    """Check Context Workspace backend and Electron control health."""
+    backend = await ContextWorkspaceClient().get("/health")
+    return {
+        "backend": backend,
+        "electron_control": get_electron_control_status(),
+    }
 
 
 async def context_workspace_hermes_status() -> dict[str, Any]:

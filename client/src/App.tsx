@@ -8,7 +8,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { BackendClient, type AdapterStatus, type BackendStatus, type HermesStatus, type RecallStatus } from "./api";
+import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus, type RecallStatus } from "./api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
@@ -183,6 +183,7 @@ function sameEmbeddedSessions(a: EmbeddedTerminalSession[], b: EmbeddedTerminalS
 
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
+  const [electronControl, setElectronControl] = useState<ElectronControlStatus | null>(null);
   const [workspacePath, setWorkspacePath] = useState<WorkspacePath | null>(null);
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspacePath[]>(() => readWorkspaceList());
   const [state, setState] = useState<LoadState>(emptyLoadState);
@@ -238,6 +239,23 @@ export function App() {
       return status;
     } finally {
       backendRefreshInFlight.current = false;
+    }
+  }, []);
+
+  const refreshElectronControl = useCallback(async () => {
+    try {
+      const status = await desktop.checkControlHealth();
+      setElectronControl(status);
+      return status;
+    } catch (err) {
+      const status = {
+        baseUrl: null,
+        port: null,
+        running: false,
+        lastError: String(err),
+      };
+      setElectronControl(status);
+      return status;
     }
   }, []);
 
@@ -359,8 +377,15 @@ export function App() {
         if (status.healthy) void refreshData();
       })
       .catch((err) => setError(String(err)));
+    desktop
+      .getControlState()
+      .then((status) => {
+        setElectronControl(status);
+        if (status.running) void refreshElectronControl();
+      })
+      .catch((err) => setError(String(err)));
     void refreshSessions();
-  }, [refreshData, refreshSessions]);
+  }, [refreshData, refreshElectronControl, refreshSessions]);
 
   useEffect(() => {
     void refreshAgentSessions({ force: true });
@@ -396,6 +421,7 @@ export function App() {
       void refreshBackend().then((status) => {
         if (status?.healthy) void refreshData();
       });
+      void refreshElectronControl();
       void refreshSessions();
       if (activeRoom === "command" || activeRoom === "review" || activeRoom === "swarm") {
         void refreshAgentSessions();
@@ -403,7 +429,7 @@ export function App() {
       if (activeRoom === "settings") void refreshPerformanceDiagnostics();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [activeRoom, refreshBackend, refreshData, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics]);
+  }, [activeRoom, refreshBackend, refreshData, refreshElectronControl, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics]);
 
   useEffect(() => {
     if (activeRoom !== "settings") return;
@@ -747,18 +773,22 @@ export function App() {
         activeLabel={activeRoute.label}
         workspace={workspaceDisplay}
         backendOnline={Boolean(backend?.healthy)}
+        controlOnline={Boolean(electronControl?.running)}
         shellFocus={terminalFocus && activeRoom === "command"}
       />
       <main className={terminalFocus && activeRoom === "command" ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
       <AppSidebar
         activeRoom={activeRoom}
         backendOnline={Boolean(backend?.healthy)}
+        controlOnline={Boolean(electronControl?.running)}
         hermesOnline={Boolean(state.hermes?.installed)}
         onNavigate={setActiveRoom}
       />
 
       <section className={terminalFocus && activeRoom === "command" ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
-        {(error || (!backend?.healthy && backend?.lastError)) && <div className="noticeBar">{error ?? backend?.lastError}</div>}
+        {(error || (!backend?.healthy && backend?.lastError) || (!electronControl?.running && electronControl?.lastError)) && (
+          <div className="noticeBar">{error ?? backend?.lastError ?? electronControl?.lastError}</div>
+        )}
         <section className="dashboardGrid">
           <div className="commandColumn">
             <header className="dashboardHeader">
@@ -875,6 +905,7 @@ export function App() {
               <SettingsRoom
                 workspace={workspaceDisplay}
                 backend={backend}
+                electronControl={electronControl}
                 hermes={state.hermes}
                 recall={state.recall}
                 adapters={state.adapters}
@@ -928,11 +959,13 @@ function AppTitleBar({
   activeLabel,
   workspace,
   backendOnline,
+  controlOnline,
   shellFocus,
 }: {
   activeLabel: string;
   workspace: string;
   backendOnline: boolean;
+  controlOnline: boolean;
   shellFocus: boolean;
 }) {
   const detail = workspace ? workspace.split(/[\\/]/).filter(Boolean).at(-1) ?? workspace : "No workspace";
@@ -958,8 +991,8 @@ function AppTitleBar({
         <span>{shellFocus ? "Shell focus" : detail}</span>
       </div>
       <div className="titleStatus">
-        <span className={backendOnline ? "online" : ""} />
-        {backendOnline ? "Backend" : "Offline"}
+        <span className={backendOnline && controlOnline ? "online" : ""} />
+        {backendOnline ? (controlOnline ? "Ready" : "Control stale") : "Offline"}
       </div>
     </header>
   );

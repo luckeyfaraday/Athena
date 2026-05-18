@@ -7,11 +7,13 @@ import athenaWordmarkUrl from "../assets/athena-wordmark.png";
 export function AppSidebar({
   activeRoom,
   backendOnline,
+  controlOnline,
   hermesOnline,
   onNavigate,
 }: {
   activeRoom: ActiveRoom;
   backendOnline: boolean;
+  controlOnline: boolean;
   hermesOnline: boolean;
   onNavigate: (room: ActiveRoom) => void;
 }) {
@@ -36,6 +38,7 @@ export function AppSidebar({
       <div className="sidebarStatus">
         <span>Status</span>
         <StatusLine label="Backend" ok={backendOnline} />
+        <StatusLine label="Control" ok={controlOnline} />
         <StatusLine label="Hermes" ok={hermesOnline} />
       </div>
     </aside>

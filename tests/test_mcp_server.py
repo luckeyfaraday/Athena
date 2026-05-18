@@ -13,6 +13,8 @@ if str(MCP_ROOT) not in sys.path:
 
 import server
 import tools
+import client as mcp_client
+from config import Settings
 from backend.safety import SafetyError
 
 
@@ -107,6 +109,48 @@ def test_spawn_agent_defaults_to_visible_terminal(monkeypatch: pytest.MonkeyPatc
             "task": "Optimize About page",
         }
     ]
+
+
+def test_electron_control_discovery_reports_stale_health(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(
+        '{"baseUrl":"http://127.0.0.1:65535","running":true}',
+        encoding="utf-8",
+    )
+    settings = Settings(electron_control_state_path=state_path)
+
+    def failing_urlopen(*args: object, **kwargs: object) -> object:
+        raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(mcp_client, "urlopen", failing_urlopen)
+
+    status = mcp_client.get_electron_control_status(settings)
+
+    assert status["running"] is False
+    assert status["stale"] is True
+    assert "connection refused" in status["detail"]
+    with pytest.raises(RuntimeError, match="discovery is stale"):
+        mcp_client.get_electron_control_url(settings)
+
+
+def test_electron_control_discovery_reports_stale_running_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(
+        '{"baseUrl":"http://127.0.0.1:65535","running":false}',
+        encoding="utf-8",
+    )
+    settings = Settings(electron_control_state_path=state_path)
+
+    def failing_urlopen(*args: object, **kwargs: object) -> object:
+        raise ConnectionRefusedError("connection refused")
+
+    monkeypatch.setattr(mcp_client, "urlopen", failing_urlopen)
+
+    status = mcp_client.get_electron_control_status(settings)
+
+    assert status["running"] is False
+    assert status["stale"] is True
+    assert "running:false" in status["detail"]
 
 
 def test_delete_memory_tool_schema_requires_text() -> None:

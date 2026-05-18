@@ -53,6 +53,32 @@ let state: ControlState = {
   lastError: null,
 };
 
+export type { ControlState };
+
+export function getControlState(): ControlState {
+  return { ...state };
+}
+
+export async function checkControlHealth(): Promise<ControlState> {
+  if (!state.baseUrl || !state.running) return getControlState();
+  try {
+    const statusCode = await fetchControlHealthStatus(state.baseUrl);
+    state = {
+      ...state,
+      running: statusCode >= 200 && statusCode < 300,
+      lastError: statusCode >= 200 && statusCode < 300 ? null : `Electron control health returned HTTP ${statusCode}.`,
+    };
+  } catch (error) {
+    state = {
+      ...state,
+      running: false,
+      lastError: `Electron control server is unavailable at ${state.baseUrl}: ${String(error)}`,
+    };
+  }
+  writeControlDiscovery();
+  return getControlState();
+}
+
 export async function startControlServer(): Promise<ControlState> {
   if (server && state.baseUrl) return { ...state };
 
@@ -260,6 +286,19 @@ function findFreePort(): Promise<number> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function fetchControlHealthStatus(baseUrl: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = http.get(new URL("/health", baseUrl), (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode ?? 0));
+    });
+    request.setTimeout(1_500, () => {
+      request.destroy(new Error("Electron control health check timed out."));
+    });
+    request.on("error", reject);
+  });
 }
 
 function writeControlDiscovery(): void {

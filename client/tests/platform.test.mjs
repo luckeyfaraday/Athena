@@ -32,6 +32,11 @@ test("normalizes equivalent Windows and WSL workspace keys", () => {
   assert.equal(normalizeComparablePath("/C:/Users/dev/repo"), "c:/users/dev/repo");
 });
 
+test("preserves POSIX path case when normalizing comparable paths", () => {
+  assert.equal(normalizeComparablePath("/home/dev/Repo"), "/home/dev/Repo");
+  assert.notEqual(normalizeComparablePath("/home/dev/Repo"), normalizeComparablePath("/home/dev/repo"));
+});
+
 test("keeps Windows workspace paths first-class in the workspace model", () => {
   const workspace = toWorkspacePath("C:\\Users\\dev\\repo");
   assert.equal(workspace.nativePath, "C:\\Users\\dev\\repo");

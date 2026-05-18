@@ -123,10 +123,11 @@ export function wslPathToWindowsPath(value: string): string | null {
 }
 
 export function normalizeComparablePath(value: string): string {
-  let normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  const wslDrive = /^\/mnt\/([a-z])\/(.+)$/.exec(normalized);
-  if (wslDrive) normalized = `${wslDrive[1]}:/${wslDrive[2]}`;
-  if (/^\/[a-z]:\//.test(normalized)) normalized = normalized.slice(1);
+  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const wslDrive = /^\/mnt\/([a-zA-Z])\/(.+)$/.exec(normalized);
+  if (wslDrive) return `${wslDrive[1]}:/${wslDrive[2]}`.toLowerCase();
+  const windowsDrive = /^\/?([a-zA-Z]):\/(.+)$/.exec(normalized);
+  if (windowsDrive) return `${windowsDrive[1]}:/${windowsDrive[2]}`.toLowerCase();
   return normalized;
 }
 

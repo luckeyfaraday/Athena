@@ -1687,3 +1687,59 @@ button:disabled { cursor: not-allowed; opacity: .42; }
   border: 2px solid var(--bg);
 }
 *::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* ── BASE HARDCODED-COLOR OVERRIDES ────────────────────────────
+   The base styles.css uses dozens of hardcoded forest-green hex
+   backgrounds. Map them all to the grayscale surface scale. */
+.flowStep,
+.workflowTrack .flowStep {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--muted);
+}
+.flowStep.active {
+  background: var(--panel-3);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+.agentRows article { background: var(--panel-2); border-color: var(--line); }
+.agentBadge,
+.agentBadge.ready,
+.agentBadge.busy,
+.agentBadge.running,
+.agentBadge.waiting { background: var(--panel-3); color: var(--text-2); }
+.agentRows em,
+.agentRows em.ready,
+.agentRows em.busy,
+.agentRows em.running,
+.agentRows em.offline { background: var(--panel-3); color: var(--text-2); }
+.timelineDot,
+.timelineDot.memory,
+.timelineDot.run,
+.timelineDot.agent,
+.timelineDot.system { background: var(--panel-3); color: var(--text-2); }
+.timelineList em { background: var(--panel-3); color: var(--text-2); }
+.agentCard { background: var(--panel-2); border-color: var(--line); }
+.agentIcon,
+.agentIcon.codex,
+.agentIcon.opencode,
+.agentIcon.claude,
+.agentIcon.hermes { background: var(--panel-3); color: var(--text-2); }
+.historicalAgentBoard { background: var(--panel-2); border-color: var(--line); }
+.memoryHero { background: var(--panel); border-color: var(--line); }
+.reviewCard { background: var(--panel-2); border-color: var(--line); }
+.handoffPanel { background: var(--panel); border-color: var(--line); color: var(--text); }
+.handoffPanel pre { background: var(--panel-2); border-color: var(--line); color: var(--text-2); }
+.handoffProviderTabs { background: var(--panel-2); }
+.handoffPreview { background: var(--panel-2); border-color: var(--line); }
+.handoffPreview pre { background: var(--panel); border-color: var(--line); color: var(--text-2); }
+.sessionReviewList { background: var(--panel-2); }
+.sessionInspector { background: var(--panel); border-color: var(--line); }
+.sessionInspectorGrid pre { background: var(--panel-2); }
+.sessionChip { background: var(--panel-2); border-color: var(--line); color: var(--text-2); }
+.workspaceSelector { background: transparent; }
+.embeddedChatTerminal { background: var(--terminal); }
+.activeAgents,
+.contextGlance,
+.liveWorkflow,
+.memoryTimeline { background: var(--panel); }

@@ -44,8 +44,11 @@ type WriteTerminalRequest = {
 
 const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
 const MAX_TERMINAL_SPAWN_COUNT = 8;
+const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 
 let server: http.Server | null = null;
+let watchdog: NodeJS.Timeout | null = null;
+let watchdogRestartInFlight = false;
 let state: ControlState = {
   baseUrl: null,
   port: null,
@@ -80,7 +83,10 @@ export async function checkControlHealth(): Promise<ControlState> {
 }
 
 export async function startControlServer(): Promise<ControlState> {
-  if (server && state.baseUrl) return { ...state };
+  if (server && state.baseUrl && state.running) {
+    startControlWatchdog();
+    return { ...state };
+  }
 
   const port = await findFreePort();
   const nextServer = http.createServer((request, response) => {
@@ -90,6 +96,15 @@ export async function startControlServer(): Promise<ControlState> {
   await new Promise<void>((resolve, reject) => {
     nextServer.once("error", reject);
     nextServer.listen(port, "127.0.0.1", resolve);
+  }).catch((error) => {
+    state = {
+      baseUrl: null,
+      port: null,
+      running: false,
+      lastError: `Electron control server failed to start: ${String(error)}`,
+    };
+    writeControlDiscovery();
+    throw error;
   });
 
   server = nextServer;
@@ -100,10 +115,29 @@ export async function startControlServer(): Promise<ControlState> {
     lastError: null,
   };
   writeControlDiscovery();
+  startControlWatchdog();
   return { ...state };
 }
 
+export async function restartControlServer(reason = "manual restart"): Promise<ControlState> {
+  stopControlWatchdog();
+  const serverToStop = server;
+  server = null;
+  if (serverToStop) {
+    await new Promise<void>((resolve) => serverToStop.close(() => resolve()));
+  }
+  state = {
+    baseUrl: null,
+    port: null,
+    running: false,
+    lastError: `Electron control restarting: ${reason}`,
+  };
+  writeControlDiscovery();
+  return startControlServer();
+}
+
 export async function stopControlServer(): Promise<void> {
+  stopControlWatchdog();
   const serverToStop = server;
   server = null;
   if (!serverToStop) {
@@ -286,6 +320,32 @@ function findFreePort(): Promise<number> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function startControlWatchdog(): void {
+  if (watchdog) return;
+  watchdog = setInterval(() => {
+    void runControlWatchdog();
+  }, CONTROL_WATCHDOG_INTERVAL_MS);
+  watchdog.unref?.();
+}
+
+function stopControlWatchdog(): void {
+  if (!watchdog) return;
+  clearInterval(watchdog);
+  watchdog = null;
+}
+
+async function runControlWatchdog(): Promise<void> {
+  if (watchdogRestartInFlight || !state.baseUrl) return;
+  const checked = await checkControlHealth();
+  if (checked.running) return;
+  watchdogRestartInFlight = true;
+  try {
+    await restartControlServer(checked.lastError ?? "watchdog health check failed");
+  } finally {
+    watchdogRestartInFlight = false;
+  }
 }
 
 function fetchControlHealthStatus(baseUrl: string): Promise<number> {

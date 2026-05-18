@@ -21,6 +21,7 @@ export function SettingsRoom({
   performance,
   onSelectWorkspace,
   onRestartBackend,
+  onRestartControl,
   onRefreshRecall,
   onInterfaceModeChange,
   onThemeChange,
@@ -40,6 +41,7 @@ export function SettingsRoom({
   performance: PerformanceDiagnostics | null;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
+  onRestartControl: () => Promise<void>;
   onRefreshRecall: () => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
@@ -89,6 +91,9 @@ export function SettingsRoom({
             <span>{electronControl?.lastError ?? electronControl?.baseUrl ?? "Not connected"}</span>
           </div>
           <StatusPill tone={electronControlStatus.tone}>{electronControlStatus.label}</StatusPill>
+          <button className="ghostButton" type="button" onClick={() => void onRestartControl()} disabled={busy}>
+            <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
+          </button>
         </article>
         <article className="settingsSection">
           <div>

@@ -474,6 +474,19 @@ export function App() {
     }
   }
 
+  async function restartElectronControl() {
+    setBusy(true);
+    try {
+      const status = await desktop.restartControl();
+      setElectronControl(status);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function selectWorkspace() {
     try {
       const selected = await desktop.selectWorkspace();
@@ -917,6 +930,7 @@ export function App() {
                 performance={performanceDiagnostics}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
+                onRestartControl={restartElectronControl}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
                 onInterfaceModeChange={setInterfaceMode}
                 onThemeChange={setUiTheme}

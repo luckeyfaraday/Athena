@@ -100,6 +100,7 @@ type WorkspaceApi = {
   restartBackend: () => Promise<BackendStatus>;
   getControlState: () => Promise<ElectronControlStatus>;
   checkControlHealth: () => Promise<ElectronControlStatus>;
+  restartControl: () => Promise<ElectronControlStatus>;
   getDefaultWorkspace: () => Promise<WorkspacePath>;
   toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalStatus>;
@@ -141,6 +142,7 @@ const browserFallback: WorkspaceApi = {
   async restartBackend() { return fallbackBackendState(); },
   async getControlState() { return fallbackControlState(); },
   async checkControlHealth() { return fallbackControlState(); },
+  async restartControl() { return fallbackControlState(); },
   async getDefaultWorkspace() { return fallbackWorkspacePath(); },
   async toWorkspacePath(workspace: string) { return toFallbackWorkspacePath(workspace); },
   async getCodexTerminalState() { return { running: false, workspace: null, pid: null, lastError: null }; },

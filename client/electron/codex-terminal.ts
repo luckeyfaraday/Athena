@@ -498,16 +498,19 @@ function tmuxAttachScript(sessionName: string, cwd: string): string {
 async function fetchHermesMemory(cwd: string): Promise<string> {
   const backend = getBackendState();
   if (!backend.healthy || !backend.baseUrl) {
-    return "";
+    return "Hermes memory lookup failed: Athena backend is unavailable.";
   }
 
   try {
     const params = new URLSearchParams({ project_dir: cwd, limit: "10" });
     const response = await fetch(`${backend.baseUrl}/memory/hermes/project?${params.toString()}`);
-    if (!response.ok) return "";
+    if (!response.ok) {
+      const detail = await response.text();
+      return `Hermes memory lookup failed: backend returned HTTP ${response.status}.${detail ? ` ${detail}` : ""}`;
+    }
     return await response.text();
-  } catch {
-    return "";
+  } catch (error) {
+    return `Hermes memory lookup failed: ${String(error)}`;
   }
 }
 

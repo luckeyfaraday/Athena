@@ -6,6 +6,7 @@ export function WorkspaceTabs({
   workspaces,
   activeWorkspace,
   terminalSessions,
+  className = "",
   onSelect,
   onClose,
   onAdd,
@@ -13,12 +14,13 @@ export function WorkspaceTabs({
   workspaces: WorkspacePath[];
   activeWorkspace: WorkspacePath | null;
   terminalSessions: EmbeddedTerminalSession[];
+  className?: string;
   onSelect: (workspace: WorkspacePath) => void;
   onClose: (workspace: WorkspacePath) => void;
   onAdd: () => Promise<void>;
 }) {
   return (
-    <div className="workspaceTabs" aria-label="Open workspaces">
+    <div className={className ? `workspaceTabs ${className}` : "workspaceTabs"} aria-label="Open workspaces">
       <div className="workspaceTabList">
         {workspaces.map((workspace) => {
           const active = activeWorkspace ? workspaceKey(activeWorkspace) === workspaceKey(workspace) : false;

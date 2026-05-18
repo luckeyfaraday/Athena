@@ -748,6 +748,18 @@ export function App() {
               onAdd={selectWorkspace}
             />
 
+            {terminalFocus && activeRoom === "command" && (
+              <WorkspaceTabs
+                className="focusWorkspaceTabs"
+                workspaces={workspaceTabs}
+                activeWorkspace={workspacePath}
+                terminalSessions={embeddedSessions}
+                onSelect={activateWorkspace}
+                onClose={closeWorkspaceTab}
+                onAdd={selectWorkspace}
+              />
+            )}
+
             {activeRoom === "command" && (
               <CommandRoom
                 workspace={workspace}

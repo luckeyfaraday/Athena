@@ -53,6 +53,11 @@ const interfaceModeStorageKey = "context-workspace:interfaceMode";
 const uiThemeStorageKey = "context-workspace:uiTheme";
 const terminalFocusStorageKey = "context-workspace:terminalFocus";
 const nativeSessionRefreshIntervalMs = 60_000;
+const uiThemeStyleElementId = "athena-selected-ui-theme";
+const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
+  monolith: () => import("./themes/monolith.css?raw"),
+  press: () => import("./themes/press.css?raw"),
+};
 
 function storedWorkspaceValue(): string | null {
   try {
@@ -280,11 +285,31 @@ export function App() {
   }, [client, workspace]);
 
   useEffect(() => {
+    let cancelled = false;
     if (uiTheme === "classic") {
       delete document.documentElement.dataset.theme;
-    } else {
-      document.documentElement.dataset.theme = uiTheme;
+      delete document.documentElement.dataset.themeLoaded;
+      const themeStyle = document.getElementById(uiThemeStyleElementId);
+      themeStyle?.remove();
+      return;
     }
+
+    document.documentElement.dataset.theme = uiTheme;
+    delete document.documentElement.dataset.themeLoaded;
+    loadUiThemeCss[uiTheme]().then(({ default: css }) => {
+      if (cancelled) return;
+      let themeStyle = document.getElementById(uiThemeStyleElementId) as HTMLStyleElement | null;
+      if (!themeStyle) {
+        themeStyle = document.createElement("style");
+        themeStyle.id = uiThemeStyleElementId;
+        document.head.appendChild(themeStyle);
+      }
+      themeStyle.textContent = css;
+      document.documentElement.dataset.themeLoaded = uiTheme;
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [uiTheme]);
 
   useEffect(() => {

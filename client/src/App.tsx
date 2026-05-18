@@ -38,6 +38,7 @@ type LoadState = {
 };
 
 type InterfaceMode = "terminal" | "chat";
+type UiTheme = "classic" | "monolith" | "press";
 
 const emptyLoadState: LoadState = {
   hermes: null,
@@ -49,6 +50,7 @@ const emptyLoadState: LoadState = {
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 const workspaceListStorageKey = "context-workspace:workspaces";
 const interfaceModeStorageKey = "context-workspace:interfaceMode";
+const uiThemeStorageKey = "context-workspace:uiTheme";
 const terminalFocusStorageKey = "context-workspace:terminalFocus";
 const nativeSessionRefreshIntervalMs = 60_000;
 
@@ -108,6 +110,23 @@ function writeInterfaceMode(mode: InterfaceMode): void {
   }
 }
 
+function readUiTheme(): UiTheme {
+  try {
+    const stored = window.localStorage.getItem(uiThemeStorageKey);
+    return stored === "monolith" || stored === "press" ? stored : "classic";
+  } catch {
+    return "classic";
+  }
+}
+
+function writeUiTheme(theme: UiTheme): void {
+  try {
+    window.localStorage.setItem(uiThemeStorageKey, theme);
+  } catch {
+    // Ignore storage failures; the selected theme still works for this session.
+  }
+}
+
 function readTerminalFocus(): boolean {
   try {
     return window.localStorage.getItem(terminalFocusStorageKey) === "1";
@@ -158,6 +177,7 @@ export function App() {
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
   const [terminalFocus, setTerminalFocusState] = useState(() => readTerminalFocus());
   const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
+  const [uiTheme, setUiThemeState] = useState<UiTheme>(() => readUiTheme());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
@@ -175,6 +195,11 @@ export function App() {
   function setInterfaceMode(mode: InterfaceMode) {
     setInterfaceModeState(mode);
     writeInterfaceMode(mode);
+  }
+
+  function setUiTheme(theme: UiTheme) {
+    setUiThemeState(theme);
+    writeUiTheme(theme);
   }
 
   function setTerminalFocus(focused: boolean) {
@@ -253,6 +278,14 @@ export function App() {
       dataRefreshInFlight.current = false;
     }
   }, [client, workspace]);
+
+  useEffect(() => {
+    if (uiTheme === "classic") {
+      delete document.documentElement.dataset.theme;
+    } else {
+      document.documentElement.dataset.theme = uiTheme;
+    }
+  }, [uiTheme]);
 
   useEffect(() => {
     try {
@@ -783,12 +816,14 @@ export function App() {
                 busy={busy}
                 refreshing={recallRefreshing}
                 interfaceMode={interfaceMode}
+                uiTheme={uiTheme}
                 terminalFocus={terminalFocus}
                 performance={performanceDiagnostics}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
                 onInterfaceModeChange={setInterfaceMode}
+                onThemeChange={setUiTheme}
                 onTerminalFocusChange={setTerminalFocus}
               />
             )}

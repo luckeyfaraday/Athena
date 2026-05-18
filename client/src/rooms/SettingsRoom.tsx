@@ -4,6 +4,8 @@ import { adapterInstallStatusView, backendStatusView, hermesStatusView, recallSt
 import type { PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
+type UiTheme = "classic" | "monolith" | "press";
+
 export function SettingsRoom({
   workspace,
   backend,
@@ -13,12 +15,14 @@ export function SettingsRoom({
   busy,
   refreshing,
   interfaceMode,
+  uiTheme,
   terminalFocus,
   performance,
   onSelectWorkspace,
   onRestartBackend,
   onRefreshRecall,
   onInterfaceModeChange,
+  onThemeChange,
   onTerminalFocusChange,
 }: {
   workspace: string;
@@ -29,12 +33,14 @@ export function SettingsRoom({
   busy: boolean;
   refreshing: boolean;
   interfaceMode: "terminal" | "chat";
+  uiTheme: UiTheme;
   terminalFocus: boolean;
   performance: PerformanceDiagnostics | null;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
   onRefreshRecall: () => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
+  onThemeChange: (theme: UiTheme) => void;
   onTerminalFocusChange: (focused: boolean) => void;
 }) {
   const backendStatus = backendStatusView(backend);
@@ -93,6 +99,35 @@ export function SettingsRoom({
               onClick={() => onInterfaceModeChange("chat")}
             >
               <MessageSquare size={14} /> Chat
+            </button>
+          </div>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Theme</strong>
+            <span>{themeDescription(uiTheme)}</span>
+          </div>
+          <div className="segmentedControl themeSegmentedControl" role="group" aria-label="Theme">
+            <button
+              type="button"
+              className={uiTheme === "classic" ? "active" : ""}
+              onClick={() => onThemeChange("classic")}
+            >
+              Classic
+            </button>
+            <button
+              type="button"
+              className={uiTheme === "monolith" ? "active" : ""}
+              onClick={() => onThemeChange("monolith")}
+            >
+              Monolith
+            </button>
+            <button
+              type="button"
+              className={uiTheme === "press" ? "active" : ""}
+              onClick={() => onThemeChange("press")}
+            >
+              Press
             </button>
           </div>
         </article>
@@ -179,6 +214,12 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
     `Per-terminal cap: ${formatBytes(performance.maxBufferChars)} chars`,
     `Last batch: ${performance.lastOutputBatchAt ?? "none"}`,
   ].join("\n");
+}
+
+function themeDescription(theme: UiTheme): string {
+  if (theme === "monolith") return "Void black, acid lime, and sharp terminal surfaces.";
+  if (theme === "press") return "Warm editorial dark with serif headings and vermillion accents.";
+  return "Original Athena forest palette and neutral workspace typography.";
 }
 
 function formatBytes(value: number): string {

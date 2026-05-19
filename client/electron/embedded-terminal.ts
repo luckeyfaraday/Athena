@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
+import { getBackendState } from "./backend.js";
+import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
@@ -50,6 +52,12 @@ type ManagedTerminal = {
   session: EmbeddedTerminalSession;
   process: pty.IPty;
 };
+
+let _appRoot: string | null = null;
+
+export function initEmbeddedTerminals(appRoot: string): void {
+  _appRoot = appRoot;
+}
 
 const terminals = new Map<string, ManagedTerminal>();
 const outputBuffers = new Map<string, string>();
@@ -138,7 +146,12 @@ export async function spawnEmbeddedTerminal(
   const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
     ? null
     : writeAgentContextPrompt(cwd, kind, contextMode, options.title, options.task, options.contextText);
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId);
+  const backendUrl = getBackendState().baseUrl;
+  const controlUrl = getControlState().baseUrl;
+  const mcpConfigPath = isAgentKind(kind) && backendUrl && controlUrl
+    ? writeMcpConfig(kind, backendUrl, controlUrl)
+    : null;
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
 
@@ -160,18 +173,21 @@ export async function spawnEmbeddedTerminal(
 
   try {
     const openCodeBaseline = kind === "opencode" ? resolveOpenCodeBaselineBinary() : null;
+    const baseEnv = sanitizedTerminalEnv();
     const term = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cwd,
       cols: options.cols ?? 96,
       rows: options.rows ?? 28,
       env: {
-        ...sanitizedTerminalEnv(),
+        ...baseEnv,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         CONTEXT_WORKSPACE_TERMINAL_ID: id,
         ...(promptPath ? { CONTEXT_WORKSPACE_HERMES_PROMPT: promptPath } : {}),
         ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
+        ...(backendUrl ? { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl } : {}),
+        ...(controlUrl ? { CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl } : {}),
       },
     });
 
@@ -337,6 +353,7 @@ function terminalLaunch(
   cwd: string,
   promptPath: string | null,
   resumeSessionId?: string,
+  mcpConfigPath?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
     if (kind === "hermes" && resumeSessionId) {
@@ -354,22 +371,22 @@ function terminalLaunch(
     if (kind !== "shell" && resumeSessionId) {
       return {
         command: "powershell.exe",
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcpConfigPath)],
       };
     }
     if (kind !== "shell" && promptPath) {
       return {
         command: "powershell.exe",
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcpConfigPath)],
       };
     }
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId) : launchCommand(kind, cwd, promptPath)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath)] };
 }
 
-function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null): string {
+function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null): string {
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
@@ -388,7 +405,7 @@ function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: stri
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${agent.executable} ${agent.args(cwd, promptPath, "bash")}`.trimEnd(),
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath)}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }
@@ -420,7 +437,7 @@ function launchHermesPowerShellCommand(cwd: string, resumeSessionId?: string): s
   ].filter(Boolean).join("; ");
 }
 
-function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string): string {
+function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcpConfigPath?: string | null): string {
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
@@ -435,18 +452,19 @@ function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSess
     `cd ${quoteShell(cwd)}`,
     `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
     `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-    agent.resumeArgs(cwd, resumeSessionId, "bash"),
+    agent.resumeArgs(cwd, resumeSessionId, "bash", mcpConfigPath),
     "exec bash -l",
   ].join("; ");
 }
 
-function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string): string {
+function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcpConfigPath?: string | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
     `$sessionId = ${quotePowerShell(resumeSessionId)}`,
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
+    mcpConfigPath ? `$mcpConfigPath = ${quotePowerShell(mcpConfigPath)}` : "",
     "Set-Location -LiteralPath $workspace",
     "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
@@ -456,7 +474,7 @@ function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, 
   ].join("; ");
 }
 
-function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string): string {
+function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string, mcpConfigPath?: string | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -464,6 +482,7 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
     "Set-Location -LiteralPath $workspace",
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
+    mcpConfigPath ? `$mcpConfigPath = ${quotePowerShell(mcpConfigPath)}` : "",
     "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
@@ -471,6 +490,40 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
     "$prompt = Get-Content -LiteralPath $promptPath -Raw",
     agent.powerShellCommand,
   ].join("; ");
+}
+
+function resolveMcpServerPath(): string | null {
+  if (!_appRoot) return null;
+  // Same logic as resolveBackendParent in backend.ts: one level up from appRoot covers both dev and packaged
+  const parent = _appRoot.includes(".asar") ? path.dirname(_appRoot) : path.resolve(_appRoot, "..");
+  const candidate = path.join(parent, "mcp_server", "server.py");
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+function writeMcpConfig(kind: EmbeddedTerminalKind, backendUrl: string, controlUrl: string): string | null {
+  const serverPath = resolveMcpServerPath();
+  if (!serverPath) return null;
+  try {
+    if (kind === "claude") return writeClaudeMcpConfig(backendUrl, controlUrl, serverPath);
+  } catch {
+    // Non-fatal: agent launches without MCP wiring if config write fails.
+  }
+  return null;
+}
+
+function writeClaudeMcpConfig(backendUrl: string, controlUrl: string, serverPath: string): string {
+  const configPath = path.join(tempWorkspaceDirectory(), `athena-claude-mcp-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+  const config = {
+    mcpServers: {
+      context_workspace: {
+        command: "python3",
+        args: [serverPath],
+        env: { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl, CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl },
+      },
+    },
+  };
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: "utf8", mode: 0o600 });
+  return configPath;
 }
 
 function writeAgentContextPrompt(
@@ -519,8 +572,8 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   executable: string;
   powerShellCommand: string;
   resumePowerShellCommand: string;
-  args: (cwd: string, promptPath: string | null, shell: "bash") => string;
-  resumeArgs: (cwd: string, sessionId: string, shell: "bash") => string;
+  args: (cwd: string, promptPath: string | null, shell: "bash", mcpConfigPath?: string | null) => string;
+  resumeArgs: (cwd: string, sessionId: string, shell: "bash", mcpConfigPath?: string | null) => string;
 } {
   if (kind === "opencode") {
     return {
@@ -536,10 +589,18 @@ function agentConfig(kind: EmbeddedTerminalKind): {
     return {
       label: "Claude Code",
       executable: "claude",
-      powerShellCommand: "$agentArgs = @($prompt); & $agentCommand @agentArgs",
-      resumePowerShellCommand: "$agentArgs = @('--resume', $sessionId); & $agentCommand @agentArgs",
-      args: (_cwd, promptPath) => promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
-      resumeArgs: (_cwd, sessionId) => `claude --resume ${quoteShell(sessionId)}`,
+      powerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += $prompt; & $agentCommand @agentArgs",
+      resumePowerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += @('--resume', $sessionId); & $agentCommand @agentArgs",
+      args: (_cwd, promptPath, _shell, mcpConfigPath) => [
+        mcpConfigPath ? `--mcp-config ${quoteShell(mcpConfigPath)}` : "",
+        promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
+      ].filter(Boolean).join(" "),
+      resumeArgs: (_cwd, sessionId, _shell, mcpConfigPath) => [
+        "claude",
+        mcpConfigPath ? `--mcp-config ${quoteShell(mcpConfigPath)}` : "",
+        "--resume",
+        quoteShell(sessionId),
+      ].filter(Boolean).join(" "),
     };
   }
   return {

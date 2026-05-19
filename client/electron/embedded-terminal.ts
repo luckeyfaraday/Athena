@@ -526,18 +526,18 @@ function agentConfig(kind: EmbeddedTerminalKind): {
     return {
       label: "OpenCode",
       executable: "opencode",
-      powerShellCommand: "& $agentCommand $workspace --prompt $prompt",
-      resumePowerShellCommand: "& $agentCommand $workspace --session $sessionId",
-      args: (cwd, promptPath) => promptPath ? `${quoteShell(cwd)} --prompt "$(cat ${quoteShell(promptPath)})"` : quoteShell(cwd),
-      resumeArgs: (cwd, sessionId) => `opencode ${quoteShell(cwd)} --session ${quoteShell(sessionId)}`,
+      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
+      resumePowerShellCommand: "$agentArgs = @('--session', $sessionId, $workspace); & $agentCommand @agentArgs",
+      args: (cwd, promptPath) => promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd),
+      resumeArgs: (cwd, sessionId) => `opencode --session ${quoteShell(sessionId)} ${quoteShell(cwd)}`,
     };
   }
   if (kind === "claude") {
     return {
       label: "Claude Code",
       executable: "claude",
-      powerShellCommand: "& $agentCommand $prompt",
-      resumePowerShellCommand: "& $agentCommand --resume $sessionId",
+      powerShellCommand: "$agentArgs = @($prompt); & $agentCommand @agentArgs",
+      resumePowerShellCommand: "$agentArgs = @('--resume', $sessionId); & $agentCommand @agentArgs",
       args: (_cwd, promptPath) => promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
       resumeArgs: (_cwd, sessionId) => `claude --resume ${quoteShell(sessionId)}`,
     };
@@ -545,8 +545,8 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   return {
     label: "Codex",
     executable: "codex",
-    powerShellCommand: "& $agentCommand --cd $workspace $prompt",
-    resumePowerShellCommand: "& $agentCommand resume --cd $workspace $sessionId",
+    powerShellCommand: "$agentArgs = @('--cd', $workspace, $prompt); & $agentCommand @agentArgs",
+    resumePowerShellCommand: "$agentArgs = @('resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
     args: (cwd, promptPath) => promptPath ? `--cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"` : `--cd ${quoteShell(cwd)}`,
     resumeArgs: (cwd, sessionId) => `codex resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };

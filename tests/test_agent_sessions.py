@@ -225,6 +225,44 @@ def test_lists_claude_jsonl_sessions(tmp_path: Path) -> None:
     assert sessions[0].updated_at == "2026-05-09T12:05:00Z"
 
 
+def test_claude_sessions_do_not_leak_across_workspaces(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    other_workspace = tmp_path / "other-project"
+    workspace.mkdir()
+    other_workspace.mkdir()
+    projects_dir = home / ".claude" / "projects"
+    session_dir = projects_dir / str(workspace).replace(":", "").replace("\\", "-").replace("/", "-")
+    other_session_dir = projects_dir / str(other_workspace).replace(":", "").replace("\\", "-").replace("/", "-")
+    session_dir.mkdir(parents=True)
+    other_session_dir.mkdir(parents=True)
+
+    (session_dir / "claude-current.jsonl").write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-current",
+                "timestamp": "2026-05-09T12:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": "Current workspace"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (other_session_dir / "claude-other.jsonl").write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-other",
+                "timestamp": "2026-05-09T13:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": "Other workspace"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="claude")
+
+    assert [session.id for session in sessions] == ["claude-current"]
+
+
 def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

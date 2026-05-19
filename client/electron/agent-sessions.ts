@@ -295,7 +295,7 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
 function readClaudeSessions(workspace: string): AgentSession[] {
   const projectsDir = path.join(os.homedir(), ".claude", "projects");
   if (!fs.existsSync(projectsDir)) return [];
-  const candidateDirs = [path.join(projectsDir, encodeClaudeProjectPath(workspace))];
+  const candidateDirs = claudeProjectPathCandidates(projectsDir, workspace);
   const seenFiles = new Set<string>();
   const sessions: AgentSession[] = [];
   for (const dir of candidateDirs) {
@@ -673,7 +673,18 @@ function quoteShellArg(value: string): string {
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
+function claudeProjectPathCandidates(projectsDir: string, workspace: string): string[] {
+  return Array.from(new Set([
+    path.join(projectsDir, encodeClaudeProjectPath(workspace)),
+    path.join(projectsDir, legacyEncodeClaudeProjectPath(workspace)),
+  ]));
+}
+
 function encodeClaudeProjectPath(workspace: string): string {
+  return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
+}
+
+function legacyEncodeClaudeProjectPath(workspace: string): string {
   return path.resolve(workspace).replace(/:/g, "").replace(/[\\/]/g, "-");
 }
 

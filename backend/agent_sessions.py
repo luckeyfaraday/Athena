@@ -561,7 +561,7 @@ def _read_claude_sessions(workspace: Path, home: Path) -> list[AgentSession]:
     if not projects_dir.exists():
         return []
 
-    candidate_dirs = [projects_dir / _encode_claude_project_path(workspace)]
+    candidate_dirs = _claude_project_path_candidates(projects_dir, workspace)
 
     seen: set[Path] = set()
     sessions: list[AgentSession] = []
@@ -965,5 +965,16 @@ def _quote_shell_arg(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`") + '"'
 
 
+def _claude_project_path_candidates(projects_dir: Path, workspace: Path) -> list[Path]:
+    return list(dict.fromkeys([
+        projects_dir / _encode_claude_project_path(workspace),
+        projects_dir / _legacy_encode_claude_project_path(workspace),
+    ]))
+
+
 def _encode_claude_project_path(workspace: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9.]+", "-", str(workspace).replace(":", ""))
+
+
+def _legacy_encode_claude_project_path(workspace: Path) -> str:
     return str(workspace).replace(":", "").replace("\\", "-").replace("/", "-")

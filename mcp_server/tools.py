@@ -41,7 +41,12 @@ async def context_workspace_query_memory(query: str, limit: int = 10) -> str:
 
 
 async def context_workspace_query_project_memory(project_dir: str, limit: int = 10) -> str:
-    """Return Hermes project memory for a project directory."""
+    """Return Hermes project memory for a project directory.
+
+    Call this when the user says 'ask hermes [question]' to retrieve relevant
+    memory, past decisions, and session history for the current project.
+    Pass the user's question as project_dir context or use a targeted query.
+    """
     return await ContextWorkspaceClient().get("/memory/hermes/project", project_dir=project_dir, limit=limit)
 
 
@@ -230,10 +235,12 @@ async def context_workspace_inject_terminal_input(
 ) -> dict[str, Any]:
     """Submit input to a live Athena PTY by terminal id or provider session id.
 
-    Use this for live cross-agent handoffs: first call
-    context_workspace_list_live_terminals, choose a terminal id or provider
-    session id, then inject the next instruction. The desktop app must be
-    running because this routes through Athena's Electron control server.
+    Use this for agent-to-agent conversations: first call
+    context_workspace_list_live_terminals to find the target terminal id (e.g.
+    Hermes), then inject a message. Include the caller's own terminal id from
+    the CONTEXT_WORKSPACE_TERMINAL_ID env var so the recipient can inject its
+    response back. The desktop app must be running because this routes through
+    Athena's Electron control server.
     """
     return await ContextWorkspaceElectronClient().post(
         "/terminals/write",

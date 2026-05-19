@@ -19,6 +19,7 @@ import {
 import {
   getEmbeddedTerminalBuffer,
   getPerformanceDiagnostics,
+  initEmbeddedTerminals,
   killEmbeddedTerminal,
   listEmbeddedTerminals,
   resizeEmbeddedTerminal,
@@ -31,6 +32,7 @@ import {
 } from "./embedded-terminal.js";
 
 export function registerIpcHandlers(appRoot: string): void {
+  initEmbeddedTerminals(appRoot);
   ipcMain.handle("window:minimize", (event): void => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
   });

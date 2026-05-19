@@ -1,8 +1,11 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
+import { getBackendState } from "./backend.js";
+import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
@@ -50,6 +53,12 @@ type ManagedTerminal = {
   session: EmbeddedTerminalSession;
   process: pty.IPty;
 };
+
+let _appRoot: string | null = null;
+
+export function initEmbeddedTerminals(appRoot: string): void {
+  _appRoot = appRoot;
+}
 
 const terminals = new Map<string, ManagedTerminal>();
 const outputBuffers = new Map<string, string>();
@@ -135,7 +144,7 @@ export async function spawnEmbeddedTerminal(
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId
     ? null
     : writeAgentContextPrompt(cwd, kind, contextMode, options.title, options.task, options.contextText);
   const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId);
@@ -160,18 +169,26 @@ export async function spawnEmbeddedTerminal(
 
   try {
     const openCodeBaseline = kind === "opencode" ? resolveOpenCodeBaselineBinary() : null;
+    const backendUrl = getBackendState().baseUrl;
+    const controlUrl = getControlState().baseUrl;
+    if (isAgentKind(kind) && backendUrl && controlUrl) {
+      writeMcpConfigs(kind, cwd, backendUrl, controlUrl);
+    }
+    const baseEnv = sanitizedTerminalEnv();
     const term = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cwd,
       cols: options.cols ?? 96,
       rows: options.rows ?? 28,
       env: {
-        ...sanitizedTerminalEnv(),
+        ...baseEnv,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         CONTEXT_WORKSPACE_TERMINAL_ID: id,
         ...(promptPath ? { CONTEXT_WORKSPACE_HERMES_PROMPT: promptPath } : {}),
         ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
+        ...(backendUrl ? { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl } : {}),
+        ...(controlUrl ? { CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl } : {}),
       },
     });
 
@@ -471,6 +488,93 @@ function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, prompt
     "$prompt = Get-Content -LiteralPath $promptPath -Raw",
     agent.powerShellCommand,
   ].join("; ");
+}
+
+function resolveMcpServerPath(): string | null {
+  if (!_appRoot) return null;
+  // Same logic as resolveBackendParent in backend.ts: one level up from appRoot covers both dev and packaged
+  const parent = _appRoot.includes(".asar") ? path.dirname(_appRoot) : path.resolve(_appRoot, "..");
+  const candidate = path.join(parent, "mcp_server", "server.py");
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
+function writeMcpConfigs(kind: EmbeddedTerminalKind, cwd: string, backendUrl: string, controlUrl: string): void {
+  const serverPath = resolveMcpServerPath();
+  if (!serverPath) return;
+  try {
+    if (kind === "claude") writeClaudeMcpConfig(cwd, backendUrl, controlUrl, serverPath);
+    else if (kind === "opencode") writeOpenCodeMcpConfig(backendUrl, controlUrl, serverPath);
+    else if (kind === "codex") writeCodexMcpConfig(backendUrl, controlUrl, serverPath);
+  } catch {
+    // Non-fatal: agent launches without MCP wiring if config write fails
+  }
+}
+
+function writeClaudeMcpConfig(cwd: string, backendUrl: string, controlUrl: string, serverPath: string): void {
+  const claudeDir = path.join(cwd, ".claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const config = {
+    mcpServers: {
+      context_workspace: {
+        command: "python3",
+        args: [serverPath],
+        env: { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl, CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl },
+      },
+    },
+  };
+  fs.writeFileSync(path.join(claudeDir, ".mcp.json"), JSON.stringify(config, null, 2), "utf8");
+}
+
+function writeOpenCodeMcpConfig(backendUrl: string, controlUrl: string, serverPath: string): void {
+  const configPath = path.join(os.homedir(), ".config", "opencode", "opencode.jsonc");
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    const stripped = fs.readFileSync(configPath, "utf8")
+      .replace(/\/\/[^\n]*/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    try { config = JSON.parse(stripped) as Record<string, unknown>; } catch { /* start fresh */ }
+  }
+  config.mcp_servers = {
+    ...(config.mcp_servers as Record<string, unknown> ?? {}),
+    context_workspace: {
+      command: "python3",
+      args: [serverPath],
+      env: { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl, CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl },
+    },
+  };
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
+}
+
+function writeCodexMcpConfig(backendUrl: string, controlUrl: string, serverPath: string): void {
+  const configPath = path.join(os.homedir(), ".codex", "config.toml");
+  const entry = [
+    `[mcp_servers.context_workspace]`,
+    `command = "python3"`,
+    `args = [${JSON.stringify(serverPath)}]`,
+    ``,
+    `[mcp_servers.context_workspace.env]`,
+    `CONTEXT_WORKSPACE_BACKEND_URL = ${JSON.stringify(backendUrl)}`,
+    `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL = ${JSON.stringify(controlUrl)}`,
+  ].join("\n");
+  if (!fs.existsSync(configPath)) {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, entry + "\n", "utf8");
+    return;
+  }
+  // Replace existing context_workspace sections, then append updated entry
+  const lines = fs.readFileSync(configPath, "utf8").split("\n");
+  const kept: string[] = [];
+  let inSection = false;
+  for (const line of lines) {
+    const header = /^\[([^\]]+)\]/.exec(line.trim());
+    if (header) {
+      inSection = header[1] === "mcp_servers.context_workspace" ||
+                  header[1].startsWith("mcp_servers.context_workspace.");
+    }
+    if (!inSection) kept.push(line);
+  }
+  fs.writeFileSync(configPath, kept.join("\n").trimEnd() + "\n\n" + entry + "\n", "utf8");
 }
 
 function writeAgentContextPrompt(

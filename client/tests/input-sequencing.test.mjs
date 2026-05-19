@@ -24,8 +24,14 @@ test("codex control injection can submit an existing prompt", () => {
   assert.deepEqual(terminalInputWritesForKind("codex", "\r"), [{ data: "\r" }]);
 });
 
-test("non-codex control injection preserves the existing raw write contract", () => {
+test("non-codex control injection submits input with Enter", () => {
   for (const kind of ["shell", "hermes", "opencode", "claude"]) {
     assert.deepEqual(terminalInputWritesForKind(kind, "status\r"), [{ data: "status\r" }]);
+  }
+});
+
+test("non-codex control injection adds submit when caller omits it", () => {
+  for (const kind of ["shell", "hermes", "opencode", "claude"]) {
+    assert.deepEqual(terminalInputWritesForKind(kind, "status"), [{ data: "status\r" }]);
   }
 });

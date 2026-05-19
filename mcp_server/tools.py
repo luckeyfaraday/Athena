@@ -43,9 +43,8 @@ async def context_workspace_query_memory(query: str, limit: int = 10) -> str:
 async def context_workspace_query_project_memory(project_dir: str, limit: int = 10) -> str:
     """Return Hermes project memory for a project directory.
 
-    Call this when the user says 'ask hermes [question]' to retrieve relevant
-    memory, past decisions, and session history for the current project.
-    Pass the user's question as project_dir context or use a targeted query.
+    Use this when the current workspace/project is the context. Pass the real
+    project directory path, not the user's question.
     """
     return await ContextWorkspaceClient().get("/memory/hermes/project", project_dir=project_dir, limit=limit)
 

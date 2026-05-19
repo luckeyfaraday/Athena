@@ -17,7 +17,7 @@ export function resolveAgentContextMode(mode: AgentContextMode | undefined, task
 
 const HERMES_TIP = [
   'When the user says "ask hermes [question]":',
-  '  1. Call `context_workspace_query_project_memory` with the question to retrieve relevant memory and session history.',
+  '  1. Call `context_workspace_query_memory` with the question, or `context_workspace_query_project_memory` with the current project directory.',
   '  2. For a live back-and-forth with Hermes: call `context_workspace_list_live_terminals` to find the Hermes terminal ID,',
   '     then call `context_workspace_inject_terminal_input` with that ID — include your own terminal ID ($CONTEXT_WORKSPACE_TERMINAL_ID) so Hermes can inject its response back to you.',
   'Only do this when the user explicitly asks.',
@@ -25,20 +25,10 @@ const HERMES_TIP = [
 
 export function buildAgentContextPrompt(input: AgentContextInput): string | null {
   const mode = resolveAgentContextMode(input.mode, input.task, input.contextText);
+  if (mode === "none") return null;
 
   const task = input.task?.trim();
   const curatedContext = input.contextText?.trim();
-
-  if (mode === "none") {
-    return [
-      `# ${input.agentLabel} — Athena`,
-      "",
-      `Workspace: ${input.workspace}`,
-      "",
-      HERMES_TIP,
-      "",
-    ].join("\n");
-  }
 
   if (mode === "task" && !task) return null;
   if (mode === "curated" && !task && !curatedContext) return null;

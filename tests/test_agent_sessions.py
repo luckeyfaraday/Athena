@@ -263,6 +263,31 @@ def test_claude_sessions_do_not_leak_across_workspaces(tmp_path: Path) -> None:
     assert [session.id for session in sessions] == ["claude-current"]
 
 
+def test_lists_claude_sessions_from_claude_encoded_workspace_dir(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project_with_underscores" / "Codex sub tracker"
+    workspace.mkdir(parents=True)
+    encoded = str(workspace).replace(":", "")
+    encoded = "".join(character if character.isalnum() or character == "." else "-" for character in encoded)
+    session_dir = home / ".claude" / "projects" / encoded
+    session_dir.mkdir(parents=True)
+    (session_dir / "claude-encoded.jsonl").write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-encoded",
+                "cwd": str(workspace),
+                "timestamp": "2026-05-09T12:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": "Encoded workspace"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="claude")
+
+    assert [session.id for session in sessions] == ["claude-encoded"]
+
+
 def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

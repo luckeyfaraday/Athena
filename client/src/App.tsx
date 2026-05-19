@@ -551,25 +551,6 @@ export function App() {
     setBusy(true);
     setError(null);
     try {
-      if (kind !== "shell" && kind !== "hermes" && (!state.recall || state.recall.stale)) {
-        let recall = state.recall;
-        if (recall?.refresh_configured) {
-          recall = await refreshRecall(`Launching ${count > 1 ? `${count} ${kind} agents` : `${kind} agent`}`);
-        }
-        if (!recall || recall.stale) {
-          const proceed = window.confirm(
-            recall?.refresh_configured
-              ? "Hermes recall is still stale after refresh. Launch agents anyway?"
-              : "Hermes recall refresh is not configured. Launch agents with missing or stale recall?",
-          );
-          if (!proceed) return;
-        }
-        if (recall && !recall.stale) {
-          void client?.markRecallUsed(workspace, kind).then((result) => {
-            setState((current) => ({ ...current, recall: result.recall }));
-          }).catch(() => undefined);
-        }
-      }
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
         kind,

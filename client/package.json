@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.json && vite build && npm run build:electron",
     "build:electron": "tsc -p tsconfig.electron.json",
     "test:chat": "node --test tests/chat-mode.test.mjs",
-    "test:electron": "npm run build:electron && node --test tests/platform.test.mjs tests/input-sequencing.test.mjs",
+    "test:electron": "npm run build:electron && node --test tests/platform.test.mjs tests/input-sequencing.test.mjs tests/agent-context.test.mjs",
     "start": "electron .",
     "package": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"

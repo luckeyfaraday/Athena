@@ -31,6 +31,7 @@ export type NativeTerminalSession = {
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
+export type AgentContextMode = "none" | "task" | "curated";
 
 export type WorkspacePath = {
   nativePath: string;
@@ -63,6 +64,8 @@ export type EmbeddedTerminalSpawnOptions = {
   resumeSessionId?: string;
   sessionLabel?: string;
   providerSessionId?: string;
+  contextMode?: AgentContextMode;
+  contextText?: string;
 };
 
 export type AgentSession = {

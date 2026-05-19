@@ -100,13 +100,18 @@ async def context_workspace_spawn_agent(
     memory_query: str | None = None,
     timeout_seconds: float | None = None,
     visible_terminal: bool = True,
+    context_mode: str = "task",
+    context: str | None = None,
 ) -> dict[str, Any]:
     """Spawn Codex/OpenCode/Claude as a visible Athena terminal by default.
 
     This is the high-level tool Hermes should use when the user asks to start
     an agent. It routes through Athena's Electron control server, so the desktop
-    app must be running. Set visible_terminal=false only for the legacy backend
-    run/artifact path.
+    app must be running. Visible spawns no longer receive Athena recall/memory
+    automatically. Use context_mode=\"task\" for a compact task-only prompt,
+    context_mode=\"curated\" with context for Hermes-selected background, or
+    context_mode=\"none\" for a clean launch. Set visible_terminal=false only
+    for the legacy backend run/artifact path.
     """
     normalized_agent = _terminal_kind_for_agent(agent_type)
     if visible_terminal:
@@ -119,6 +124,8 @@ async def context_workspace_spawn_agent(
                 title=_title_for_task(normalized_agent, task),
                 session_label="New",
                 task=task,
+                context_mode=context_mode,
+                context=context,
             ),
         }
 
@@ -142,8 +149,14 @@ async def context_workspace_spawn_terminal(
     task: str | None = None,
     resume_session_id: str | None = None,
     session_label: str | None = None,
+    context_mode: str | None = None,
+    context: str | None = None,
 ) -> dict[str, Any]:
-    """Low-level visible terminal spawner using Athena's Electron control server."""
+    """Low-level visible terminal spawner using Athena's Electron control server.
+
+    context_mode accepts: none, task, curated. Manual/clean launches should use
+    none. Hermes-curated launches should use curated and pass context.
+    """
     return await ContextWorkspaceElectronClient().post(
         "/terminals/spawn",
         {
@@ -154,6 +167,8 @@ async def context_workspace_spawn_terminal(
             "task": task,
             "resume_session_id": resume_session_id,
             "session_label": session_label,
+            "context_mode": context_mode,
+            "context": context,
         },
     )
 
@@ -166,9 +181,9 @@ async def context_workspace_spawn_terminals_batch(
 
     Use this when a task needs several agents at once, for example two
     OpenCode panes and one Codex pane. Each spec accepts kind, count, title,
-    task, resume_session_id, and session_label. Athena groups compatible
-    same-provider specs into count-based spawn calls where possible and returns
-    every created terminal id in one response.
+    task, resume_session_id, session_label, context_mode, and context. Athena
+    groups compatible same-provider specs into count-based spawn calls where
+    possible and returns every created terminal id in one response.
     """
     if not specs:
         raise ValueError("specs must include at least one terminal request.")
@@ -430,6 +445,8 @@ def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
         "task": task,
         "resume_session_id": _string_or_none(spec.get("resume_session_id")),
         "session_label": session_label,
+        "context_mode": _context_mode_or_none(spec.get("context_mode")),
+        "context": _string_or_none(spec.get("context")) or _string_or_none(spec.get("context_text")),
     }
 
 
@@ -442,11 +459,23 @@ def _can_merge_batch_spawn_requests(left: dict[str, Any], right: dict[str, Any])
         and left.get("resume_session_id") is None
         and right.get("resume_session_id") is None
         and left.get("session_label") == right.get("session_label")
+        and left.get("context_mode") == right.get("context_mode")
+        and left.get("context") == right.get("context")
     )
 
 
 def _string_or_none(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _context_mode_or_none(value: Any) -> str | None:
+    mode = _string_or_none(value)
+    if mode is None:
+        return None
+    normalized = mode.lower()
+    if normalized not in {"none", "task", "curated"}:
+        raise ValueError(f"Unsupported context_mode: {value}")
+    return normalized
 
 
 def _title_for_task(kind: str, task: str) -> str:

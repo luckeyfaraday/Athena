@@ -354,7 +354,7 @@ export function CommandRoom({
             <div className="terminalEmptyState">
               {emptyMark}
               <strong>No embedded terminals yet.</strong>
-              <span>Select a workspace, then start a shell or launch an agent session with Hermes recall attached.</span>
+              <span>Select a workspace, then start a shell or launch a clean agent session.</span>
             </div>
           )}
         </div>
@@ -440,7 +440,7 @@ export function CommandRoom({
             <TerminalSquare size={15} />
             <div>
               <strong>{session.title}</strong>
-              <span>{session.kind} · {session.status}{session.promptPath ? " · Hermes prompt" : ""}</span>
+              <span>{session.kind} · {session.status}{session.promptPath ? " · Athena context" : ""}</span>
             </div>
           </div>
         ))}

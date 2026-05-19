@@ -28,6 +28,9 @@ type SpawnTerminalRequest = {
   task?: string;
   resume_session_id?: string;
   session_label?: string;
+  context_mode?: string;
+  context?: string;
+  context_text?: string;
   cols?: number;
   rows?: number;
 };
@@ -185,6 +188,8 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
             rows: payload.rows,
             resumeSessionId: payload.resumeSessionId,
             sessionLabel: payload.sessionLabel,
+            contextMode: payload.contextMode,
+            contextText: payload.contextText,
           }),
         );
         if (payload.kind === "opencode" && index < payload.count - 1) await delay(650);
@@ -222,6 +227,8 @@ function parseSpawnTerminalRequest(body: unknown): {
   task?: string;
   resumeSessionId?: string;
   sessionLabel?: string;
+  contextMode?: "none" | "task" | "curated";
+  contextText?: string;
   cols?: number;
   rows?: number;
 } {
@@ -243,6 +250,8 @@ function parseSpawnTerminalRequest(body: unknown): {
     task: stringValue(request.task),
     resumeSessionId: stringValue(request.resume_session_id),
     sessionLabel: stringValue(request.session_label),
+    contextMode: contextModeValue(request.context_mode),
+    contextText: stringValue(request.context_text) ?? stringValue(request.context),
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
   };
@@ -267,6 +276,13 @@ function numberValue(value: unknown): number | undefined {
   if (value == null) return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? Math.floor(number) : undefined;
+}
+
+function contextModeValue(value: unknown): "none" | "task" | "curated" | undefined {
+  if (value == null) return undefined;
+  const mode = String(value).trim().toLowerCase();
+  if (mode === "none" || mode === "task" || mode === "curated") return mode;
+  throw new Error(`Unsupported context_mode: ${value}`);
 }
 
 function readJsonBody(request: IncomingMessage): Promise<unknown> {

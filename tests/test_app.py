@@ -12,7 +12,7 @@ import backend.app as app_module
 from backend.adapters.base import AdapterCommand
 from backend.app import create_app
 from backend.context_artifacts import RunArtifacts
-from backend.hermes import HermesInstallResult, HermesStatus
+from backend.hermes import HermesAskResult, HermesInstallResult, HermesStatus
 from backend.memory import HermesMemoryStore
 from backend.runs import Run, RunRegistry, RunStatus
 from backend.runtime import RuntimeLimits
@@ -73,6 +73,21 @@ class FakeHermesManager:
             status=self.status(),
         )
 
+    def ask(
+        self,
+        *,
+        project_dir: Path,
+        question: str,
+        context: str | None = None,
+        timeout_seconds: float = 120,
+    ) -> HermesAskResult:
+        if not self.installed:
+            raise RuntimeError("Hermes Agent is not installed.")
+        answer = f"answer: {question}"
+        if context:
+            answer += f" | context: {context}"
+        return HermesAskResult(answer=answer, project_dir=project_dir, returncode=0, stderr="")
+
 
 class FailingMemoryStore:
     def format_query_response(self, query: str, *, limit: int = 10) -> str:
@@ -127,6 +142,41 @@ def test_hermes_install_endpoint_runs_manager(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["returncode"] == 0
     assert response.json()["hermes"]["installed"] is True
+
+
+def test_hermes_ask_endpoint_returns_direct_answer(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/hermes/install", json={"confirm": True})
+
+    response = client.post(
+        "/hermes/ask",
+        json={
+            "project_dir": str(tmp_path),
+            "question": "What changed?",
+            "context": "Use the current workspace.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "answer: What changed? | context: Use the current workspace.",
+        "project_dir": str(tmp_path),
+        "source": "hermes-oneshot",
+        "returncode": 0,
+        "stderr": "",
+    }
+
+
+def test_hermes_ask_endpoint_reports_unavailable_hermes(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/hermes/ask",
+        json={"project_dir": str(tmp_path), "question": "What changed?"},
+    )
+
+    assert response.status_code == 502
+    assert "not installed" in response.json()["detail"]
 
 
 def test_hermes_recall_status_reports_missing_cache(tmp_path: Path) -> None:

@@ -49,6 +49,30 @@ async def context_workspace_query_project_memory(project_dir: str, limit: int = 
     return await ContextWorkspaceClient().get("/memory/hermes/project", project_dir=project_dir, limit=limit)
 
 
+async def context_workspace_ask_hermes(
+    project_dir: str,
+    question: str,
+    context: str | None = None,
+    timeout_seconds: float = 120,
+) -> dict[str, Any]:
+    """Ask Hermes directly and return its final answer.
+
+    Use this for request/response questions such as "ask Hermes ...". This is
+    not visible terminal steering: it runs Hermes in one-shot mode and returns a
+    structured answer. Use context_workspace_inject_terminal_input only when the
+    user wants a live visible Hermes terminal or cross-agent handoff.
+    """
+    return await ContextWorkspaceClient().post(
+        "/hermes/ask",
+        {
+            "project_dir": project_dir,
+            "question": question,
+            "context": context,
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+
+
 async def context_workspace_store_memory(text: str) -> dict[str, Any]:
     """Append text to Hermes memory through Context Workspace."""
     return await ContextWorkspaceClient().post("/memory/store", {"text": text})

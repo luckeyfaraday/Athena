@@ -39,6 +39,14 @@ class HermesInstallResult:
     status: HermesStatus
 
 
+@dataclass(frozen=True)
+class HermesAskResult:
+    answer: str
+    project_dir: Path
+    returncode: int
+    stderr: str
+
+
 class HermesManager:
     def __init__(self, *, hermes_home: Path | None = None) -> None:
         self.hermes_home = hermes_home or Path.home() / ".hermes"
@@ -115,6 +123,43 @@ class HermesManager:
             status=self.status(),
         )
 
+    def ask(
+        self,
+        *,
+        project_dir: Path,
+        question: str,
+        context: str | None = None,
+        timeout_seconds: float = 120,
+    ) -> HermesAskResult:
+        status = self.status()
+        if not status.installed:
+            raise RuntimeError("Hermes Agent is not installed.")
+        if status.setup_required:
+            raise RuntimeError("Hermes Agent setup has not completed.")
+        if status.command_path and status.command_path.startswith("wsl:"):
+            raise RuntimeError("Direct Hermes ask is not supported from native Windows yet. Run Athena inside WSL or use a visible Hermes terminal.")
+
+        prompt = _ask_prompt(question, context)
+        completed = subprocess.run(
+            ["hermes", "--oneshot", prompt],
+            cwd=project_dir,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        answer = completed.stdout.strip()
+        stderr = completed.stderr.strip()
+        if completed.returncode != 0:
+            detail = stderr or answer or f"hermes exited with status {completed.returncode}"
+            raise RuntimeError(detail)
+        return HermesAskResult(
+            answer=answer,
+            project_dir=project_dir,
+            returncode=completed.returncode,
+            stderr=stderr,
+        )
+
     def _memory_path(self, hermes_home: Path) -> Path | None:
         candidates = [
             hermes_home / "memories" / "MEMORY.md",
@@ -124,6 +169,20 @@ class HermesManager:
             if path.exists():
                 return path
         return None
+
+
+def _ask_prompt(question: str, context: str | None = None) -> str:
+    cleaned_question = question.strip()
+    cleaned_context = context.strip() if context else ""
+    if not cleaned_context:
+        return cleaned_question
+    return "\n\n".join(
+        [
+            cleaned_question,
+            "Additional Athena context:",
+            cleaned_context,
+        ]
+    )
 
 
 def _hermes_version() -> str | None:

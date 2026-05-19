@@ -47,6 +47,18 @@ def test_agent_session_tool_schema_includes_filters() -> None:
     assert schema["required"] == ["project_dir"]
 
 
+def test_ask_hermes_tool_schema_requires_project_and_question() -> None:
+    schema = server._tool_schema(tools.context_workspace_ask_hermes)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {"type": "string"}
+    assert schema["properties"]["question"] == {"type": "string"}
+    assert schema["properties"]["context"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert schema["properties"]["timeout_seconds"] == {"type": "number"}
+    assert schema["required"] == ["project_dir", "question"]
+
+
 def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
     schema = server._tool_schema(tools.context_workspace_spawn_terminal)["inputSchema"]
 

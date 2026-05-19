@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, Menu, shell, type MenuItemConstructorOptions } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
+import { normalizeExternalUrl } from "./external-links.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -101,6 +102,7 @@ async function createWindow(): Promise<void> {
     },
   });
   installContextMenu(mainWindow);
+  installExternalLinkHandler(mainWindow);
 
   if (inDev) {
     await mainWindow.loadURL("http://127.0.0.1:5173");
@@ -110,6 +112,18 @@ async function createWindow(): Promise<void> {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+  });
+}
+
+function installExternalLinkHandler(window: BrowserWindow): void {
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const externalUrl = normalizeExternalUrl(url);
+    if (externalUrl) {
+      void shell.openExternal(externalUrl).catch((error) => {
+        console.error("Failed to open external URL:", error);
+      });
+    }
+    return { action: "deny" };
   });
 }
 

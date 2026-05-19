@@ -1,6 +1,6 @@
 import { DragEvent, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal, type ILink, type ITheme } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
 import "@xterm/xterm/css/xterm.css";
 
@@ -37,6 +37,11 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit);
+    const linkDisposable = terminal.registerLinkProvider({
+      provideLinks: (bufferLineNumber, callback) => {
+        callback(detectExternalLinks(terminal, bufferLineNumber));
+      },
+    });
     terminal.open(container);
     terminalRef.current = terminal;
     fitRef.current = fit;
@@ -77,6 +82,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       removeData();
       removeExit();
       dataDisposable.dispose();
+      linkDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
@@ -146,6 +152,57 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       onDrop={handleDrop}
     />
   );
+}
+
+const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+
+function detectExternalLinks(terminal: Terminal, bufferLineNumber: number): ILink[] | undefined {
+  const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
+  if (!line) return undefined;
+
+  const text = line.translateToString(true);
+  const links: ILink[] = [];
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const raw = match[0];
+    const url = trimTerminalUrl(raw);
+    if (!url || match.index === undefined) continue;
+
+    const startColumn = match.index + 1;
+    const endColumn = startColumn + url.length - 1;
+    links.push({
+      range: {
+        start: { x: startColumn, y: bufferLineNumber },
+        end: { x: endColumn, y: bufferLineNumber },
+      },
+      text: url,
+      decorations: { pointerCursor: true, underline: true },
+      activate: (_event, value) => {
+        void desktop.openExternalUrl(value).catch(() => undefined);
+      },
+    });
+  }
+  return links.length > 0 ? links : undefined;
+}
+
+function trimTerminalUrl(value: string): string {
+  let trimmed = value.replace(/[.,;:!?]+$/g, "");
+  while (/[)\]}]$/.test(trimmed) && hasUnmatchedClosingBracket(trimmed)) {
+    trimmed = trimmed.slice(0, -1);
+  }
+  return trimmed;
+}
+
+function hasUnmatchedClosingBracket(value: string): boolean {
+  const last = value.at(-1);
+  if (!last) return false;
+  const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+  const opener = pairs[last];
+  if (!opener) return false;
+  return countChars(value, last) > countChars(value, opener);
+}
+
+function countChars(value: string, char: string): number {
+  return Array.from(value).filter((item) => item === char).length;
 }
 
 function fitVisibleTerminal(

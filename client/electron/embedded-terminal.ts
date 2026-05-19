@@ -143,7 +143,7 @@ export async function spawnEmbeddedTerminal(
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId
     ? null
     : writeAgentContextPrompt(cwd, kind, contextMode, options.title, options.task, options.contextText);
   const backendUrl = getBackendState().baseUrl;

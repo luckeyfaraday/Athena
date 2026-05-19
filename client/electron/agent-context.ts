@@ -17,18 +17,30 @@ export function resolveAgentContextMode(mode: AgentContextMode | undefined, task
 
 const HERMES_TIP = [
   'When the user says "ask hermes [question]":',
-  '  1. Call `context_workspace_query_memory` with the question, or `context_workspace_query_project_memory` with the current project directory.',
-  '  2. For a live back-and-forth with Hermes: call `context_workspace_list_live_terminals` to find the Hermes terminal ID,',
-  '     then call `context_workspace_inject_terminal_input` with that ID — include your own terminal ID ($CONTEXT_WORKSPACE_TERMINAL_ID) so Hermes can inject its response back to you.',
-  'Only do this when the user explicitly asks.',
+  '  1. Prefer the MCP tool `context_workspace_ask_hermes` with the current workspace and the user question.',
+  '  2. If that MCP tool is unavailable, POST to `$CONTEXT_WORKSPACE_BACKEND_URL/hermes/ask` with JSON: `{ "project_dir": "<workspace>", "question": "<question>" }`.',
+  '  3. Use `context_workspace_inject_terminal_input` only for visible live terminal handoffs, not ordinary questions.',
+  'Do not run `hermes -z` directly from this terminal for "ask hermes"; use Athena backend/MCP so the request is routed consistently.',
 ].join("\n");
 
 export function buildAgentContextPrompt(input: AgentContextInput): string | null {
   const mode = resolveAgentContextMode(input.mode, input.task, input.contextText);
-  if (mode === "none") return null;
 
   const task = input.task?.trim();
   const curatedContext = input.contextText?.trim();
+
+  if (mode === "none") {
+    return [
+      "# Athena Tools",
+      "",
+      `Workspace: ${input.workspace}`,
+      `Agent: ${input.agentLabel}`,
+      "",
+      HERMES_TIP,
+      "",
+      "This is launch routing information only, not project context. Wait for the user's next instruction.",
+    ].join("\n");
+  }
 
   if (mode === "task" && !task) return null;
   if (mode === "curated" && !task && !curatedContext) return null;

@@ -6,12 +6,19 @@ import {
   resolveAgentContextMode,
 } from "../dist-electron/agent-context.js";
 
-test("manual agent launches default to no injected context", () => {
+test("manual agent launches include only Athena tool routing", () => {
   assert.equal(resolveAgentContextMode(undefined), "none");
-  assert.equal(buildAgentContextPrompt({
+  const prompt = buildAgentContextPrompt({
     workspace: "/repo",
     agentLabel: "Codex",
-  }), null);
+  });
+
+  assert.match(prompt, /^# Athena Tools/);
+  assert.match(prompt, /context_workspace_ask_hermes/);
+  assert.match(prompt, /CONTEXT_WORKSPACE_BACKEND_URL/);
+  assert.match(prompt, /Wait for the user's next instruction/);
+  assert.doesNotMatch(prompt, /Recall cache path/);
+  assert.doesNotMatch(prompt, /## Memory/);
 });
 
 test("task mode builds a compact task-only prompt", () => {

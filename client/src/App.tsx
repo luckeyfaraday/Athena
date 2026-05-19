@@ -21,6 +21,7 @@ import { SwarmRoom, type AgentRole } from "./rooms/SwarmRoom";
 import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
 import { roomRouteById, type ActiveRoom } from "./routes";
 import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
+import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
 import {
   embeddedSessionKey,
   providerLabel,
@@ -188,6 +189,7 @@ export function App() {
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspacePath[]>(() => readWorkspaceList());
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
+  const [workspaceAttention, setWorkspaceAttention] = useState<Record<string, WorkspaceAttention>>({});
   const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -205,6 +207,8 @@ export function App() {
   const agentSessionsRefreshInFlight = useRef<string | null>(null);
   const agentSessionsLastRefreshAt = useRef(0);
   const activeWorkspaceRef = useRef("");
+  const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
+  const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
   const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const workspace = workspacePath?.nativePath ?? "";
@@ -218,6 +222,31 @@ export function App() {
   function setUiTheme(theme: UiTheme) {
     setUiThemeState(theme);
     writeUiTheme(theme);
+  }
+
+  function clearWorkspaceAttention(nextWorkspace: WorkspacePath | string) {
+    const key = typeof nextWorkspace === "string" ? normalizeWorkspaceKey(nextWorkspace) : workspaceKey(nextWorkspace);
+    setWorkspaceAttention((current) => {
+      if (!current[key]) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }
+
+  function markWorkspaceAttention(sessionId: string, kind: WorkspaceAttentionKind) {
+    const session = embeddedSessionsRef.current.find((item) => item.id === sessionId);
+    if (!session) return;
+    const key = normalizeWorkspaceKey(session.workspace);
+    if (!key || key === normalizeWorkspaceKey(activeWorkspaceRef.current)) return;
+    const throttleKey = `${sessionId}:${kind}`;
+    const now = Date.now();
+    if (now - (lastWorkspaceAttentionAt.current.get(throttleKey) ?? 0) < 30_000) return;
+    lastWorkspaceAttentionAt.current.set(throttleKey, now);
+    setWorkspaceAttention((current) => ({
+      ...current,
+      [key]: mergeWorkspaceAttention(current[key], kind),
+    }));
   }
 
   function setTerminalFocus(focused: boolean) {
@@ -392,7 +421,12 @@ export function App() {
   }, [refreshAgentSessions, embeddedSessions]);
 
   useEffect(() => {
+    embeddedSessionsRef.current = embeddedSessions;
+  }, [embeddedSessions]);
+
+  useEffect(() => {
     activeWorkspaceRef.current = workspace;
+    clearWorkspaceAttention(workspace);
     setAgentSessions([]);
     agentSessionsLastRefreshAt.current = 0;
   }, [workspace]);
@@ -405,13 +439,19 @@ export function App() {
     const removeSession = desktop.onEmbeddedTerminalSession((session) => {
       setEmbeddedSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
     });
+    const removeData = desktop.onEmbeddedTerminalData((payload) => {
+      const kind = classifyTerminalAttention(payload.data);
+      if (kind) markWorkspaceAttention(payload.id, kind);
+    });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
+      markWorkspaceAttention(payload.id, "update");
       setEmbeddedSessions((current) =>
         current.map((item) => (item.id === payload.id ? { ...item, status: "exited", exitCode: payload.exitCode } : item)),
       );
     });
     return () => {
       removeSession();
+      removeData();
       removeExit();
     };
   }, []);
@@ -499,6 +539,7 @@ export function App() {
   function activateWorkspace(nextWorkspace: WorkspacePath) {
     setWorkspacePath(nextWorkspace);
     setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
+    clearWorkspaceAttention(nextWorkspace);
     setSelectedSessionKey(null);
     setAgentSessions([]);
     setState((current) => ({ ...current, recall: null }));
@@ -506,6 +547,7 @@ export function App() {
 
   function closeWorkspaceTab(tab: WorkspacePath) {
     const key = workspaceKey(tab);
+    clearWorkspaceAttention(tab);
     setWorkspaceTabs((current) => {
       const next = current.filter((item) => workspaceKey(item) !== key);
       if (workspacePath && workspaceKey(workspacePath) === key) {
@@ -795,6 +837,7 @@ export function App() {
               workspaces={workspaceTabs}
               activeWorkspace={workspacePath}
               terminalSessions={embeddedSessions}
+              attentionByWorkspace={workspaceAttention}
               onSelect={activateWorkspace}
               onClose={closeWorkspaceTab}
               onAdd={selectWorkspace}
@@ -806,6 +849,7 @@ export function App() {
                 workspaces={workspaceTabs}
                 activeWorkspace={workspacePath}
                 terminalSessions={embeddedSessions}
+                attentionByWorkspace={workspaceAttention}
                 onSelect={activateWorkspace}
                 onClose={closeWorkspaceTab}
                 onAdd={selectWorkspace}
@@ -815,7 +859,7 @@ export function App() {
             {activeRoom === "command" && (
               <CommandRoom
                 workspace={workspace}
-                sessions={activeEmbeddedSessions}
+                sessions={embeddedSessions}
                 agentSessions={agentSessions}
                 busy={busy}
                 focused={terminalFocus}

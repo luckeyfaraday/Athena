@@ -29,6 +29,7 @@ import {
   terminalPaneMeta,
   writeDeletedAgentSessions,
 } from "../session-utils";
+import { sameWorkspacePath } from "../workspace-utils";
 
 type PaneDragState = {
   id: string;
@@ -106,9 +107,10 @@ export function CommandRoom({
     setMaximizedPaneId((current) => current && sessionIds.has(current) ? current : null);
   }, [sessions]);
 
-  const visibleSessions = paneOrder
+  const orderedSessions = paneOrder
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
+  const visibleSessions = orderedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace));
   const displayedTerminalSessions = maximizedPaneId
     ? visibleSessions.filter((session) => session.id === maximizedPaneId)
     : visibleSessions;
@@ -128,7 +130,7 @@ export function CommandRoom({
     ? visibleAgentSessions
     : visibleAgentSessions.filter((session) => session.provider === activeSessionProvider);
   const shownCount = visibleSessions.length;
-  const promptTargets = sessions.filter((session) => session.status === "running" && session.kind !== "shell");
+  const promptTargets = visibleSessions.filter((session) => session.status === "running" && session.kind !== "shell");
   const canBroadcast = promptTargets.length > 0 && broadcastPrompt.trim().length > 0 && !broadcasting;
   const runningAgentSessions = visibleAgentSessions.filter((session) => session.status === "running").length;
 
@@ -301,17 +303,22 @@ export function CommandRoom({
 
       {activeTab === "terminals" ? (
         <div className="terminalStage embeddedStage slotTerminalStage">
-          {displayedTerminalSessions.map((session) => (
+          {orderedSessions.map((session) => {
+            const inActiveWorkspace = sameWorkspacePath(session.workspace, workspace);
+            const displayed = inActiveWorkspace && displayedTerminalSessions.some((item) => item.id === session.id);
+            return (
             <div
               key={session.id}
               data-pane-id={session.id}
               className={[
                 "terminalPane liveTerminalPane slotPane",
+                !displayed ? "workspaceHidden" : "",
                 dragState?.id === session.id ? "dragging" : "",
                 dragState?.targetId === session.id ? "dropTarget" : "",
                 collapsedPaneIds.has(session.id) ? "collapsed" : "",
                 maximizedPaneId === session.id ? "maximized" : "",
               ].filter(Boolean).join(" ")}
+              aria-hidden={!displayed}
               style={
                 dragState?.id === session.id
                   ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
@@ -346,10 +353,11 @@ export function CommandRoom({
               {!collapsedPaneIds.has(session.id) && (
                 interfaceMode === "chat"
                   ? <EmbeddedChatTerminal session={session} />
-                  : <EmbeddedTerminal session={session} />
+                  : <EmbeddedTerminal session={session} active={displayed} />
               )}
             </div>
-          ))}
+            );
+          })}
           {visibleSessions.length === 0 && (
             <div className="terminalEmptyState">
               {emptyMark}

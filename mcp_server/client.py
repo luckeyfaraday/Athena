@@ -31,7 +31,15 @@ def get_backend_url(settings: Settings | None = None) -> str:
 def get_electron_control_url(settings: Settings | None = None) -> str:
     settings = settings or Settings()
     if settings.electron_control_url:
-        return settings.electron_control_url.rstrip("/")
+        control_url = settings.electron_control_url.rstrip("/")
+        healthy, detail = probe_electron_control_health(control_url, settings)
+        if healthy:
+            return control_url
+        raise RuntimeError(
+            "Context Workspace Electron control server is configured but not reachable. "
+            f"{control_url}/health failed: {detail}. "
+            "Restart Athena or reopen the desktop app before using visible terminal tools."
+        )
 
     if settings.electron_control_state_path.exists():
         data = json.loads(settings.electron_control_state_path.read_text(encoding="utf-8"))

@@ -130,7 +130,15 @@ def test_ask_runs_hermes_oneshot_in_project_dir(
     assert calls[-1]["args"] == [
         "hermes",
         "--oneshot",
-        "Say test ok.\n\nAdditional Athena context:\n\nAthena direct ask.",
+        (
+            "Answer the user question directly and concisely.\n\n"
+            "If Athena context is provided below, use it as optional background context.\n\n"
+            "Do not start an interactive chat. Do not try to rediscover Athena session recall when Athena has already provided it.\n\n"
+            "User question:\n\n"
+            "Say test ok.\n\n"
+            "Athena context:\n\n"
+            "Athena direct ask."
+        ),
     ]
     assert calls[-1]["cwd"] == tmp_path
     assert calls[-1]["timeout"] == 30

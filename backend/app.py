@@ -201,11 +201,17 @@ def create_app(
             project = resolve_project_dir(request.project_dir)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        recall_answer = _direct_recall_answer(project, request.question)
+        if recall_answer is not None:
+            return recall_answer
+
+        context = _hermes_ask_context(project, request.context)
         try:
             result = app.state.hermes.ask(
                 project_dir=project,
                 question=request.question,
-                context=request.context,
+                context=context,
                 timeout_seconds=request.timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
@@ -579,6 +585,77 @@ def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
         "last_launch_agent": metadata.get("last_launch_agent") if isinstance(metadata.get("last_launch_agent"), str) else None,
         "refresh_configured": bool(os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()),
     }
+
+
+def _direct_recall_answer(project_dir: Path, question: str) -> dict[str, Any] | None:
+    if not _looks_like_recall_context_request(question):
+        return None
+
+    status = _recall_status_payload(project_dir)
+    recall = _read_recall_markdown(project_dir)
+    if not recall:
+        answer = (
+            f"No Athena session recall cache exists for `{project_dir}` yet. "
+            "Refresh session recall from Athena/Hermes first, then ask again."
+        )
+    else:
+        answer = "\n\n".join(
+            [
+                f"Athena session recall cache for `{project_dir}`:",
+                recall,
+            ]
+        )
+    return {
+        "answer": answer,
+        "project_dir": str(project_dir),
+        "source": "athena-recall-cache",
+        "returncode": 0,
+        "stderr": "",
+        "recall": status,
+    }
+
+
+def _looks_like_recall_context_request(question: str) -> bool:
+    normalized = question.strip().lower()
+    if not normalized:
+        return False
+    has_recall = "session recall" in normalized or "recall cache" in normalized or "athena recall" in normalized
+    has_context_intent = any(
+        token in normalized
+        for token in ("context", "use", "read", "show", "get", "summarize", "summarise", "refresh")
+    )
+    return has_recall and has_context_intent
+
+
+def _hermes_ask_context(project_dir: Path, context: str | None) -> str | None:
+    parts: list[str] = []
+    recall = _read_recall_markdown(project_dir)
+    if recall:
+        parts.extend(
+            [
+                "Athena session recall cache for this workspace:",
+                _bounded_text(recall, max_chars=12000),
+            ]
+        )
+    if context and context.strip():
+        parts.extend(["Caller-provided context:", context.strip()])
+    return "\n\n".join(parts) if parts else None
+
+
+def _read_recall_markdown(project_dir: Path) -> str:
+    recall_path = project_dir / ".context-workspace" / "hermes" / "session-recall.md"
+    if not recall_path.exists():
+        return ""
+    try:
+        return recall_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _bounded_text(text: str, *, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return "[truncated]\n" + text[-max_chars:]
 
 
 def _write_recall_cache(

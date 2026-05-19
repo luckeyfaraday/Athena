@@ -159,12 +159,35 @@ def test_hermes_ask_endpoint_returns_direct_answer(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "answer: What changed? | context: Use the current workspace.",
+        "answer": "answer: What changed? | context: Caller-provided context:\n\nUse the current workspace.",
         "project_dir": str(tmp_path),
         "source": "hermes-oneshot",
         "returncode": 0,
         "stderr": "",
     }
+
+
+def test_hermes_ask_endpoint_returns_recall_cache_without_oneshot(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    recall_dir = tmp_path / ".context-workspace" / "hermes"
+    recall_dir.mkdir(parents=True)
+    (recall_dir / "session-recall.md").write_text("# Athena Recall\n\nUseful project context.\n", encoding="utf-8")
+    (recall_dir / "last-refresh.json").write_text('{"refreshed_at":"2026-05-20T00:00:00Z"}\n', encoding="utf-8")
+
+    response = client.post(
+        "/hermes/ask",
+        json={
+            "project_dir": str(tmp_path),
+            "question": "Use session recall to get project context.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "athena-recall-cache"
+    assert payload["returncode"] == 0
+    assert "# Athena Recall" in payload["answer"]
+    assert "Useful project context." in payload["answer"]
 
 
 def test_hermes_ask_endpoint_reports_unavailable_hermes(tmp_path: Path) -> None:

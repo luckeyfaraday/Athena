@@ -13,8 +13,13 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const activeRef = useRef(active);
   const dragDepthRef = useRef(0);
   const [imageDropActive, setImageDropActive] = useState(false);
+
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -33,10 +38,10 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(container);
-    fit.fit();
-    terminal.focus();
     terminalRef.current = terminal;
     fitRef.current = fit;
+    fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current);
+    if (activeRef.current) terminal.focus();
 
     void desktop.getEmbeddedTerminalBuffer(session.id)
       .then((buffer) => {
@@ -56,12 +61,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     });
 
     const resize = () => {
-      try {
-        fit.fit();
-        void desktop.resizeEmbeddedTerminal(session.id, terminal.cols, terminal.rows).catch(() => undefined);
-      } catch {
-        // xterm fit can throw while the pane is temporarily hidden.
-      }
+      fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container);
@@ -84,12 +84,21 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
   }, [session.id]);
 
   useEffect(() => {
+    activeRef.current = active;
     if (!active) return;
-    window.setTimeout(() => {
-      fitRef.current?.fit();
-      terminalRef.current?.focus();
-    }, 30);
-  }, [active]);
+    const refit = () => {
+      const container = containerRef.current;
+      const terminal = terminalRef.current;
+      const fit = fitRef.current;
+      if (!container || !terminal || !fit) return;
+      fitVisibleTerminal(container, terminal, fit, session.id, true);
+      terminal.focus();
+    };
+    const timers = [30, 160].map((delay) => window.setTimeout(refit, delay));
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [active, session.id]);
 
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
     if (!hasImageFiles(event.dataTransfer)) return;
@@ -137,6 +146,27 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       onDrop={handleDrop}
     />
   );
+}
+
+function fitVisibleTerminal(
+  container: HTMLDivElement,
+  terminal: Terminal,
+  fit: FitAddon,
+  sessionId: string,
+  active: boolean,
+) {
+  if (!active || !hasUsableTerminalSize(container)) return;
+  try {
+    fit.fit();
+    void desktop.resizeEmbeddedTerminal(sessionId, terminal.cols, terminal.rows).catch(() => undefined);
+  } catch {
+    // xterm fit can throw while the pane is temporarily hidden during workspace changes.
+  }
+}
+
+function hasUsableTerminalSize(container: HTMLDivElement): boolean {
+  const rect = container.getBoundingClientRect();
+  return rect.width >= 160 && rect.height >= 80;
 }
 
 function hasImageFiles(dataTransfer: DataTransfer): boolean {

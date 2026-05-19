@@ -380,13 +380,15 @@ function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: stri
     ].join("; ");
   }
 
-  if (kind !== "shell" && promptPath) {
+  if (kind !== "shell") {
     const agent = agentConfig(kind);
     return [
       `cd ${quoteShell(cwd)}`,
-      `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`,
+      promptPath
+        ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
+        : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${agent.executable} ${agent.args(cwd, promptPath, "bash")}`,
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash")}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }
@@ -517,7 +519,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   executable: string;
   powerShellCommand: string;
   resumePowerShellCommand: string;
-  args: (cwd: string, promptPath: string, shell: "bash") => string;
+  args: (cwd: string, promptPath: string | null, shell: "bash") => string;
   resumeArgs: (cwd: string, sessionId: string, shell: "bash") => string;
 } {
   if (kind === "opencode") {
@@ -526,7 +528,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
       executable: "opencode",
       powerShellCommand: "& $agentCommand $workspace --prompt $prompt",
       resumePowerShellCommand: "& $agentCommand $workspace --session $sessionId",
-      args: (cwd, promptPath) => `${quoteShell(cwd)} --prompt "$(cat ${quoteShell(promptPath)})"`,
+      args: (cwd, promptPath) => promptPath ? `${quoteShell(cwd)} --prompt "$(cat ${quoteShell(promptPath)})"` : quoteShell(cwd),
       resumeArgs: (cwd, sessionId) => `opencode ${quoteShell(cwd)} --session ${quoteShell(sessionId)}`,
     };
   }
@@ -536,7 +538,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
       executable: "claude",
       powerShellCommand: "& $agentCommand $prompt",
       resumePowerShellCommand: "& $agentCommand --resume $sessionId",
-      args: (_cwd, promptPath) => `"$(cat ${quoteShell(promptPath)})"`,
+      args: (_cwd, promptPath) => promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
       resumeArgs: (_cwd, sessionId) => `claude --resume ${quoteShell(sessionId)}`,
     };
   }
@@ -545,7 +547,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
     executable: "codex",
     powerShellCommand: "& $agentCommand --cd $workspace $prompt",
     resumePowerShellCommand: "& $agentCommand resume --cd $workspace $sessionId",
-    args: (cwd, promptPath) => `--cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
+    args: (cwd, promptPath) => promptPath ? `--cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"` : `--cd ${quoteShell(cwd)}`,
     resumeArgs: (cwd, sessionId) => `codex resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };
 }

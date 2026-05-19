@@ -562,10 +562,6 @@ def _read_claude_sessions(workspace: Path, home: Path) -> list[AgentSession]:
         return []
 
     candidate_dirs = [projects_dir / _encode_claude_project_path(workspace)]
-    try:
-        candidate_dirs.extend(path for path in projects_dir.iterdir() if path.is_dir())
-    except OSError:
-        return []
 
     seen: set[Path] = set()
     sessions: list[AgentSession] = []

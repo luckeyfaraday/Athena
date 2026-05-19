@@ -295,10 +295,7 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
 function readClaudeSessions(workspace: string): AgentSession[] {
   const projectsDir = path.join(os.homedir(), ".claude", "projects");
   if (!fs.existsSync(projectsDir)) return [];
-  const candidateDirs = [
-    path.join(projectsDir, encodeClaudeProjectPath(workspace)),
-    ...safeReadDir(projectsDir).map((name) => path.join(projectsDir, name)),
-  ];
+  const candidateDirs = [path.join(projectsDir, encodeClaudeProjectPath(workspace))];
   const seenFiles = new Set<string>();
   const sessions: AgentSession[] = [];
   for (const dir of candidateDirs) {

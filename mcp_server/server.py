@@ -18,6 +18,7 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
         "context_workspace_hermes_status",
         "context_workspace_query_memory",
         "context_workspace_query_project_memory",
+        "context_workspace_ask_hermes",
         "context_workspace_store_memory",
         "context_workspace_delete_memory",
         "context_workspace_recent_memory",

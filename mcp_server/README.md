@@ -68,6 +68,16 @@ context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
 context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
 ```
 
+Direct Hermes request/response tool:
+
+```text
+context_workspace_ask_hermes(project_dir, question, context?, timeout_seconds?)
+```
+
+Use `context_workspace_ask_hermes` when the user says "ask Hermes ...". It
+runs Hermes in one-shot mode and returns a structured answer. It does not type
+into a visible terminal.
+
 Visible terminal launch tool:
 
 ```text

@@ -91,3 +91,46 @@ def test_install_refuses_native_windows(
 
     with pytest.raises(RuntimeError, match="WSL2"):
         HermesManager(hermes_home=tmp_path / ".hermes").install()
+
+
+def test_ask_runs_hermes_oneshot_in_project_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("model: test\n", encoding="utf-8")
+
+    monkeypatch.setattr(hermes_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(hermes_module.shutil, "which", lambda command: f"/usr/bin/{command}" if command == "hermes" else None)
+    monkeypatch.setattr(hermes_module, "_hermes_version", lambda: "hermes 0.12.0")
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run(*args: object, **kwargs: object) -> object:
+        calls.append({"args": args[0], **kwargs})
+        return hermes_module.subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="TEST_OK\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(hermes_module.subprocess, "run", fake_run)
+
+    result = HermesManager(hermes_home=hermes_home).ask(
+        project_dir=tmp_path,
+        question="Say test ok.",
+        context="Athena direct ask.",
+        timeout_seconds=30,
+    )
+
+    assert result.answer == "TEST_OK"
+    assert result.project_dir == tmp_path
+    assert calls[-1]["args"] == [
+        "hermes",
+        "--oneshot",
+        "Say test ok.\n\nAdditional Athena context:\n\nAthena direct ask.",
+    ]
+    assert calls[-1]["cwd"] == tmp_path
+    assert calls[-1]["timeout"] == 30

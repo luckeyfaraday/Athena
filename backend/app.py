@@ -50,6 +50,13 @@ class HermesInstallRequest(BaseModel):
     timeout_seconds: float = Field(default=600, gt=0, le=3600)
 
 
+class HermesAskRequest(BaseModel):
+    project_dir: str
+    question: str = Field(min_length=1, max_length=20000)
+    context: str | None = Field(default=None, max_length=100000)
+    timeout_seconds: float = Field(default=120, gt=0, le=600)
+
+
 class HermesRecallRefreshRequest(BaseModel):
     project_dir: str
     task_hint: str | None = None
@@ -186,6 +193,33 @@ def create_app(
             "stdout": result.stdout,
             "stderr": result.stderr,
             "hermes": _hermes_status_payload(result.status),
+        }
+
+    @app.post("/hermes/ask")
+    def ask_hermes(request: HermesAskRequest) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(request.project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            result = app.state.hermes.ask(
+                project_dir=project,
+                question=request.question,
+                context=request.context,
+                timeout_seconds=request.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail=f"Hermes ask timed out after {request.timeout_seconds:g}s.") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail=f"Hermes ask failed to start: {exc}") from exc
+        return {
+            "answer": result.answer,
+            "project_dir": str(result.project_dir),
+            "source": "hermes-oneshot",
+            "returncode": result.returncode,
+            "stderr": result.stderr,
         }
 
     @app.get("/memory/hermes", response_class=PlainTextResponse)

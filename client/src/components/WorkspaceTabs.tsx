@@ -1,11 +1,13 @@
 import { FolderOpen, XCircle } from "lucide-react";
 import type { EmbeddedTerminalSession, WorkspacePath } from "../electron";
+import type { WorkspaceAttention } from "../workspace-attention";
 import { sameWorkspacePath, workspaceDisplayName, workspaceKey } from "../workspace-utils";
 
 export function WorkspaceTabs({
   workspaces,
   activeWorkspace,
   terminalSessions,
+  attentionByWorkspace = {},
   className = "",
   onSelect,
   onClose,
@@ -14,6 +16,7 @@ export function WorkspaceTabs({
   workspaces: WorkspacePath[];
   activeWorkspace: WorkspacePath | null;
   terminalSessions: EmbeddedTerminalSession[];
+  attentionByWorkspace?: Record<string, WorkspaceAttention>;
   className?: string;
   onSelect: (workspace: WorkspacePath) => void;
   onClose: (workspace: WorkspacePath) => void;
@@ -25,12 +28,27 @@ export function WorkspaceTabs({
         {workspaces.map((workspace) => {
           const active = activeWorkspace ? workspaceKey(activeWorkspace) === workspaceKey(workspace) : false;
           const running = terminalSessions.filter((session) => sameWorkspacePath(session.workspace, workspace.nativePath) && session.status === "running").length;
+          const attention = attentionByWorkspace[workspaceKey(workspace)];
           return (
-            <div key={workspace.nativePath} className={active ? "workspaceTab active" : "workspaceTab"}>
+            <div
+              key={workspace.nativePath}
+              className={[
+                "workspaceTab",
+                active ? "active" : "",
+                attention && !active ? `hasAttention ${attention.kind}` : "",
+              ].filter(Boolean).join(" ")}
+            >
               <button type="button" onClick={() => onSelect(workspace)} title={workspace.displayPath}>
                 <span>
                   <strong>{workspaceDisplayName(workspace)}</strong>
-                  <small>{running} running</small>
+                  <small>
+                    {running} running
+                    {attention && !active ? (
+                      <em className={`workspaceAttentionBadge ${attention.kind}`} title={attention.kind === "action" ? "Needs attention" : "New activity"}>
+                        {attention.kind === "action" ? "Needs attention" : "Updated"}{attention.count > 1 ? ` ${attention.count}` : ""}
+                      </em>
+                    ) : null}
+                  </small>
                 </span>
               </button>
               {workspaces.length > 1 && (

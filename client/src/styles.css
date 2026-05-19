@@ -403,6 +403,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-color: rgba(217, 196, 138, .5);
   background: rgba(46, 90, 70, .34);
 }
+.workspaceTab.hasAttention {
+  border-color: rgba(217, 196, 138, .45);
+}
+.workspaceTab.hasAttention.action {
+  border-color: rgba(214, 106, 82, .58);
+}
 .workspaceTab > button:first-child {
   min-width: 0;
   height: 30px;
@@ -431,6 +437,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-size: 8px;
   font-weight: 800;
   text-transform: uppercase;
+}
+.workspaceAttentionBadge {
+  display: inline-block;
+  margin-left: 6px;
+  color: var(--orange);
+  font-style: normal;
+}
+.workspaceAttentionBadge.action {
+  color: var(--red);
 }
 .workspaceTabClose,
 .workspaceAddButton {
@@ -462,6 +477,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   color: var(--muted);
   font-size: 10px;
   font-weight: 800;
+}
+.terminalPane.workspaceHidden {
+  display: none;
 }
 .workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs {
   min-height: 40px;

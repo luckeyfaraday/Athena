@@ -4,6 +4,7 @@ import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
+import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
   defaultShell,
   isWindows,
@@ -165,7 +166,7 @@ export async function spawnEmbeddedTerminal(
       cols: options.cols ?? 96,
       rows: options.rows ?? 28,
       env: {
-        ...process.env,
+        ...sanitizedTerminalEnv(),
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         CONTEXT_WORKSPACE_TERMINAL_ID: id,

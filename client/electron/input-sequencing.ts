@@ -9,10 +9,10 @@ export type TerminalInputWrite = {
 };
 
 export function terminalInputWritesForKind(kind: string, text: string): TerminalInputWrite[] {
-  if (kind !== "codex") return [{ data: text }];
-
   const prompt = stripTrailingSubmit(text);
   if (!prompt) return [{ data: "\r" }];
+
+  if (kind !== "codex") return [{ data: `${prompt}\r` }];
 
   return [
     { data: `${BRACKETED_PASTE_START}${prompt}${BRACKETED_PASTE_END}`, delayAfterMs: CODEX_INPUT_SUBMIT_DELAY_MS },

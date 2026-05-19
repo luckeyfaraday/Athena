@@ -198,7 +198,7 @@ def test_electron_control_discovery_reports_stale_health(monkeypatch: pytest.Mon
         '{"baseUrl":"http://127.0.0.1:65535","running":true}',
         encoding="utf-8",
     )
-    settings = Settings(electron_control_state_path=state_path)
+    settings = Settings(electron_control_url=None, electron_control_state_path=state_path)
 
     def failing_urlopen(*args: object, **kwargs: object) -> object:
         raise ConnectionRefusedError("connection refused")
@@ -220,7 +220,7 @@ def test_electron_control_discovery_reports_stale_running_false(monkeypatch: pyt
         '{"baseUrl":"http://127.0.0.1:65535","running":false}',
         encoding="utf-8",
     )
-    settings = Settings(electron_control_state_path=state_path)
+    settings = Settings(electron_control_url=None, electron_control_state_path=state_path)
 
     def failing_urlopen(*args: object, **kwargs: object) -> object:
         raise ConnectionRefusedError("connection refused")

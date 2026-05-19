@@ -174,12 +174,21 @@ class HermesManager:
 def _ask_prompt(question: str, context: str | None = None) -> str:
     cleaned_question = question.strip()
     cleaned_context = context.strip() if context else ""
+    base = "\n\n".join(
+        [
+            "Answer the user question directly and concisely.",
+            "If Athena context is provided below, use it as optional background context.",
+            "Do not start an interactive chat. Do not try to rediscover Athena session recall when Athena has already provided it.",
+            "User question:",
+            cleaned_question,
+        ]
+    )
     if not cleaned_context:
-        return cleaned_question
+        return base
     return "\n\n".join(
         [
-            cleaned_question,
-            "Additional Athena context:",
+            base,
+            "Athena context:",
             cleaned_context,
         ]
     )

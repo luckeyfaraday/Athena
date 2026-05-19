@@ -28,6 +28,10 @@ def test_tool_schema_resolves_future_annotations() -> None:
         "anyOf": [{"type": "number"}, {"type": "null"}]
     }
     assert schema["properties"]["visible_terminal"] == {"type": "boolean"}
+    assert schema["properties"]["context_mode"] == {"type": "string"}
+    assert schema["properties"]["context"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
     assert schema["required"] == ["project_dir", "task"]
 
 
@@ -56,6 +60,12 @@ def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
     assert schema["properties"]["resume_session_id"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert schema["properties"]["context_mode"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    assert schema["properties"]["context"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
     assert schema["required"] == ["project_dir"]
@@ -115,6 +125,8 @@ def test_spawn_agent_defaults_to_visible_terminal(monkeypatch: pytest.MonkeyPatc
             "title": "OpenCode: Optimize About page",
             "session_label": "New",
             "task": "Optimize About page",
+            "context_mode": "task",
+            "context": None,
         }
     ]
 
@@ -151,6 +163,8 @@ def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.Monke
             "task": "Investigate videos",
             "resume_session_id": None,
             "session_label": "New",
+            "context_mode": None,
+            "context": None,
         },
         {
             "project_dir": str(tmp_path),
@@ -160,6 +174,8 @@ def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.Monke
             "task": "Fix build",
             "resume_session_id": None,
             "session_label": "New",
+            "context_mode": None,
+            "context": None,
         },
     ]
 

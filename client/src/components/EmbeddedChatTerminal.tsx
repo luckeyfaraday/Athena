@@ -393,7 +393,7 @@ function startsStartupPanel(line: string): boolean {
     || /^MCP Servers\b/i.test(line)
     || /^Available Skills\b/i.test(line)
     || /^\[Context Workspace\]\s+\w+\s+ready\.?$/i.test(line)
-    || /^\[Context Workspace\]\s+(Codex|OpenCode|Claude)\s+Hermes prompt:/i.test(line)
+    || /^\[Context Workspace\]\s+(Codex|OpenCode|Claude)\s+(Hermes prompt|Athena context):/i.test(line)
     || /^╭/.test(line);
 }
 
@@ -421,7 +421,7 @@ function isBoxDrawingLine(line: string): boolean {
 
 function isStartupChromeLine(line: string): boolean {
   return /^\[Context Workspace\]\s+\w+\s+ready\.?$/i.test(line)
-    || /^\[Context Workspace\]\s+(Codex|OpenCode|Claude)\s+Hermes prompt:/i.test(line)
+    || /^\[Context Workspace\]\s+(Codex|OpenCode|Claude)\s+(Hermes prompt|Athena context):/i.test(line)
     || /^\[Context Workspace\]\s+OpenCode baseline binary selected/i.test(line)
     || /^Available Tools\b/i.test(line)
     || /^MCP Servers\b/i.test(line)

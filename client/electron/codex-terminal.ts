@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { BrowserWindow } from "electron";
 import { getBackendState } from "./backend.js";
+import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
   commandExists,
   isWindows,
@@ -82,7 +83,7 @@ export async function startCodexTerminal(workspace: string, window: BrowserWindo
   codexProcess = spawn(launch.command, launch.args, {
     cwd,
     env: {
-      ...process.env,
+      ...sanitizedTerminalEnv(),
       TERM: process.env.TERM || "xterm-256color",
       COLORTERM: process.env.COLORTERM || "truecolor",
     },

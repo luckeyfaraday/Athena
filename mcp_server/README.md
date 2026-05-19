@@ -71,8 +71,8 @@ context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit
 Visible terminal launch tool:
 
 ```text
-context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?)
-context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?)
+context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?, context_mode?, context?)
+context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, context_mode?, context?)
 context_workspace_list_live_terminals(project_dir?)
 context_workspace_inject_terminal_input(target, text)
 context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
@@ -80,7 +80,15 @@ context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 
 Use `context_workspace_spawn_agent` when Hermes should start Codex, OpenCode,
 or Claude for a user task. By default it opens a visible Command Room PTY
-through Electron control and injects the task, recall cache, and Hermes memory.
+through Electron control and injects only a compact task prompt. It no longer
+injects Athena recall or Hermes memory automatically.
+
+Context modes:
+
+- `none`: clean launch with no Athena prompt.
+- `task`: compact task-only prompt. This is the default for `spawn_agent`.
+- `curated`: task prompt plus context explicitly selected by Hermes in
+  `context`.
 
 Use `context_workspace_spawn_terminal` only when Hermes needs lower-level
 terminal control, such as opening a shell, Hermes pane, grid, or explicit resume.

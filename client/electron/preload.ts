@@ -43,6 +43,7 @@ export type WorkspaceApi = {
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
+  openExternalUrl: (url: string) => Promise<boolean>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -79,6 +80,7 @@ const api: WorkspaceApi = {
   killEmbeddedTerminal: (id) => ipcRenderer.invoke("embeddedTerminal:kill", id),
   listAgentSessions: (workspace) => ipcRenderer.invoke("agentSessions:list", workspace),
   getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
+  openExternalUrl: (url) => ipcRenderer.invoke("shell:openExternal", url),
   onEmbeddedTerminalData: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: { id: string; data: string }) => callback(payload);
     ipcRenderer.on("embedded-terminal:data", listener);

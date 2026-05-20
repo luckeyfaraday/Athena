@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 AgentSessionProvider = Literal["codex", "opencode", "claude", "hermes"]
 AgentSessionStatus = Literal["historical"]
+MAX_PROVIDER_ROWS = 1000
 
 
 @dataclass(frozen=True)
@@ -125,12 +126,13 @@ def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                    cli_version, first_user_message, model, agent_role
             from threads
             order by updated_at_ms desc
-            limit 250
+            limit ?
             """,
+            (MAX_PROVIDER_ROWS,),
         )
         for row in rows:
             session_workspace = _string_value(row[1]) or str(workspace)
-            if not _same_path(session_workspace, workspace):
+            if not _same_or_descendant_path(session_workspace, workspace):
                 continue
             session_id = _string_value(row[0])
             if not session_id:
@@ -192,11 +194,11 @@ def _read_codex_jsonl_metadata(workspace: Path, home: Path) -> dict[str, dict[st
         return {}
 
     metadata_by_id: dict[str, dict[str, Any]] = {}
-    for file_path in _recent_jsonl_files(sessions_dir, limit=400):
+    for file_path in _recent_jsonl_files(sessions_dir, limit=MAX_PROVIDER_ROWS):
         metadata = _read_codex_jsonl_file_metadata(file_path)
         session_id = _metadata_string(metadata, "session_id")
         session_workspace = _metadata_string(metadata, "cwd")
-        if not session_id or not session_workspace or not _same_path(session_workspace, workspace):
+        if not session_id or not session_workspace or not _same_or_descendant_path(session_workspace, workspace):
             continue
         metadata_by_id[session_id] = metadata
     return metadata_by_id
@@ -398,13 +400,14 @@ def _read_opencode_sessions(workspace: Path, home: Path) -> list[AgentSession]:
         from session s
         left join project p on s.project_id = p.id
         order by s.time_updated desc
-        limit 250
+        limit ?
         """,
+        (MAX_PROVIDER_ROWS,),
     )
     sessions: list[AgentSession] = []
     for row in rows:
         session_workspace = _string_value(row[1]) or _string_value(row[7]) or str(workspace)
-        if not _same_path(session_workspace, workspace):
+        if not _same_or_descendant_path(session_workspace, workspace):
             continue
         session_id = _string_value(row[0])
         if not session_id:
@@ -563,20 +566,29 @@ def _read_claude_sessions(workspace: Path, home: Path) -> list[AgentSession]:
 
     candidate_dirs = _claude_project_path_candidates(projects_dir, workspace)
 
-    seen: set[Path] = set()
+    seen_dirs: set[Path] = set()
+    seen_files: set[Path] = set()
     sessions: list[AgentSession] = []
     for directory in candidate_dirs:
-        if directory in seen or not directory.exists():
+        if directory in seen_dirs or not directory.exists():
             continue
-        seen.add(directory)
+        seen_dirs.add(directory)
         for file_path in sorted(directory.glob("*.jsonl")):
-            session = _read_claude_session_file(file_path, workspace)
+            seen_files.add(file_path)
+            session = _read_claude_session_file(file_path, workspace, allow_missing_cwd=True)
             if session:
                 sessions.append(session)
+    for file_path in _recent_jsonl_files(projects_dir, limit=MAX_PROVIDER_ROWS):
+        if file_path in seen_files:
+            continue
+        seen_files.add(file_path)
+        session = _read_claude_session_file(file_path, workspace, allow_missing_cwd=False)
+        if session:
+            sessions.append(session)
     return sessions
 
 
-def _read_claude_session_file(file_path: Path, workspace: Path) -> AgentSession | None:
+def _read_claude_session_file(file_path: Path, workspace: Path, *, allow_missing_cwd: bool) -> AgentSession | None:
     try:
         stat = file_path.stat()
         lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()[:200]
@@ -607,7 +619,10 @@ def _read_claude_session_file(file_path: Path, workspace: Path) -> AgentSession 
         if not title and _string_property(message, "role") == "user":
             title = _clean_session_title(_message_content(message))
 
-    if cwd and not _same_path(cwd, workspace):
+    if cwd:
+        if not _same_or_descendant_path(cwd, workspace):
+            return None
+    elif not allow_missing_cwd:
         return None
     return AgentSession(
         id=session_id,
@@ -642,19 +657,18 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
             select id, source, model, started_at, ended_at, message_count, title
             from sessions
             order by coalesce(ended_at, started_at) desc
-            limit 250
+            limit ?
             """,
+            (MAX_PROVIDER_ROWS,),
         )
         for row in rows:
             session_id = _string_value(row[0])
             if not session_id:
                 continue
-            file_metadata = (
-                {}
-                if _nullable_string(row[2]) and _nullable_string(row[6]) and row[4]
-                else _read_hermes_session_file(sessions_dir / f"session_{session_id}.json")
-            )
+            file_metadata = _read_hermes_session_file(sessions_dir / f"session_{session_id}.json")
             manifest_entry = manifest.get(session_id, {})
+            if not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
+                continue
             created_at = _from_epoch(row[3])
             updated_at = _from_epoch(row[4]) if row[4] else file_metadata.get("updated_at") or manifest_entry.get("updated_at") or created_at
             sessions_by_id[session_id] = AgentSession(
@@ -685,6 +699,8 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
             if not file_metadata:
                 continue
             manifest_entry = manifest.get(session_id, {})
+            if not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
+                continue
             try:
                 stat = file_path.stat()
             except OSError:
@@ -767,6 +783,8 @@ def _read_hermes_session_file(file_path: Path) -> dict[str, str | None]:
         "platform": _string_property(parsed, "platform"),
         "created_at": _string_property(parsed, "session_start"),
         "updated_at": _string_property(parsed, "last_updated"),
+        "workspace": _hermes_workspace(parsed),
+        "search_text": json.dumps(parsed, ensure_ascii=False)[:300_000],
     }
 
 
@@ -786,6 +804,31 @@ def _first_hermes_user_message(session: dict[str, Any]) -> str | None:
             continue
         return _clean_session_title(_message_content(item))
     return None
+
+
+def _hermes_workspace(session: dict[str, Any]) -> str | None:
+    for key in ("workspace", "cwd", "project_dir", "projectDir", "project_path", "projectPath", "working_directory"):
+        value = _string_property(session, key)
+        if value:
+            return value
+    context = _object_property(session, "context_workspace") or _object_property(session, "contextWorkspace")
+    return _string_property(context, "project_dir") or _string_property(context, "workspace")
+
+
+def _hermes_session_matches_workspace(file_metadata: dict[str, str | None], manifest_entry: dict[str, str | None], workspace: Path) -> bool:
+    metadata_workspace = file_metadata.get("workspace")
+    if metadata_workspace and _same_or_descendant_path(metadata_workspace, workspace):
+        return True
+    haystack = "\n".join(
+        value
+        for value in (
+            file_metadata.get("title"),
+            file_metadata.get("search_text"),
+            manifest_entry.get("title"),
+        )
+        if value
+    ).lower()
+    return any(needle in haystack for needle in _workspace_needles(workspace))
 
 
 def _hermes_agent_label(source: str | None, manifest_entry: dict[str, str | None], file_metadata: dict[str, str | None]) -> str | None:
@@ -838,6 +881,14 @@ def _same_path(left: str | Path, right: str | Path) -> bool:
     return _normalize_path(left) == _normalize_path(right)
 
 
+def _same_or_descendant_path(candidate: str | Path, workspace: str | Path) -> bool:
+    child = _normalize_path(candidate)
+    parent = _normalize_path(workspace)
+    if not child or not parent:
+        return False
+    return child == parent or (child.startswith("/") and parent == "/") or child.startswith(f"{parent}/")
+
+
 def _normalize_path(value: str | Path) -> str:
     text = str(value).replace("\\", "/").rstrip("/").lower()
     match = re.match(r"^/mnt/([a-z])/(.+)$", text)
@@ -846,6 +897,16 @@ def _normalize_path(value: str | Path) -> str:
     if os.name == "nt" and text.startswith("/") and re.match(r"^/[a-z]:/", text):
         text = text[1:]
     return text
+
+
+def _workspace_needles(workspace: str | Path) -> list[str]:
+    normalized = _normalize_path(workspace)
+    basename = Path(workspace).name.lower()
+    needles = {normalized}
+    if len(basename) >= 6 and re.search(r"[-_]", basename):
+        needles.add(basename)
+        needles.add(re.sub(r"[-_]+", " ", basename))
+    return [needle for needle in needles if needle]
 
 
 def _date_sort_key(value: str) -> datetime:

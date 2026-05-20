@@ -54,6 +54,39 @@ def test_lists_codex_sessions_for_workspace(tmp_path: Path) -> None:
     assert sessions[0].resume_command is not None
 
 
+def test_lists_codex_sessions_from_workspace_descendants(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    child_workspace = workspace / "client"
+    sibling_workspace = tmp_path / "project-other"
+    child_workspace.mkdir(parents=True)
+    sibling_workspace.mkdir()
+    db_path = home / ".codex" / "state_5.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            create table threads (
+              id text, cwd text, title text, created_at_ms integer,
+              updated_at_ms integer, git_branch text, cli_version text,
+              first_user_message text, model text, agent_role text
+            )
+            """
+        )
+        connection.execute(
+            "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("child-codex", str(child_workspace), "Child session", 1, 2, None, None, None, None, None),
+        )
+        connection.execute(
+            "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("sibling-codex", str(sibling_workspace), "Sibling session", 1, 3, None, None, None, None, None),
+        )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="codex")
+
+    assert [session.id for session in sessions] == ["child-codex"]
+
+
 def test_lists_codex_sessions_from_jsonl_context(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"
@@ -147,6 +180,32 @@ def test_lists_opencode_and_filters_query(tmp_path: Path) -> None:
 
     assert [session.id for session in sessions] == ["opencode-session-1"]
     assert sessions[0].model == "anthropic/claude-sonnet"
+
+
+def test_lists_opencode_sessions_from_workspace_descendants(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    child_workspace = workspace / "service"
+    sibling_workspace = tmp_path / "project-other"
+    child_workspace.mkdir(parents=True)
+    sibling_workspace.mkdir()
+    db_path = home / ".local" / "share" / "opencode" / "opencode.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("create table project (id text, worktree text)")
+        connection.execute("create table session (id text, project_id text, directory text, title text, time_created integer, time_updated integer, agent text, model text)")
+        connection.execute(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("opencode-child", None, str(child_workspace), "Child OpenCode", 1, 2, "build", None),
+        )
+        connection.execute(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("opencode-sibling", None, str(sibling_workspace), "Sibling OpenCode", 1, 3, "build", None),
+        )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="opencode")
+
+    assert [session.id for session in sessions] == ["opencode-child"]
 
 
 def test_reads_opencode_transcript_from_message_parts(tmp_path: Path) -> None:
@@ -288,6 +347,31 @@ def test_lists_claude_sessions_from_claude_encoded_workspace_dir(tmp_path: Path)
     assert [session.id for session in sessions] == ["claude-encoded"]
 
 
+def test_lists_claude_sessions_from_workspace_descendant_dirs(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    child_workspace = workspace / "client"
+    child_workspace.mkdir(parents=True)
+    encoded = "".join(character if character.isalnum() or character == "." else "-" for character in str(child_workspace).replace(":", ""))
+    session_dir = home / ".claude" / "projects" / encoded
+    session_dir.mkdir(parents=True)
+    (session_dir / "claude-child.jsonl").write_text(
+        json.dumps(
+            {
+                "sessionId": "claude-child",
+                "cwd": str(child_workspace),
+                "timestamp": "2026-05-09T12:00:00Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": "Child Claude"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="claude")
+
+    assert [session.id for session in sessions] == ["claude-child"]
+
+
 def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"
@@ -302,7 +386,7 @@ def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: py
                 "platform": "cli",
                 "session_start": "2026-05-12T10:00:00Z",
                 "last_updated": "2026-05-12T10:05:00Z",
-                "messages": [{"role": "user", "content": "Review the Athena sessions"}],
+                "messages": [{"role": "user", "content": f"Review the Athena sessions in {workspace}"}],
             }
         ),
         encoding="utf-8",
@@ -314,8 +398,48 @@ def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: py
 
     assert [session.id for session in sessions] == ["h1"]
     assert sessions[0].provider == "hermes"
-    assert sessions[0].title == "Review the Athena sessions"
+    assert sessions[0].title.startswith("Review the Athena sessions")
     assert "Review the Athena sessions" in transcript
+
+
+def test_hermes_sessions_do_not_leak_across_workspaces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    other_workspace = tmp_path / "other-project"
+    workspace.mkdir()
+    other_workspace.mkdir()
+    hermes_home = tmp_path / "wsl-home" / ".hermes"
+    sessions_dir = hermes_home / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "session_current.json").write_text(
+        json.dumps(
+            {
+                "model": "hermes-model",
+                "platform": "cli",
+                "session_start": "2026-05-12T10:00:00Z",
+                "last_updated": "2026-05-12T10:05:00Z",
+                "messages": [{"role": "user", "content": f"Work on {workspace}"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sessions_dir / "session_other.json").write_text(
+        json.dumps(
+            {
+                "model": "hermes-model",
+                "platform": "cli",
+                "session_start": "2026-05-12T11:00:00Z",
+                "last_updated": "2026-05-12T11:05:00Z",
+                "messages": [{"role": "user", "content": f"Work on {other_workspace}"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_sessions, "_probe_wsl_hermes_dir", lambda: hermes_home)
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="hermes")
+
+    assert [session.id for session in sessions] == ["current"]
 
 
 def test_formats_empty_and_populated_summary(tmp_path: Path) -> None:

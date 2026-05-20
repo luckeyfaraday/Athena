@@ -190,6 +190,8 @@ export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
   const [electronControl, setElectronControl] = useState<ElectronControlStatus | null>(null);
   const [workspacePath, setWorkspacePath] = useState<WorkspacePath | null>(null);
+  const workspace = workspacePath?.nativePath ?? "";
+  const workspaceDisplay = workspacePath?.displayPath ?? workspace;
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspacePath[]>(() => readWorkspaceList());
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
@@ -216,8 +218,6 @@ export function App() {
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
   const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
-  const workspace = workspacePath?.nativePath ?? "";
-  const workspaceDisplay = workspacePath?.displayPath ?? workspace;
 
   function setInterfaceMode(mode: InterfaceMode) {
     setInterfaceModeState(mode);

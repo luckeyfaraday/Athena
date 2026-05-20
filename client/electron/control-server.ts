@@ -11,6 +11,7 @@ import {
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
+import { recordControlFailure } from "./control-events.js";
 
 type ControlState = {
   baseUrl: string | null;
@@ -171,7 +172,14 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "POST" && url.pathname === "/terminals/write") {
       const payload = parseWriteTerminalRequest(await readJsonBody(request));
-      const session = await submitEmbeddedTerminalInput(payload.target, payload.text);
+      const session = await submitEmbeddedTerminalInput(payload.target, payload.text).catch((error) => {
+        recordControlFailure({
+          kind: "input.failed",
+          detail: String(error),
+          preview: payload.text,
+        });
+        throw error;
+      });
       sendJson(response, 200, { written: true, terminal: session });
       return;
     }
@@ -179,19 +187,26 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       const payload = parseSpawnTerminalRequest(await readJsonBody(request));
       const sessions: EmbeddedTerminalSession[] = [];
       for (let index = 0; index < payload.count; index += 1) {
-        sessions.push(
-          await spawnEmbeddedTerminal(payload.workspace, {
-            kind: payload.kind,
-            title: payload.count > 1 ? terminalGridTitle(payload.kind, index) : payload.title,
-            task: payload.task,
-            cols: payload.cols,
-            rows: payload.rows,
-            resumeSessionId: payload.resumeSessionId,
-            sessionLabel: payload.sessionLabel,
-            contextMode: payload.contextMode,
-            contextText: payload.contextText,
-          }),
-        );
+        const session = await spawnEmbeddedTerminal(payload.workspace, {
+          kind: payload.kind,
+          title: payload.count > 1 ? terminalGridTitle(payload.kind, index) : payload.title,
+          task: payload.task,
+          cols: payload.cols,
+          rows: payload.rows,
+          resumeSessionId: payload.resumeSessionId,
+          sessionLabel: payload.sessionLabel,
+          contextMode: payload.contextMode,
+          contextText: payload.contextText,
+          controlSource: "electron-control",
+        }).catch((error) => {
+          recordControlFailure({
+            kind: "spawn.failed",
+            detail: String(error),
+            preview: payload.task,
+          });
+          throw error;
+        });
+        sessions.push(session);
         if (payload.kind === "opencode" && index < payload.count - 1) await delay(650);
       }
       sendJson(response, 200, { sessions });

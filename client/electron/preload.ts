@@ -16,6 +16,35 @@ export type PerformanceDiagnostics = {
   ipcBatchesPerSecond: number;
   ipcBytesPerSecond: number;
   lastOutputBatchAt: string | null;
+  controlEvents: Array<{
+    id: string;
+    at: string;
+    kind: string;
+    source: string;
+    terminalId: string | null;
+    terminalTitle: string | null;
+    terminalKind: string | null;
+    detail: string | null;
+    preview: string | null;
+  }>;
+  terminalControl: Array<{
+    terminalId: string;
+    title: string;
+    kind: string;
+    workspace: string;
+    pid: number | null;
+    status: string;
+    lastSpawnAt: string | null;
+    spawnSource: string | null;
+    lastSpawnResult: string | null;
+    lastInjectedAt: string | null;
+    lastInjectedBy: string | null;
+    lastInjectTextPreview: string | null;
+    lastInjectResult: string | null;
+    lastPtyWriteAt: string | null;
+    lastOutputAt: string | null;
+    attentionReason: string | null;
+  }>;
 };
 
 export type WorkspaceApi = {

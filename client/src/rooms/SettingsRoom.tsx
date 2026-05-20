@@ -229,6 +229,24 @@ export function SettingsRoom({
           </div>
           <StatusPill tone={performance?.pendingOutputBytes ? "warn" : "ok"}>{performance ? `${performance.activeTerminals} terminals` : "Unavailable"}</StatusPill>
         </article>
+        <article className="settingsSection wide">
+          <div>
+            <strong>Terminal control state</strong>
+            <span>{performance ? terminalControlSummary(performance) : "No terminal control state loaded."}</span>
+          </div>
+          <StatusPill tone={performance?.terminalControl.some((terminal) => terminal.attentionReason) ? "warn" : "ok"}>
+            {performance ? `${performance.terminalControl.length} tracked` : "Unavailable"}
+          </StatusPill>
+        </article>
+        <article className="settingsSection wide">
+          <div>
+            <strong>Recent control events</strong>
+            <span>{performance ? controlEventsSummary(performance) : "No control events loaded."}</span>
+          </div>
+          <StatusPill tone={performance?.controlEvents.some((event) => event.kind.endsWith(".failed")) ? "bad" : "ok"}>
+            {performance ? `${performance.controlEvents.length} events` : "Unavailable"}
+          </StatusPill>
+        </article>
       </div>
     </section>
   );
@@ -243,6 +261,29 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
     `Per-terminal cap: ${formatBytes(performance.maxBufferChars)} chars`,
     `Last batch: ${performance.lastOutputBatchAt ?? "none"}`,
   ].join("\n");
+}
+
+function terminalControlSummary(performance: PerformanceDiagnostics): string {
+  if (performance.terminalControl.length === 0) return "No terminal control state recorded yet.";
+  return performance.terminalControl.slice(0, 8).map((terminal) => [
+    `${terminal.title} (${terminal.kind}${terminal.pid == null ? "" : ` · PID ${terminal.pid}`})`,
+    `spawn: ${terminal.lastSpawnResult ?? "unknown"}${terminal.spawnSource ? ` via ${terminal.spawnSource}` : ""}`,
+    terminal.lastInjectResult
+      ? `inject: ${terminal.lastInjectResult}${terminal.lastInjectedBy ? ` via ${terminal.lastInjectedBy}` : ""}${terminal.lastInjectTextPreview ? ` · ${terminal.lastInjectTextPreview}` : ""}`
+      : "inject: none",
+    `last output: ${terminal.lastOutputAt ?? "none"}`,
+    terminal.attentionReason ? `attention: ${terminal.attentionReason}` : null,
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function controlEventsSummary(performance: PerformanceDiagnostics): string {
+  if (performance.controlEvents.length === 0) return "No spawn or injection events recorded yet.";
+  return performance.controlEvents.slice(0, 12).map((event) => [
+    `${event.at} · ${event.kind} · ${event.source}`,
+    event.terminalTitle ? `${event.terminalTitle}${event.terminalKind ? ` (${event.terminalKind})` : ""}` : null,
+    event.detail,
+    event.preview ? `preview: ${event.preview}` : null,
+  ].filter(Boolean).join("\n")).join("\n\n");
 }
 
 function themeDescription(theme: UiTheme): string {

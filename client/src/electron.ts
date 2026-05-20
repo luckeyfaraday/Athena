@@ -95,6 +95,39 @@ export type PerformanceDiagnostics = {
   ipcBatchesPerSecond: number;
   ipcBytesPerSecond: number;
   lastOutputBatchAt: string | null;
+  controlEvents: ControlEvent[];
+  terminalControl: TerminalControlState[];
+};
+
+export type ControlEvent = {
+  id: string;
+  at: string;
+  kind: string;
+  source: string;
+  terminalId: string | null;
+  terminalTitle: string | null;
+  terminalKind: string | null;
+  detail: string | null;
+  preview: string | null;
+};
+
+export type TerminalControlState = {
+  terminalId: string;
+  title: string;
+  kind: string;
+  workspace: string;
+  pid: number | null;
+  status: string;
+  lastSpawnAt: string | null;
+  spawnSource: string | null;
+  lastSpawnResult: string | null;
+  lastInjectedAt: string | null;
+  lastInjectedBy: string | null;
+  lastInjectTextPreview: string | null;
+  lastInjectResult: string | null;
+  lastPtyWriteAt: string | null;
+  lastOutputAt: string | null;
+  attentionReason: string | null;
 };
 
 type WorkspaceApi = {
@@ -188,6 +221,8 @@ const browserFallback: WorkspaceApi = {
       ipcBatchesPerSecond: 0,
       ipcBytesPerSecond: 0,
       lastOutputBatchAt: null,
+      controlEvents: [],
+      terminalControl: [],
     };
   },
   async killEmbeddedTerminal() { return { ...(await this.spawnEmbeddedTerminal("/preview")), status: "exited" }; },

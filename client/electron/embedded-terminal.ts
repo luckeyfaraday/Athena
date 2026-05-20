@@ -3,6 +3,20 @@ import * as path from "node:path";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
+import {
+  recentControlEvents,
+  recordInputFailed,
+  recordInputRequested,
+  recordInputWritten,
+  recordSpawnFailed,
+  recordSpawnRequested,
+  recordSpawnSucceeded,
+  recordTerminalExited,
+  recordTerminalOutput,
+  terminalControlStates,
+  type ControlEvent,
+  type TerminalControlState,
+} from "./control-events.js";
 import { getBackendState } from "./backend.js";
 import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
@@ -46,6 +60,7 @@ export type EmbeddedTerminalSpawnOptions = {
   providerSessionId?: string;
   contextMode?: AgentContextMode;
   contextText?: string;
+  controlSource?: string;
 };
 
 type ManagedTerminal = {
@@ -90,6 +105,8 @@ export type PerformanceDiagnostics = {
   ipcBatchesPerSecond: number;
   ipcBytesPerSecond: number;
   lastOutputBatchAt: string | null;
+  controlEvents: ControlEvent[];
+  terminalControl: TerminalControlState[];
 };
 
 export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
@@ -127,6 +144,8 @@ export function getPerformanceDiagnostics(): PerformanceDiagnostics {
     ipcBatchesPerSecond: perfCounters.rates.ipcBatchesPerSecond,
     ipcBytesPerSecond: perfCounters.rates.ipcBytesPerSecond,
     lastOutputBatchAt: perfCounters.lastBatchAt,
+    controlEvents: recentControlEvents(),
+    terminalControl: terminalControlStates(),
   };
 }
 
@@ -170,6 +189,15 @@ export async function spawnEmbeddedTerminal(
     exitCode: null,
     error: null,
   };
+  const controlSource = options.controlSource ?? "ui";
+  recordSpawnRequested({
+    terminalId: session.id,
+    title: session.title,
+    kind: session.kind,
+    workspace: session.workspace,
+    source: controlSource,
+    preview: session.initialTask,
+  });
 
   try {
     const openCodeBaseline = kind === "opencode" ? resolveOpenCodeBaselineBinary() : null;
@@ -193,8 +221,17 @@ export async function spawnEmbeddedTerminal(
 
     session.pid = term.pid;
     terminals.set(id, { session, process: term });
+    recordSpawnSucceeded({
+      terminalId: session.id,
+      title: session.title,
+      kind: session.kind,
+      workspace: session.workspace,
+      source: controlSource,
+      pid: session.pid,
+    });
 
     term.onData((data) => {
+      recordTerminalOutput(id);
       appendBuffer(id, data);
       queueOutput(id, data);
     });
@@ -204,6 +241,7 @@ export async function spawnEmbeddedTerminal(
       const entry = terminals.get(id);
       if (entry) {
         entry.session = { ...entry.session, status: "exited", exitCode };
+        recordTerminalExited(id, exitCode);
         emit("embedded-terminal:exit", { id, exitCode });
         terminals.delete(id);
       }
@@ -213,6 +251,14 @@ export async function spawnEmbeddedTerminal(
     return { ...session };
   } catch (error) {
     const failed = { ...session, status: "failed" as const, error: String(error) };
+    recordSpawnFailed({
+      terminalId: failed.id,
+      title: failed.title,
+      kind: failed.kind,
+      workspace: failed.workspace,
+      source: controlSource,
+      error: failed.error ?? "Terminal spawn failed.",
+    });
     emit("embedded-terminal:session", failed);
     return failed;
   }
@@ -227,11 +273,18 @@ export function writeEmbeddedTerminal(id: string, data: string): EmbeddedTermina
 export async function submitEmbeddedTerminalInput(target: string, text: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminalTarget(target);
   if (!text.trim()) throw new Error("Input text cannot be empty.");
+  recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview: text });
   const writes = terminalInputWritesForKind(entry.session.kind, text);
-  for (const write of writes) {
-    entry.process.write(write.data);
-    if (write.delayAfterMs) await delay(write.delayAfterMs);
+  try {
+    for (const write of writes) {
+      entry.process.write(write.data);
+      if (write.delayAfterMs) await delay(write.delayAfterMs);
+    }
+  } catch (error) {
+    recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview: text, error: String(error) });
+    throw error;
   }
+  recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview: text });
   return { ...entry.session };
 }
 

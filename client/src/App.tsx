@@ -23,12 +23,16 @@ import { roomRouteById, type ActiveRoom } from "./routes";
 import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
 import {
+  applyAgentSessionRenames,
+  applyEmbeddedSessionRenames,
   embeddedSessionKey,
   providerLabel,
+  readRenamedSessions,
   selectedAgentSessionKey,
   terminalGridTitles,
   type AgentTranscriptState,
   type HandoffPreview,
+  writeRenamedSessions,
 } from "./session-utils";
 import { normalizeWorkspaceKey, sameWorkspacePath, workspaceDisplayName, workspaceKey } from "./workspace-utils";
 
@@ -191,6 +195,7 @@ export function App() {
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
   const [workspaceAttention, setWorkspaceAttention] = useState<Record<string, WorkspaceAttention>>({});
   const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
+  const [sessionRenames, setSessionRenames] = useState<Record<string, string>>(() => readRenamedSessions(workspace));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
@@ -290,12 +295,12 @@ export function App() {
 
   const refreshSessions = useCallback(async () => {
     try {
-      const nextSessions = await desktop.listEmbeddedTerminals();
+      const nextSessions = applyEmbeddedSessionRenames(await desktop.listEmbeddedTerminals(), sessionRenames);
       setEmbeddedSessions((current) => sameEmbeddedSessions(current, nextSessions) ? current : nextSessions);
     } catch (err) {
       setError(String(err));
     }
-  }, []);
+  }, [sessionRenames]);
 
   const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {
     if (!workspace) {
@@ -310,7 +315,7 @@ export function App() {
     agentSessionsLastRefreshAt.current = now;
     agentSessionsRefreshInFlight.current = requestedWorkspaceKey;
     try {
-      const sessions = await desktop.listAgentSessions(requestedWorkspace);
+      const sessions = applyAgentSessionRenames(await desktop.listAgentSessions(requestedWorkspace), sessionRenames);
       if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) {
         setAgentSessions(sessions);
       }
@@ -319,7 +324,7 @@ export function App() {
     } finally {
       if (agentSessionsRefreshInFlight.current === requestedWorkspaceKey) agentSessionsRefreshInFlight.current = null;
     }
-  }, [workspace]);
+  }, [sessionRenames, workspace]);
 
   const refreshPerformanceDiagnostics = useCallback(async () => {
     try {
@@ -413,8 +418,17 @@ export function App() {
         if (status.running) void refreshElectronControl();
       })
       .catch((err) => setError(String(err)));
-    void refreshSessions();
-  }, [refreshData, refreshElectronControl, refreshSessions]);
+    desktop
+      .restoreEmbeddedTerminals()
+      .then((sessions) => {
+        const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenames);
+        setEmbeddedSessions((current) => sameEmbeddedSessions(current, nextSessions) ? current : nextSessions);
+      })
+      .catch((err) => {
+        setError(String(err));
+        void refreshSessions();
+      });
+  }, [refreshData, refreshElectronControl, refreshSessions, sessionRenames]);
 
   useEffect(() => {
     void refreshAgentSessions({ force: true });
@@ -427,6 +441,9 @@ export function App() {
   useEffect(() => {
     activeWorkspaceRef.current = workspace;
     clearWorkspaceAttention(workspace);
+    const nextRenames = readRenamedSessions(workspace);
+    setSessionRenames(nextRenames);
+    setEmbeddedSessions((current) => applyEmbeddedSessionRenames(current, nextRenames));
     setAgentSessions([]);
     agentSessionsLastRefreshAt.current = 0;
   }, [workspace]);
@@ -657,6 +674,27 @@ export function App() {
     }
   }
 
+  async function renameEmbeddedSession(session: EmbeddedTerminalSession) {
+    const nextTitle = window.prompt("Rename session", session.title)?.trim();
+    if (!nextTitle || nextTitle === session.title) return;
+    const key = embeddedSessionKey(session);
+    const nextRenames = { ...sessionRenames, [key]: nextTitle };
+    setSessionRenames(nextRenames);
+    writeRenamedSessions(workspace, nextRenames);
+    setEmbeddedSessions((current) => current.map((item) => item.id === session.id ? { ...item, title: nextTitle } : item));
+    await desktop.renameEmbeddedTerminal(session.id, nextTitle).catch(() => undefined);
+  }
+
+  function renameAgentSession(session: AgentSession) {
+    const nextTitle = window.prompt("Rename session", session.title)?.trim();
+    if (!nextTitle || nextTitle === session.title) return;
+    const key = selectedAgentSessionKey(session);
+    const nextRenames = { ...sessionRenames, [key]: nextTitle };
+    setSessionRenames(nextRenames);
+    writeRenamedSessions(workspace, nextRenames);
+    setAgentSessions((current) => current.map((item) => selectedAgentSessionKey(item) === key ? { ...item, title: nextTitle } : item));
+  }
+
   async function broadcastPromptToAgents(prompt: string, sessionIds: string[]) {
     const trimmed = prompt.trim();
     if (!trimmed || sessionIds.length === 0) return;
@@ -874,10 +912,12 @@ export function App() {
                   setSelectedSessionKey(embeddedSessionKey(session));
                   setActiveRoom("review");
                 }}
+                onRenameEmbeddedSession={renameEmbeddedSession}
                 onInspectAgentSession={(session) => {
                   setSelectedSessionKey(selectedAgentSessionKey(session));
                   setActiveRoom("review");
                 }}
+                onRenameAgentSession={renameAgentSession}
                 onViewAgentTranscript={loadAgentTranscript}
                 emptyMark={<AthenaMark />}
               />

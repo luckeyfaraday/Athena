@@ -20,6 +20,7 @@ export type HandoffPreview = {
 };
 
 const deletedAgentSessionsStoragePrefix = "context-workspace:deleted-agent-sessions:";
+const renamedSessionsStoragePrefix = "context-workspace:renamed-sessions:";
 
 function deletedAgentSessionsStorageKey(workspace: string): string {
   return `${deletedAgentSessionsStoragePrefix}${workspace ? normalizeWorkspaceKey(workspace) : "none"}`;
@@ -52,6 +53,49 @@ export function writeDeletedAgentSessions(workspace: string, sessions: Set<strin
   } catch {
     // Ignore storage failures; deleting still applies for the current render.
   }
+}
+
+function renamedSessionsStorageKey(workspace: string): string {
+  return `${renamedSessionsStoragePrefix}${workspace ? normalizeWorkspaceKey(workspace) : "none"}`;
+}
+
+function parseRenamedSessions(value: string | null): Record<string, string> {
+  const parsed = JSON.parse(value ?? "{}");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string" && entry[1].trim().length > 0),
+  );
+}
+
+export function readRenamedSessions(workspace: string): Record<string, string> {
+  try {
+    return parseRenamedSessions(window.localStorage.getItem(renamedSessionsStorageKey(workspace)));
+  } catch {
+    return {};
+  }
+}
+
+export function writeRenamedSessions(workspace: string, sessions: Record<string, string>): void {
+  try {
+    window.localStorage.setItem(renamedSessionsStorageKey(workspace), JSON.stringify(sessions));
+  } catch {
+    // Ignore storage failures; the active render still carries the rename.
+  }
+}
+
+export function applyEmbeddedSessionRenames(sessions: EmbeddedTerminalSession[], renames: Record<string, string>): EmbeddedTerminalSession[] {
+  return sessions.map((session) => {
+    const title = renames[embeddedSessionKey(session)]?.trim();
+    return title ? { ...session, title } : session;
+  });
+}
+
+export function applyAgentSessionRenames(sessions: AgentSession[], renames: Record<string, string>): AgentSession[] {
+  return sessions.map((session) => {
+    const title = renames[selectedAgentSessionKey(session)]?.trim();
+    return title ? { ...session, title } : session;
+  });
 }
 
 export function formatAge(ageSeconds: number): string {

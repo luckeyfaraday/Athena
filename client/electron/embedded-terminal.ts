@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
@@ -66,12 +67,30 @@ export type EmbeddedTerminalSpawnOptions = {
 type ManagedTerminal = {
   session: EmbeddedTerminalSession;
   process: pty.IPty;
+  restore: RestorableTerminal;
+};
+
+type RestorableTerminal = {
+  id: string;
+  workspace: string;
+  kind: EmbeddedTerminalKind;
+  title: string;
+  sessionLabel: string | null;
+  providerSessionId: string | null;
+  resumeSessionId: string | null;
+  createdAt: string;
 };
 
 let _appRoot: string | null = null;
+let appQuitting = false;
+let restoreInFlight = false;
 
 export function initEmbeddedTerminals(appRoot: string): void {
   _appRoot = appRoot;
+}
+
+export function prepareEmbeddedTerminalRestoreForQuit(): void {
+  appQuitting = true;
 }
 
 const terminals = new Map<string, ManagedTerminal>();
@@ -130,6 +149,33 @@ export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | 
   return null;
 }
 
+export async function restoreEmbeddedTerminals(): Promise<EmbeddedTerminalSession[]> {
+  if (restoreInFlight || terminals.size > 0) return listEmbeddedTerminals();
+  restoreInFlight = true;
+  try {
+    const restored: EmbeddedTerminalSession[] = [];
+    const entries = readRestoreEntries();
+    for (const entry of entries) {
+      if (!fs.existsSync(entry.workspace)) continue;
+      const session = await spawnEmbeddedTerminal(entry.workspace, {
+        kind: entry.kind,
+        title: entry.title,
+        cols: 96,
+        rows: 28,
+        resumeSessionId: entry.resumeSessionId ?? undefined,
+        sessionLabel: entry.sessionLabel ?? undefined,
+        providerSessionId: entry.providerSessionId ?? undefined,
+        contextMode: "none",
+        controlSource: "restore",
+      });
+      if (session.status === "running") restored.push(session);
+    }
+    return restored;
+  } finally {
+    restoreInFlight = false;
+  }
+}
+
 export function getPerformanceDiagnostics(): PerformanceDiagnostics {
   updatePerformanceRates();
   const pendingOutputBytes = Array.from(pendingOutput.values()).reduce((total, value) => total + Buffer.byteLength(value), 0);
@@ -173,18 +219,28 @@ export async function spawnEmbeddedTerminal(
   const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
+  const restoreEntry: RestorableTerminal = {
+    id,
+    title: options.title ?? defaultTitle(kind),
+    kind,
+    workspace: cwd,
+    sessionLabel: options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId),
+    providerSessionId,
+    resumeSessionId: isAgentKind(kind) ? options.resumeSessionId ?? providerSessionId : null,
+    createdAt: new Date().toISOString(),
+  };
 
   const session: EmbeddedTerminalSession = {
     id,
-    title: options.title ?? defaultTitle(kind),
+    title: restoreEntry.title,
     kind,
     workspace: cwd,
     pid: null,
     promptPath,
     initialTask: options.task?.trim() || null,
-    sessionLabel,
+    sessionLabel: restoreEntry.sessionLabel,
     providerSessionId,
-    createdAt: new Date().toISOString(),
+    createdAt: restoreEntry.createdAt,
     status: "running",
     exitCode: null,
     error: null,
@@ -220,7 +276,8 @@ export async function spawnEmbeddedTerminal(
     });
 
     session.pid = term.pid;
-    terminals.set(id, { session, process: term });
+    terminals.set(id, { session, process: term, restore: restoreEntry });
+    upsertRestoreEntry(restoreEntry);
     recordSpawnSucceeded({
       terminalId: session.id,
       title: session.title,
@@ -244,6 +301,7 @@ export async function spawnEmbeddedTerminal(
         recordTerminalExited(id, exitCode);
         emit("embedded-terminal:exit", { id, exitCode });
         terminals.delete(id);
+        if (!appQuitting) removeRestoreEntry(id);
       }
     });
 
@@ -267,6 +325,17 @@ export async function spawnEmbeddedTerminal(
 export function writeEmbeddedTerminal(id: string, data: string): EmbeddedTerminalSession {
   const entry = requireTerminal(id);
   entry.process.write(data);
+  return { ...entry.session };
+}
+
+export function renameEmbeddedTerminal(id: string, title: string): EmbeddedTerminalSession {
+  const entry = requireTerminal(id);
+  const nextTitle = title.trim();
+  if (!nextTitle) throw new Error("Session title cannot be empty.");
+  entry.session = { ...entry.session, title: nextTitle };
+  entry.restore = { ...entry.restore, title: nextTitle };
+  upsertRestoreEntry(entry.restore);
+  emit("embedded-terminal:session", entry.session);
   return { ...entry.session };
 }
 
@@ -300,8 +369,56 @@ export function killEmbeddedTerminal(id: string): EmbeddedTerminalSession {
   entry.process.kill();
   entry.session = { ...entry.session, status: "exited", exitCode: null };
   terminals.delete(id);
+  removeRestoreEntry(id);
   emit("embedded-terminal:exit", { id, exitCode: null });
   return { ...entry.session };
+}
+
+function restoreFilePath(): string {
+  return path.join(os.homedir(), ".context-workspace", "embedded-terminals.json");
+}
+
+function readRestoreEntries(): RestorableTerminal[] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(restoreFilePath(), "utf8"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isRestorableTerminal);
+  } catch {
+    return [];
+  }
+}
+
+function writeRestoreEntries(entries: RestorableTerminal[]): void {
+  try {
+    const filePath = restoreFilePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(entries, null, 2), "utf8");
+  } catch {
+    // Restore state is best-effort; live PTY control remains authoritative.
+  }
+}
+
+function upsertRestoreEntry(entry: RestorableTerminal): void {
+  const entries = readRestoreEntries().filter((item) => item.id !== entry.id);
+  writeRestoreEntries([entry, ...entries].slice(0, 40));
+}
+
+function removeRestoreEntry(id: string): void {
+  writeRestoreEntries(readRestoreEntries().filter((entry) => entry.id !== id));
+}
+
+function isRestorableTerminal(value: unknown): value is RestorableTerminal {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<RestorableTerminal>;
+  return typeof item.id === "string"
+    && typeof item.workspace === "string"
+    && typeof item.title === "string"
+    && typeof item.createdAt === "string"
+    && typeof item.kind === "string"
+    && ["shell", "hermes", "codex", "opencode", "claude"].includes(item.kind)
+    && (item.sessionLabel == null || typeof item.sessionLabel === "string")
+    && (item.providerSessionId == null || typeof item.providerSessionId === "string")
+    && (item.resumeSessionId == null || typeof item.resumeSessionId === "string");
 }
 
 function appendBuffer(id: string, data: string): void {

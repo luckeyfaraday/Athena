@@ -29,6 +29,7 @@ type SqliteValue = string | number | null;
 
 const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 30_000;
+const MAX_PROVIDER_ROWS = 1000;
 const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
 
 export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {
@@ -89,13 +90,14 @@ async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
     const rows = await querySqlite(dbPath, [
       "select id, cwd, title, created_at_ms, updated_at_ms, git_branch, cli_version, first_user_message, model, agent_role",
       "from threads",
-      "where cwd = ?",
       "order by updated_at_ms desc",
-      "limit 50",
-    ].join(" "), [workspace]);
+      `limit ${MAX_PROVIDER_ROWS}`,
+    ].join(" "), []);
     for (const row of rows) {
       const id = stringValue(row[0]);
       if (!id) continue;
+      const sessionWorkspace = stringValue(row[1]) || workspace;
+      if (!sameOrDescendantPath(sessionWorkspace, workspace)) continue;
       const metadata = jsonlMetadata.get(id) ?? {};
       const cliVersion = nullableString(row[6]) ?? metadata.cli_version;
       const enriched = cliVersion ? { ...metadata, cli_version: cliVersion } : metadata;
@@ -103,7 +105,7 @@ async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
         id,
         provider: "codex",
         title: cleanSessionTitle(stringValue(row[2]) || stringValue(row[7]) || metadata.first_user_message || null) || "Codex session",
-        workspace: stringValue(row[1]) || workspace,
+        workspace: sessionWorkspace,
         branch: nullableString(row[5]) ?? metadata.git_branch ?? null,
         model: nullableString(row[8]) ?? metadata.model ?? null,
         agent: nullableString(row[9]) ?? metadata.personality ?? null,
@@ -150,7 +152,7 @@ function readCodexJsonlMetadata(workspace: string): Map<string, Record<string, s
     const metadata = readCodexJsonlFileMetadata(filePath);
     const id = metadata.session_id;
     const cwd = metadata.cwd;
-    if (!id || !cwd || !samePath(cwd, workspace)) continue;
+    if (!id || !cwd || !sameOrDescendantPath(cwd, workspace)) continue;
     byId.set(id, metadata);
   }
   return byId;
@@ -266,11 +268,10 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
     "select s.id, coalesce(s.directory, p.worktree), s.title, s.time_created, s.time_updated, s.agent, s.model, p.worktree",
     "from session s",
     "left join project p on s.project_id = p.id",
-    "where s.directory = ? or p.worktree = ?",
     "order by s.time_updated desc",
-    "limit 50",
-  ].join(" "), [workspace, workspace]);
-  return rows.map((row): AgentSession => {
+    `limit ${MAX_PROVIDER_ROWS}`,
+  ].join(" "), []);
+  return rows.filter((row) => sameOrDescendantPath(stringValue(row[1]) || stringValue(row[7]) || workspace, workspace)).map((row): AgentSession => {
     const id = stringValue(row[0]);
     const model = parseOpenCodeModel(nullableString(row[6]));
     return {
@@ -305,16 +306,22 @@ function readClaudeSessions(workspace: string): AgentSession[] {
       const filePath = path.join(dir, name);
       if (seenFiles.has(filePath)) continue;
       seenFiles.add(filePath);
-      const session = readClaudeSessionFile(filePath, workspace);
+      const session = readClaudeSessionFile(filePath, workspace, { allowMissingCwd: true });
       if (session) sessions.push(session);
     }
+  }
+  for (const filePath of recentJsonlFiles(projectsDir, MAX_PROVIDER_ROWS)) {
+    if (seenFiles.has(filePath)) continue;
+    seenFiles.add(filePath);
+    const session = readClaudeSessionFile(filePath, workspace, { allowMissingCwd: false });
+    if (session) sessions.push(session);
   }
   return sessions
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, 50);
 }
 
-function readClaudeSessionFile(filePath: string, workspace: string): AgentSession | null {
+function readClaudeSessionFile(filePath: string, workspace: string, options: { allowMissingCwd: boolean }): AgentSession | null {
   const stat = fs.statSync(filePath);
   const lines = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean).slice(0, 120);
   let sessionId = path.basename(filePath, ".jsonl");
@@ -343,7 +350,11 @@ function readClaudeSessionFile(filePath: string, workspace: string): AgentSessio
     }
   }
 
-  if (cwd && !samePath(cwd, workspace)) return null;
+  if (cwd) {
+    if (!sameOrDescendantPath(cwd, workspace)) return null;
+  } else if (!options.allowMissingCwd) {
+    return null;
+  }
   return {
     id: sessionId,
     provider: "claude",
@@ -375,15 +386,14 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
       "select id, source, model, started_at, ended_at, message_count, title",
       "from sessions",
       "order by coalesce(ended_at, started_at) desc",
-      "limit 250",
+      `limit ${MAX_PROVIDER_ROWS}`,
     ].join(" "), []);
     for (const row of rows) {
       const id = stringValue(row[0]);
       if (!id) continue;
-      const metadata = nullableString(row[2]) && nullableString(row[6]) && row[4]
-        ? null
-        : readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
+      const metadata = readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
       const manifestEntry = manifest.get(id);
+      if (!hermesSessionMatchesWorkspace(metadata, manifestEntry, workspace)) continue;
       const agent = hermesAgentLabel(nullableString(row[1]), manifestEntry, metadata);
       const createdAt = fromEpoch(row[3]);
       const updatedAt = row[4] ? fromEpoch(row[4]) : metadata?.updatedAt ?? manifestEntry?.updatedAt ?? createdAt;
@@ -415,6 +425,7 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
       if (!metadata) continue;
       const stat = fs.statSync(filePath);
       const manifestEntry = manifest.get(match[1]);
+      if (!hermesSessionMatchesWorkspace(metadata, manifestEntry, workspace)) continue;
       sessionsById.set(match[1], {
         id: match[1],
         provider: "hermes",
@@ -470,6 +481,8 @@ type HermesSessionFileMetadata = {
   platform: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  workspace: string | null;
+  searchText: string;
 };
 
 function readHermesManifest(filePath: string): Map<string, HermesManifestEntry> {
@@ -502,6 +515,8 @@ function readHermesSessionFile(filePath: string): HermesSessionFileMetadata | nu
     platform: stringProperty(parsed, "platform"),
     createdAt: stringProperty(parsed, "session_start"),
     updatedAt: stringProperty(parsed, "last_updated"),
+    workspace: hermesWorkspace(parsed),
+    searchText: JSON.stringify(parsed).slice(0, 300_000),
   };
 }
 
@@ -540,6 +555,25 @@ function hermesAgentLabel(source: string | null, manifestEntry?: HermesManifestE
   const platform = manifestEntry?.platform || metadata?.platform || source;
   const chatType = manifestEntry?.chatType;
   return [platform, chatType].filter(Boolean).join(" / ") || null;
+}
+
+function hermesWorkspace(session: Record<string, unknown>): string | null {
+  for (const key of ["workspace", "cwd", "project_dir", "projectDir", "project_path", "projectPath", "working_directory"]) {
+    const value = stringProperty(session, key);
+    if (value) return value;
+  }
+  const context = objectProperty(session, "context_workspace") || objectProperty(session, "contextWorkspace");
+  return stringProperty(context, "project_dir") || stringProperty(context, "workspace");
+}
+
+function hermesSessionMatchesWorkspace(metadata: HermesSessionFileMetadata | null, manifestEntry: HermesManifestEntry | undefined, workspace: string): boolean {
+  if (metadata?.workspace && sameOrDescendantPath(metadata.workspace, workspace)) return true;
+  const text = [
+    metadata?.title,
+    metadata?.searchText,
+    manifestEntry?.title,
+  ].filter(Boolean).join("\n").toLowerCase();
+  return workspaceNeedles(workspace).some((needle) => text.includes(needle));
 }
 
 async function querySqlite(dbPath: string, sql: string, params: string[]): Promise<SqliteValue[][]> {
@@ -606,6 +640,25 @@ function isAgentKind(kind: string): kind is AgentSessionProvider {
 
 function samePath(left: string, right: string): boolean {
   return normalizeComparablePath(left) === normalizeComparablePath(right);
+}
+
+function sameOrDescendantPath(candidate: string, workspace: string): boolean {
+  const child = normalizeComparablePath(candidate);
+  const parent = normalizeComparablePath(workspace);
+  if (!child || !parent) return false;
+  if (child === parent) return true;
+  return parent === "/" ? child.startsWith("/") : child.startsWith(`${parent}/`);
+}
+
+function workspaceNeedles(workspace: string): string[] {
+  const normalized = normalizeComparablePath(workspace).toLowerCase();
+  const baseName = path.basename(workspace).toLowerCase();
+  const needles = new Set<string>([normalized]);
+  if (baseName.length >= 6 && /[-_]/.test(baseName)) {
+    needles.add(baseName);
+    needles.add(baseName.replace(/[-_]+/g, " "));
+  }
+  return Array.from(needles).filter(Boolean);
 }
 
 function fromEpoch(value: SqliteValue): string {

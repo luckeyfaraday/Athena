@@ -147,8 +147,10 @@ type WorkspaceApi = {
   openNativeCodexGrid: (workspace: string, panes?: number) => Promise<NativeTerminalResult>;
   getNativeTerminalSessions: () => Promise<NativeTerminalSession[]>;
   listEmbeddedTerminals: () => Promise<EmbeddedTerminalSession[]>;
+  restoreEmbeddedTerminals: () => Promise<EmbeddedTerminalSession[]>;
   spawnEmbeddedTerminal: (workspace: string, options?: EmbeddedTerminalSpawnOptions) => Promise<EmbeddedTerminalSession>;
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
+  renameEmbeddedTerminal: (id: string, title: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
@@ -190,6 +192,7 @@ const browserFallback: WorkspaceApi = {
   async openNativeCodexGrid(workspace: string, panes = 4) { return fallbackTerminalResult(workspace, "grid", panes); },
   async getNativeTerminalSessions() { return []; },
   async listEmbeddedTerminals() { return []; },
+  async restoreEmbeddedTerminals() { return []; },
   async spawnEmbeddedTerminal(workspace: string, options = {}) {
     return {
       id: `preview-${Date.now()}`,
@@ -208,6 +211,9 @@ const browserFallback: WorkspaceApi = {
     };
   },
   async writeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
+  async renameEmbeddedTerminal(id: string, title: string) {
+    return { ...(await this.spawnEmbeddedTerminal("/preview")), id, title };
+  },
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async getPerformanceDiagnostics() {

@@ -8,6 +8,7 @@ import {
   Layers3,
   Maximize2,
   Minimize2,
+  Pencil,
   Play,
   RefreshCw,
   ScrollText,
@@ -52,7 +53,9 @@ export function CommandRoom({
   onBroadcastPrompt,
   onResumeSession,
   onInspectEmbeddedSession,
+  onRenameEmbeddedSession,
   onInspectAgentSession,
+  onRenameAgentSession,
   onViewAgentTranscript,
   emptyMark,
 }: {
@@ -69,7 +72,9 @@ export function CommandRoom({
   onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
   onResumeSession: (session: AgentSession) => Promise<void>;
   onInspectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
+  onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onInspectAgentSession: (session: AgentSession) => void;
+  onRenameAgentSession: (session: AgentSession) => void;
   onViewAgentTranscript: (session: AgentSession) => Promise<string>;
   emptyMark: ReactNode;
 }) {
@@ -349,6 +354,9 @@ export function CommandRoom({
                 <button type="button" className="terminalChromeAction" onClick={() => onInspectEmbeddedSession(session)} title={`Inspect ${session.title}`}>
                   <FileText size={13} />
                 </button>
+                <button type="button" className="terminalChromeAction" onClick={() => onRenameEmbeddedSession(session)} title={`Rename ${session.title}`}>
+                  <Pencil size={13} />
+                </button>
               </div>
               {!collapsedPaneIds.has(session.id) && (
                 interfaceMode === "chat"
@@ -417,6 +425,9 @@ export function CommandRoom({
                 </button>
                 <button type="button" onClick={() => onInspectAgentSession(session)}>
                   <FileText size={13} /> Inspect
+                </button>
+                <button type="button" onClick={() => onRenameAgentSession(session)}>
+                  <Pencil size={13} /> Rename
                 </button>
                 <button type="button" onClick={() => void onViewAgentTranscript(session)}>
                   <ScrollText size={13} /> Transcript

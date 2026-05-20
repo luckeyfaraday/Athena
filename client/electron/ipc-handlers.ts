@@ -23,7 +23,9 @@ import {
   initEmbeddedTerminals,
   killEmbeddedTerminal,
   listEmbeddedTerminals,
+  renameEmbeddedTerminal,
   resizeEmbeddedTerminal,
+  restoreEmbeddedTerminals,
   spawnEmbeddedTerminal,
   writeEmbeddedTerminal,
   type EmbeddedTerminalKind,
@@ -82,6 +84,7 @@ export function registerIpcHandlers(appRoot: string): void {
   );
   ipcMain.handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
   ipcMain.handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
+  ipcMain.handle("embeddedTerminal:restore", (): Promise<EmbeddedTerminalSession[]> => restoreEmbeddedTerminals());
   ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
   ipcMain.handle("performance:diagnostics", (): PerformanceDiagnostics => getPerformanceDiagnostics());
   ipcMain.handle(
@@ -90,6 +93,7 @@ export function registerIpcHandlers(appRoot: string): void {
       spawnEmbeddedTerminal(workspace, options),
   );
   ipcMain.handle("embeddedTerminal:write", (_event, id: string, data: string): EmbeddedTerminalSession => writeEmbeddedTerminal(id, data));
+  ipcMain.handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession => renameEmbeddedTerminal(id, title));
   ipcMain.handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): EmbeddedTerminalSession =>
     resizeEmbeddedTerminal(id, cols, rows),
   );

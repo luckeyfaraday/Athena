@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import { registerIpcHandlers } from "./ipc-handlers.js";
+import { prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
@@ -222,6 +223,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  prepareEmbeddedTerminalRestoreForQuit();
   void stopBackend();
   void stopControlServer();
   if (viteProc) {

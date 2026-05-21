@@ -156,6 +156,7 @@ export async function restoreEmbeddedTerminals(): Promise<EmbeddedTerminalSessio
     const restored: EmbeddedTerminalSession[] = [];
     const entries = readRestoreEntries();
     for (const entry of entries) {
+      removeRestoreEntry(entry.id);
       if (!fs.existsSync(entry.workspace)) continue;
       const session = await spawnEmbeddedTerminal(entry.workspace, {
         kind: entry.kind,

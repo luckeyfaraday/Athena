@@ -466,14 +466,14 @@ function writeCodexLaunchScript(cwd: string, promptPath: string): string {
         `$promptPath = ${quotePowerShell(promptPath)}`,
         "Set-Location -LiteralPath $workspace",
         "$prompt = Get-Content -LiteralPath $promptPath -Raw",
-        "& codex --cd $workspace $prompt",
+        "& codex --cd $workspace -- $prompt",
         "",
       ].join("\r\n")
     : [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         `cd ${quoteShell(cwd)}`,
-        `codex --cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"`,
+        `codex --cd ${quoteShell(cwd)} -- "$(cat ${quoteShell(promptPath)})"`,
         "exec bash",
         "",
       ].join("\n");

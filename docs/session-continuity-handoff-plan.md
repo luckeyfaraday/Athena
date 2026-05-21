@@ -4,7 +4,7 @@ Last updated: 2026-05-13.
 
 ## Goal
 
-Implement `#ec62ad60`: let the user start fresh without losing useful context from prior Athena sessions.
+Let the user start fresh without losing useful context from prior Athena sessions.
 
 The product behavior should be:
 

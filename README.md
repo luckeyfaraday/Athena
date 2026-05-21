@@ -113,11 +113,10 @@ backend/adapters/        Agent adapter implementations
 client/                  Electron + React desktop client
 client/electron/         Electron main-process services and IPC handlers
 client/src/              React UI and browser-side API wrappers
-docs/                    Implementation plans, backlog, audits, and verification notes
+docs/                    Public implementation and verification notes
 mcp_server/              MCP bridge so Hermes can control Athena
 scripts/                 Local verification and recall helpers
 tests/                   Backend, MCP, native session, and adapter tests
-SPEC.md                  Historical design notes and project specification
 ```
 
 ## Requirements

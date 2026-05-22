@@ -855,6 +855,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .settingsSection.wide {
   grid-column: 1 / -1;
 }
+.settingsSection > div {
+  min-width: 0;
+}
 .settingsSection strong,
 .settingsSection span {
   display: block;
@@ -873,6 +876,14 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .settingsSection .ghostButton {
   grid-column: 2;
+}
+.settingsSection .settingsDiagnosticsText {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
 }
 .segmentedControl {
   grid-column: 2;
@@ -903,6 +914,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .segmentedControl button.active {
   background: rgba(217,196,138,.18);
   color: var(--text);
+}
+.themeSegmentedControl {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+}
+.themeSegmentedControl button {
+  min-width: 0;
+  flex: 1 1 0;
 }
 .panelMeta {
   display: block;

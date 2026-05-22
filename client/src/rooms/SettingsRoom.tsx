@@ -225,14 +225,16 @@ export function SettingsRoom({
         <article className="settingsSection wide">
           <div>
             <strong>Performance diagnostics</strong>
-            <span>{performance ? performanceSummary(performance) : "Open Settings while the desktop app is running to sample terminal throughput."}</span>
+            <span className="settingsDiagnosticsText">
+              {performance ? performanceSummary(performance) : "Open Settings while the desktop app is running to sample terminal throughput."}
+            </span>
           </div>
           <StatusPill tone={performance?.pendingOutputBytes ? "warn" : "ok"}>{performance ? `${performance.activeTerminals} terminals` : "Unavailable"}</StatusPill>
         </article>
         <article className="settingsSection wide">
           <div>
             <strong>Terminal control state</strong>
-            <span>{performance ? terminalControlSummary(performance) : "No terminal control state loaded."}</span>
+            <span className="settingsDiagnosticsText">{performance ? terminalControlSummary(performance) : "No terminal control state loaded."}</span>
           </div>
           <StatusPill tone={performance?.terminalControl.some((terminal) => terminal.attentionReason) ? "warn" : "ok"}>
             {performance ? `${performance.terminalControl.length} tracked` : "Unavailable"}
@@ -241,7 +243,7 @@ export function SettingsRoom({
         <article className="settingsSection wide">
           <div>
             <strong>Agent process diagnostics</strong>
-            <span>{performance ? agentProcessSummary(performance) : "No agent process diagnostics loaded."}</span>
+            <span className="settingsDiagnosticsText">{performance ? agentProcessSummary(performance) : "No agent process diagnostics loaded."}</span>
           </div>
           <StatusPill tone={performance?.agentProcesses.some((process) => !process.managedTerminalId) ? "warn" : "ok"}>
             {performance ? `${performance.agentProcesses.filter((process) => !process.managedTerminalId).length} unmanaged` : "Unavailable"}
@@ -250,7 +252,7 @@ export function SettingsRoom({
         <article className="settingsSection wide">
           <div>
             <strong>Recent control events</strong>
-            <span>{performance ? controlEventsSummary(performance) : "No control events loaded."}</span>
+            <span className="settingsDiagnosticsText">{performance ? controlEventsSummary(performance) : "No control events loaded."}</span>
           </div>
           <StatusPill tone={performance?.controlEvents.some((event) => event.kind.endsWith(".failed")) ? "bad" : "ok"}>
             {performance ? `${performance.controlEvents.length} events` : "Unavailable"}

@@ -852,7 +852,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 }
 .settingsSection.wide { grid-column: 1 / -1; }
 .settingsSection strong,
-.settingsSection span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: pre-line; }
+.settingsSection span { display: block; white-space: pre-line; overflow-wrap: anywhere; }
 .settingsSection strong { color: var(--text); font-size: 13px; font-weight: 600; }
 .settingsSection span { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .settingsSection .ghostButton { grid-column: 2; }

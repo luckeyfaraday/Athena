@@ -1078,9 +1078,8 @@ button:disabled { cursor: not-allowed; opacity: .36; }
 .settingsSection strong,
 .settingsSection span {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .settingsSection strong {
   color: var(--text);

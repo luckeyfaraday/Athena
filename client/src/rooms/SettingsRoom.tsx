@@ -256,6 +256,7 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
   return [
     `PTY input: ${performance.ptyChunksPerSecond}/s, ${formatBytes(performance.ptyBytesPerSecond)}/s`,
     `Renderer batches: ${performance.ipcBatchesPerSecond}/s, ${formatBytes(performance.ipcBytesPerSecond)}/s`,
+    `Main process lag: ${Math.round(performance.eventLoopLagMs)} ms latest, ${Math.round(performance.maxEventLoopLagMs)} ms max`,
     `Buffered: ${formatBytes(performance.bufferedTerminalChars)} chars across terminals`,
     `Pending renderer output: ${formatBytes(performance.pendingOutputBytes)}`,
     `Per-terminal cap: ${formatBytes(performance.maxBufferChars)} chars`,

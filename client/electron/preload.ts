@@ -15,6 +15,8 @@ export type PerformanceDiagnostics = {
   ptyBytesPerSecond: number;
   ipcBatchesPerSecond: number;
   ipcBytesPerSecond: number;
+  eventLoopLagMs: number;
+  maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
   controlEvents: Array<{
     id: string;

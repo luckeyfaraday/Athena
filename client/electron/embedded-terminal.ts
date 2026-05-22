@@ -87,6 +87,7 @@ let restoreInFlight = false;
 
 export function initEmbeddedTerminals(appRoot: string): void {
   _appRoot = appRoot;
+  startEventLoopMonitor();
 }
 
 export function prepareEmbeddedTerminalRestoreForQuit(): void {
@@ -97,8 +98,12 @@ const terminals = new Map<string, ManagedTerminal>();
 const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
 const PTY_FLUSH_INTERVAL_MS = 16;
+const EVENT_LOOP_SAMPLE_INTERVAL_MS = 1000;
 const pendingOutput = new Map<string, string>();
 let outputFlushTimer: NodeJS.Timeout | null = null;
+let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
+let eventLoopLagMs = 0;
+let maxEventLoopLagMs = 0;
 const perfCounters = {
   ptyChunks: 0,
   ptyBytes: 0,
@@ -123,6 +128,8 @@ export type PerformanceDiagnostics = {
   ptyBytesPerSecond: number;
   ipcBatchesPerSecond: number;
   ipcBytesPerSecond: number;
+  eventLoopLagMs: number;
+  maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
   controlEvents: ControlEvent[];
   terminalControl: TerminalControlState[];
@@ -190,6 +197,8 @@ export function getPerformanceDiagnostics(): PerformanceDiagnostics {
     ptyBytesPerSecond: perfCounters.rates.ptyBytesPerSecond,
     ipcBatchesPerSecond: perfCounters.rates.ipcBatchesPerSecond,
     ipcBytesPerSecond: perfCounters.rates.ipcBytesPerSecond,
+    eventLoopLagMs,
+    maxEventLoopLagMs,
     lastOutputBatchAt: perfCounters.lastBatchAt,
     controlEvents: recentControlEvents(),
     terminalControl: terminalControlStates(),
@@ -479,6 +488,21 @@ function updatePerformanceRates(): void {
   perfCounters.ipcBatches = 0;
   perfCounters.ipcBytes = 0;
   perfCounters.sampleStartedAt = now;
+}
+
+function startEventLoopMonitor(): void {
+  if (eventLoopMonitorTimer) return;
+  let expectedAt = Date.now() + EVENT_LOOP_SAMPLE_INTERVAL_MS;
+  const sample = () => {
+    const now = Date.now();
+    eventLoopLagMs = Math.max(0, now - expectedAt);
+    maxEventLoopLagMs = Math.max(maxEventLoopLagMs, eventLoopLagMs);
+    expectedAt = now + EVENT_LOOP_SAMPLE_INTERVAL_MS;
+    eventLoopMonitorTimer = setTimeout(sample, EVENT_LOOP_SAMPLE_INTERVAL_MS);
+    eventLoopMonitorTimer.unref?.();
+  };
+  eventLoopMonitorTimer = setTimeout(sample, EVENT_LOOP_SAMPLE_INTERVAL_MS);
+  eventLoopMonitorTimer.unref?.();
 }
 
 function requireTerminal(id: string): ManagedTerminal {

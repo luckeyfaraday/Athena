@@ -577,11 +577,11 @@ function hermesWorkspace(session: Record<string, unknown>): string | null {
 
 function hermesSessionMatchesWorkspace(metadata: HermesSessionFileMetadata | null, manifestEntry: HermesManifestEntry | undefined, workspace: string): boolean {
   if (metadata?.workspace && sameOrDescendantPath(metadata.workspace, workspace)) return true;
-  const text = [
+  const text = normalizeSessionSearchText([
     metadata?.title,
     metadata?.searchText,
     manifestEntry?.title,
-  ].filter(Boolean).join("\n").toLowerCase();
+  ].filter(Boolean).join("\n"));
   return workspaceNeedles(workspace).some((needle) => text.includes(needle));
 }
 
@@ -668,6 +668,10 @@ function workspaceNeedles(workspace: string): string[] {
     needles.add(baseName.replace(/[-_]+/g, " "));
   }
   return Array.from(needles).filter(Boolean);
+}
+
+function normalizeSessionSearchText(value: string): string {
+  return value.toLowerCase().replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
 function fromEpoch(value: SqliteValue): string {

@@ -442,6 +442,33 @@ def test_hermes_sessions_do_not_leak_across_workspaces(tmp_path: Path, monkeypat
     assert [session.id for session in sessions] == ["current"]
 
 
+def test_hermes_sessions_match_windows_style_workspace_mentions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "athena-whisper"
+    workspace.mkdir()
+    windows_style_workspace = str(workspace).replace("/", "\\")
+    hermes_home = tmp_path / "wsl-home" / ".hermes"
+    sessions_dir = hermes_home / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "session_windows_path.json").write_text(
+        json.dumps(
+            {
+                "model": "hermes-model",
+                "platform": "cli",
+                "session_start": "2026-05-12T10:00:00Z",
+                "last_updated": "2026-05-12T10:05:00Z",
+                "messages": [{"role": "user", "content": f"Continue work in {windows_style_workspace}"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(agent_sessions, "_probe_wsl_hermes_dir", lambda: hermes_home)
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="hermes")
+
+    assert [session.id for session in sessions] == ["windows_path"]
+
+
 def test_formats_empty_and_populated_summary(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

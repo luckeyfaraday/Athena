@@ -49,10 +49,12 @@ type WriteTerminalRequest = {
 const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
+const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
 
 let server: http.Server | null = null;
 let watchdog: NodeJS.Timeout | null = null;
 let watchdogRestartInFlight = false;
+let healthFailureCount = 0;
 let state: ControlState = {
   baseUrl: null,
   port: null,
@@ -70,16 +72,21 @@ export async function checkControlHealth(): Promise<ControlState> {
   if (!state.baseUrl || !state.running) return getControlState();
   try {
     const statusCode = await fetchControlHealthStatus(state.baseUrl);
+    const healthy = statusCode >= 200 && statusCode < 300;
+    healthFailureCount = healthy ? 0 : healthFailureCount + 1;
     state = {
       ...state,
-      running: statusCode >= 200 && statusCode < 300,
-      lastError: statusCode >= 200 && statusCode < 300 ? null : `Electron control health returned HTTP ${statusCode}.`,
+      running: healthy || healthFailureCount < CONTROL_HEALTH_FAILURE_THRESHOLD,
+      lastError: healthy
+        ? null
+        : `Electron control health returned HTTP ${statusCode} (${healthFailureCount}/${CONTROL_HEALTH_FAILURE_THRESHOLD}).`,
     };
   } catch (error) {
+    healthFailureCount += 1;
     state = {
       ...state,
-      running: false,
-      lastError: `Electron control server is unavailable at ${state.baseUrl}: ${String(error)}`,
+      running: healthFailureCount < CONTROL_HEALTH_FAILURE_THRESHOLD,
+      lastError: `Electron control server is unavailable at ${state.baseUrl} (${healthFailureCount}/${CONTROL_HEALTH_FAILURE_THRESHOLD}): ${String(error)}`,
     };
   }
   writeControlDiscovery();
@@ -118,6 +125,7 @@ export async function startControlServer(): Promise<ControlState> {
     running: true,
     lastError: null,
   };
+  healthFailureCount = 0;
   writeControlDiscovery();
   startControlWatchdog();
   return { ...state };
@@ -136,6 +144,7 @@ export async function restartControlServer(reason = "manual restart"): Promise<C
     running: false,
     lastError: `Electron control restarting: ${reason}`,
   };
+  healthFailureCount = 0;
   writeControlDiscovery();
   return startControlServer();
 }

@@ -94,6 +94,8 @@ export type PerformanceDiagnostics = {
   ptyBytesPerSecond: number;
   ipcBatchesPerSecond: number;
   ipcBytesPerSecond: number;
+  eventLoopLagMs: number;
+  maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
   controlEvents: ControlEvent[];
   terminalControl: TerminalControlState[];
@@ -226,6 +228,8 @@ const browserFallback: WorkspaceApi = {
       ptyBytesPerSecond: 0,
       ipcBatchesPerSecond: 0,
       ipcBytesPerSecond: 0,
+      eventLoopLagMs: 0,
+      maxEventLoopLagMs: 0,
       lastOutputBatchAt: null,
       controlEvents: [],
       terminalControl: [],

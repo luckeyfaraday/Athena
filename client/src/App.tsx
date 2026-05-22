@@ -218,6 +218,7 @@ export function App() {
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
   const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
+  const restoreAttempted = useRef(false);
 
   function setInterfaceMode(mode: InterfaceMode) {
     setInterfaceModeState(mode);
@@ -418,8 +419,17 @@ export function App() {
         if (status.running) void refreshElectronControl();
       })
       .catch((err) => setError(String(err)));
+  }, [refreshData, refreshElectronControl, refreshSessions, sessionRenames]);
+
+  useEffect(() => {
+    if (!workspacePath || restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    const allowedWorkspaces = Array.from(new Set([
+      workspacePath.nativePath,
+      ...workspaceTabs.map((tab) => tab.nativePath),
+    ].filter(Boolean)));
     desktop
-      .restoreEmbeddedTerminals()
+      .restoreEmbeddedTerminals(allowedWorkspaces)
       .then((sessions) => {
         const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenames);
         setEmbeddedSessions((current) => sameEmbeddedSessions(current, nextSessions) ? current : nextSessions);
@@ -428,7 +438,7 @@ export function App() {
         setError(String(err));
         void refreshSessions();
       });
-  }, [refreshData, refreshElectronControl, refreshSessions, sessionRenames]);
+  }, [refreshSessions, sessionRenames, workspacePath, workspaceTabs]);
 
   useEffect(() => {
     void refreshAgentSessions({ force: true });
@@ -565,6 +575,16 @@ export function App() {
   function closeWorkspaceTab(tab: WorkspacePath) {
     const key = workspaceKey(tab);
     clearWorkspaceAttention(tab);
+    const workspaceSessionIds = embeddedSessionsRef.current
+      .filter((session) => sameWorkspacePath(session.workspace, tab.nativePath))
+      .map((session) => session.id);
+    if (workspaceSessionIds.length > 0) {
+      setEmbeddedSessions((current) => current.filter((session) => !workspaceSessionIds.includes(session.id)));
+      void Promise.allSettled(workspaceSessionIds.map((id) => desktop.killEmbeddedTerminal(id))).then((results) => {
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failure) setError(String(failure.reason));
+      });
+    }
     setWorkspaceTabs((current) => {
       const next = current.filter((item) => workspaceKey(item) !== key);
       if (workspacePath && workspaceKey(workspacePath) === key) {

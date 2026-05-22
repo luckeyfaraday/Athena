@@ -156,13 +156,15 @@ export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | 
   return null;
 }
 
-export async function restoreEmbeddedTerminals(): Promise<EmbeddedTerminalSession[]> {
+export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> {
   if (restoreInFlight || terminals.size > 0) return listEmbeddedTerminals();
   restoreInFlight = true;
   try {
     const restored: EmbeddedTerminalSession[] = [];
+    const allowed = restoreWorkspaceSet(allowedWorkspaces);
     const entries = readRestoreEntries();
     for (const entry of entries) {
+      if (allowed && !allowed.has(normalizeRestoreWorkspace(entry.workspace))) continue;
       removeRestoreEntry(entry.id);
       if (!fs.existsSync(entry.workspace)) continue;
       const session = await spawnEmbeddedTerminal(entry.workspace, {
@@ -181,6 +183,22 @@ export async function restoreEmbeddedTerminals(): Promise<EmbeddedTerminalSessio
     return restored;
   } finally {
     restoreInFlight = false;
+  }
+}
+
+function restoreWorkspaceSet(workspaces?: string[]): Set<string> | null {
+  if (!workspaces || workspaces.length === 0) return null;
+  const normalized = workspaces
+    .map((workspace) => normalizeRestoreWorkspace(workspace))
+    .filter(Boolean);
+  return normalized.length > 0 ? new Set(normalized) : null;
+}
+
+function normalizeRestoreWorkspace(workspace: string): string {
+  try {
+    return path.resolve(workspace);
+  } catch {
+    return workspace;
   }
 }
 

@@ -84,7 +84,9 @@ export function registerIpcHandlers(appRoot: string): void {
   );
   ipcMain.handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
   ipcMain.handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
-  ipcMain.handle("embeddedTerminal:restore", (): Promise<EmbeddedTerminalSession[]> => restoreEmbeddedTerminals());
+  ipcMain.handle("embeddedTerminal:restore", (_event, allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> =>
+    restoreEmbeddedTerminals(allowedWorkspaces),
+  );
   ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
   ipcMain.handle("performance:diagnostics", (): PerformanceDiagnostics => getPerformanceDiagnostics());
   ipcMain.handle(

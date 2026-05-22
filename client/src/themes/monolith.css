@@ -876,11 +876,20 @@ button:disabled { cursor: not-allowed; opacity: .38; }
   background: var(--panel-2);
 }
 .settingsSection.wide { grid-column: 1 / -1; }
+.settingsSection > div { min-width: 0; }
 .settingsSection strong,
 .settingsSection span { display: block; white-space: pre-line; overflow-wrap: anywhere; }
 .settingsSection strong { color: var(--text); font-size: 12px; font-weight: 600; }
 .settingsSection span { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .settingsSection .ghostButton { grid-column: 2; }
+.settingsSection .settingsDiagnosticsText {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+}
 
 .segmentedControl {
   grid-column: 2;
@@ -912,6 +921,15 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 .segmentedControl button.active {
   background: var(--panel-3);
   color: var(--text);
+}
+.themeSegmentedControl {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+}
+.themeSegmentedControl button {
+  min-width: 0;
+  flex: 1 1 0;
 }
 
 /* ── MISC UI ──────────────────────────────────── */

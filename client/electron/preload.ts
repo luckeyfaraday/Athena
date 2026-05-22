@@ -47,6 +47,15 @@ export type PerformanceDiagnostics = {
     lastOutputAt: string | null;
     attentionReason: string | null;
   }>;
+  agentProcesses: Array<{
+    pid: number;
+    ppid: number | null;
+    agent: string;
+    command: string;
+    managedTerminalId: string | null;
+    managedTerminalTitle: string | null;
+    workspace: string | null;
+  }>;
 };
 
 export type WorkspaceApi = {

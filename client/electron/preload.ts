@@ -88,6 +88,28 @@ export type WorkspaceApi = {
   closeWindow: () => Promise<void>;
 };
 
+function createIpcSubscription<T>(channel: string) {
+  const callbacks = new Set<(payload: T) => void>();
+  const listener = (_event: Electron.IpcRendererEvent, payload: T) => {
+    for (const callback of callbacks) callback(payload);
+  };
+  return (callback: (payload: T) => void) => {
+    const wasEmpty = callbacks.size === 0;
+    callbacks.add(callback);
+    if (wasEmpty) ipcRenderer.on(channel, listener);
+    return () => {
+      callbacks.delete(callback);
+      if (callbacks.size === 0) ipcRenderer.removeListener(channel, listener);
+    };
+  };
+}
+
+const onEmbeddedTerminalData = createIpcSubscription<{ id: string; data: string }>("embedded-terminal:data");
+const onEmbeddedTerminalExit = createIpcSubscription<{ id: string; exitCode: number | null }>("embedded-terminal:exit");
+const onEmbeddedTerminalSession = createIpcSubscription<EmbeddedTerminalSession>("embedded-terminal:session");
+const onCodexTerminalData = createIpcSubscription<string>("codex-terminal:data");
+const onCodexTerminalState = createIpcSubscription<CodexTerminalState>("codex-terminal:state");
+
 const api: WorkspaceApi = {
   getBackendState: () => ipcRenderer.invoke("backend:getState"),
   checkBackendHealth: () => ipcRenderer.invoke("backend:checkHealth"),
@@ -116,31 +138,11 @@ const api: WorkspaceApi = {
   listAgentSessions: (workspace) => ipcRenderer.invoke("agentSessions:list", workspace),
   getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
   openExternalUrl: (url) => ipcRenderer.invoke("shell:openExternal", url),
-  onEmbeddedTerminalData: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { id: string; data: string }) => callback(payload);
-    ipcRenderer.on("embedded-terminal:data", listener);
-    return () => ipcRenderer.removeListener("embedded-terminal:data", listener);
-  },
-  onEmbeddedTerminalExit: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { id: string; exitCode: number | null }) => callback(payload);
-    ipcRenderer.on("embedded-terminal:exit", listener);
-    return () => ipcRenderer.removeListener("embedded-terminal:exit", listener);
-  },
-  onEmbeddedTerminalSession: (callback) => {
-    const listener = (_event: Electron.IpcRendererEvent, session: EmbeddedTerminalSession) => callback(session);
-    ipcRenderer.on("embedded-terminal:session", listener);
-    return () => ipcRenderer.removeListener("embedded-terminal:session", listener);
-  },
-  onCodexTerminalData: (callback: (data: string) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, data: string) => callback(data);
-    ipcRenderer.on("codex-terminal:data", listener);
-    return () => ipcRenderer.removeListener("codex-terminal:data", listener);
-  },
-  onCodexTerminalState: (callback: (state: CodexTerminalState) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, state: CodexTerminalState) => callback(state);
-    ipcRenderer.on("codex-terminal:state", listener);
-    return () => ipcRenderer.removeListener("codex-terminal:state", listener);
-  },
+  onEmbeddedTerminalData,
+  onEmbeddedTerminalExit,
+  onEmbeddedTerminalSession,
+  onCodexTerminalData,
+  onCodexTerminalState,
   selectWorkspace: () => ipcRenderer.invoke("dialog:selectWorkspace"),
   minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggleMaximize"),

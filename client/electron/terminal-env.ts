@@ -13,7 +13,9 @@ export function sanitizedTerminalEnv(source: NodeJS.ProcessEnv = process.env): N
   for (const key of NVM_INCOMPATIBLE_NPM_ENV) {
     delete env[key];
   }
-  env.NPM_CONFIG_PREFIX = npmGlobalPrefix(source);
+  const prefix = npmGlobalPrefix(source);
+  env.NPM_CONFIG_PREFIX = prefix;
+  prependPathEntry(env, prefix);
   return env;
 }
 
@@ -23,4 +25,24 @@ function npmGlobalPrefix(source: NodeJS.ProcessEnv): string {
   const userGlobal = path.join(os.homedir(), ".npm-global");
   if (fs.existsSync(userGlobal)) return userGlobal;
   return path.join(os.homedir(), ".npm-global");
+}
+
+function prependPathEntry(env: NodeJS.ProcessEnv, entry: string): void {
+  const trimmed = entry.trim();
+  if (!trimmed) return;
+  const pathKey = "Path" in env && !("PATH" in env) ? "Path" : "PATH";
+  const current = env[pathKey] ?? "";
+  const entries = current.split(path.delimiter).filter(Boolean);
+  const normalizedEntry = normalizePathEntry(trimmed);
+  const hasEntry = entries.some((item) => normalizePathEntry(item) === normalizedEntry);
+  if (hasEntry) {
+    env[pathKey] = current;
+    return;
+  }
+  env[pathKey] = [trimmed, ...entries].join(path.delimiter);
+}
+
+function normalizePathEntry(value: string): string {
+  const normalized = path.normalize(value.trim()).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }

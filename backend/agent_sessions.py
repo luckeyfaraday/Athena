@@ -819,7 +819,7 @@ def _hermes_session_matches_workspace(file_metadata: dict[str, str | None], mani
     metadata_workspace = file_metadata.get("workspace")
     if metadata_workspace and _same_or_descendant_path(metadata_workspace, workspace):
         return True
-    haystack = "\n".join(
+    haystack = _normalize_session_search_text("\n".join(
         value
         for value in (
             file_metadata.get("title"),
@@ -827,7 +827,7 @@ def _hermes_session_matches_workspace(file_metadata: dict[str, str | None], mani
             manifest_entry.get("title"),
         )
         if value
-    ).lower()
+    ))
     return any(needle in haystack for needle in _workspace_needles(workspace))
 
 
@@ -907,6 +907,10 @@ def _workspace_needles(workspace: str | Path) -> list[str]:
         needles.add(basename)
         needles.add(re.sub(r"[-_]+", " ", basename))
     return [needle for needle in needles if needle]
+
+
+def _normalize_session_search_text(value: str) -> str:
+    return re.sub(r"/+", "/", value.lower().replace("\\", "/"))
 
 
 def _date_sort_key(value: str) -> datetime:

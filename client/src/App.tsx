@@ -68,8 +68,12 @@ const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ defaul
 };
 
 function storedWorkspaceValue(): string | null {
+  return storedValue(workspaceStorageKey);
+}
+
+function storedValue(key: string): string | null {
   try {
-    return window.localStorage.getItem(workspaceStorageKey);
+    return window.localStorage.getItem(key);
   } catch {
     return null;
   }
@@ -85,9 +89,9 @@ function parseStoredWorkspace(value: string | null): string | null {
   }
 }
 
-function readWorkspaceList(): WorkspacePath[] {
+function readWorkspaceListValue(value: string | null): WorkspacePath[] {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(workspaceListStorageKey) ?? "[]") as Partial<WorkspacePath>[];
+    const parsed = JSON.parse(value ?? "[]") as Partial<WorkspacePath>[];
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((item): item is WorkspacePath =>
       typeof item?.nativePath === "string" &&
@@ -99,70 +103,99 @@ function readWorkspaceList(): WorkspacePath[] {
   }
 }
 
-function writeWorkspaceList(workspaces: WorkspacePath[]): void {
+function readWorkspaceList(): WorkspacePath[] {
   try {
-    window.localStorage.setItem(workspaceListStorageKey, JSON.stringify(workspaces));
+    return readWorkspaceListValue(window.localStorage.getItem(workspaceListStorageKey));
   } catch {
-    // Ignore storage failures; tabs still work for this session.
+    return [];
   }
+}
+
+function writeStorageValue(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures; Electron preferences remain authoritative.
+  }
+  void desktop.setPreference(key, value).catch(() => undefined);
+}
+
+function removeStorageValue(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage failures; Electron preferences remain authoritative.
+  }
+  void desktop.removePreference(key).catch(() => undefined);
+}
+
+function writeWorkspaceList(workspaces: WorkspacePath[]): void {
+  writeStorageValue(workspaceListStorageKey, JSON.stringify(workspaces));
 }
 
 function readInterfaceMode(): InterfaceMode {
   try {
-    return window.localStorage.getItem(interfaceModeStorageKey) === "chat" ? "chat" : "terminal";
+    return readInterfaceModeValue(window.localStorage.getItem(interfaceModeStorageKey)) ?? "terminal";
   } catch {
     return "terminal";
   }
 }
 
+function readInterfaceModeValue(value: string | null): InterfaceMode | null {
+  if (value === "chat" || value === "terminal") return value;
+  return null;
+}
+
 function writeInterfaceMode(mode: InterfaceMode): void {
-  try {
-    window.localStorage.setItem(interfaceModeStorageKey, mode);
-  } catch {
-    // Ignore storage failures; the selected mode still works for this session.
-  }
+  writeStorageValue(interfaceModeStorageKey, mode);
 }
 
 function readUiTheme(): UiTheme {
   try {
-    const stored = window.localStorage.getItem(uiThemeStorageKey);
-    if (
-      stored === "monolith" ||
-      stored === "press" ||
-      stored === "mono-light" ||
-      stored === "mono-dark"
-    ) {
-      return stored;
-    }
-    return "classic";
+    return parseUiTheme(window.localStorage.getItem(uiThemeStorageKey)) ?? "classic";
   } catch {
     return "classic";
   }
 }
 
-function writeUiTheme(theme: UiTheme): void {
-  try {
-    window.localStorage.setItem(uiThemeStorageKey, theme);
-  } catch {
-    // Ignore storage failures; the selected theme still works for this session.
+function parseUiTheme(value: string | null): UiTheme | null {
+  if (
+    value === "classic" ||
+    value === "monolith" ||
+    value === "press" ||
+    value === "mono-light" ||
+    value === "mono-dark"
+  ) {
+    return value;
   }
+  return null;
+}
+
+function writeUiTheme(theme: UiTheme): void {
+  writeStorageValue(uiThemeStorageKey, theme);
 }
 
 function readTerminalFocus(): boolean {
   try {
-    return window.localStorage.getItem(terminalFocusStorageKey) === "1";
+    return readTerminalFocusValue(window.localStorage.getItem(terminalFocusStorageKey)) ?? false;
   } catch {
     return false;
   }
 }
 
+function readTerminalFocusValue(value: string | null): boolean | null {
+  if (value === "1") return true;
+  if (value === "0") return false;
+  return null;
+}
+
 function writeTerminalFocus(focused: boolean): void {
-  try {
-    if (focused) window.localStorage.setItem(terminalFocusStorageKey, "1");
-    else window.localStorage.removeItem(terminalFocusStorageKey);
-  } catch {
-    // Ignore storage failures; focus mode still works for this session.
-  }
+  writeStorageValue(terminalFocusStorageKey, focused ? "1" : "0");
+}
+
+function writeStoredWorkspace(workspacePath: WorkspacePath | null): void {
+  if (workspacePath?.nativePath.trim()) writeStorageValue(workspaceStorageKey, JSON.stringify(workspacePath));
+  else removeStorageValue(workspaceStorageKey);
 }
 
 function upsertWorkspace(workspaces: WorkspacePath[], workspace: WorkspacePath): WorkspacePath[] {
@@ -219,6 +252,8 @@ export function App() {
   const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const restoreAttempted = useRef(false);
+  const startupAttempted = useRef(false);
+  const preferencesLoaded = useRef(false);
 
   function setInterfaceMode(mode: InterfaceMode) {
     setInterfaceModeState(mode);
@@ -383,27 +418,47 @@ export function App() {
   }, [uiTheme]);
 
   useEffect(() => {
-    try {
-      if (workspacePath?.nativePath.trim()) {
-        window.localStorage.setItem(workspaceStorageKey, JSON.stringify(workspacePath));
-      } else {
-        window.localStorage.removeItem(workspaceStorageKey);
-      }
-    } catch {
-      // Ignore storage failures; the selected workspace still works for this session.
-    }
+    if (preferencesLoaded.current) writeStoredWorkspace(workspacePath);
   }, [workspacePath]);
 
   useEffect(() => {
-    writeWorkspaceList(workspaceTabs);
+    if (preferencesLoaded.current) writeWorkspaceList(workspaceTabs);
   }, [workspaceTabs]);
 
   useEffect(() => {
-    const stored = parseStoredWorkspace(storedWorkspaceValue());
-    const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
-    workspacePromise
-      .then((resolved) => activateWorkspace(resolved))
-      .catch((err) => setError(String(err)));
+    if (startupAttempted.current) return;
+    startupAttempted.current = true;
+    void (async () => {
+      const preferences = await desktop.getPreferences().catch(() => ({} as Record<string, string>));
+      const preferredTheme = parseUiTheme(preferences[uiThemeStorageKey] ?? null);
+      if (preferredTheme) setUiThemeState(preferredTheme);
+      else {
+        const fallbackTheme = parseUiTheme(storedValue(uiThemeStorageKey));
+        if (fallbackTheme) writeUiTheme(fallbackTheme);
+      }
+      const preferredMode = readInterfaceModeValue(preferences[interfaceModeStorageKey] ?? null);
+      if (preferredMode) setInterfaceModeState(preferredMode);
+      else {
+        const fallbackMode = readInterfaceModeValue(storedValue(interfaceModeStorageKey));
+        if (fallbackMode) writeInterfaceMode(fallbackMode);
+      }
+      const preferredFocus = readTerminalFocusValue(preferences[terminalFocusStorageKey] ?? null);
+      if (preferredFocus != null) setTerminalFocusState(preferredFocus);
+      else {
+        const fallbackFocus = readTerminalFocusValue(storedValue(terminalFocusStorageKey));
+        if (fallbackFocus != null) writeTerminalFocus(fallbackFocus);
+      }
+      const preferredTabs = readWorkspaceListValue(preferences[workspaceListStorageKey] ?? null);
+      if (preferredTabs.length > 0) setWorkspaceTabs(preferredTabs);
+      else if (readWorkspaceList().length > 0) writeWorkspaceList(readWorkspaceList());
+      preferencesLoaded.current = true;
+
+      const stored = parseStoredWorkspace(preferences[workspaceStorageKey] ?? storedWorkspaceValue());
+      const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
+      workspacePromise
+        .then((resolved) => activateWorkspace(resolved))
+        .catch((err) => setError(String(err)));
+    })();
 
     desktop
       .getBackendState()

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
@@ -133,6 +134,17 @@ export type PerformanceDiagnostics = {
   lastOutputBatchAt: string | null;
   controlEvents: ControlEvent[];
   terminalControl: TerminalControlState[];
+  agentProcesses: AgentProcessDiagnostic[];
+};
+
+export type AgentProcessDiagnostic = {
+  pid: number;
+  ppid: number | null;
+  agent: EmbeddedTerminalKind;
+  command: string;
+  managedTerminalId: string | null;
+  managedTerminalTitle: string | null;
+  workspace: string | null;
 };
 
 export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
@@ -220,7 +232,127 @@ export function getPerformanceDiagnostics(): PerformanceDiagnostics {
     lastOutputBatchAt: perfCounters.lastBatchAt,
     controlEvents: recentControlEvents(),
     terminalControl: terminalControlStates(),
+    agentProcesses: detectAgentProcesses(),
   };
+}
+
+function detectAgentProcesses(): AgentProcessDiagnostic[] {
+  const managed = Array.from(terminals.values()).map((entry) => ({
+    pid: entry.session.pid,
+    id: entry.session.id,
+    title: entry.session.title,
+    workspace: entry.session.workspace,
+  })).filter((entry): entry is { pid: number; id: string; title: string; workspace: string } => entry.pid != null);
+  const processList = listSystemProcesses();
+  const managedByPid = new Map(managed.map((entry) => [entry.pid, entry]));
+
+  return processList
+    .map((processInfo) => {
+      const agent = classifyAgentProcess(processInfo.command);
+      if (!agent) return null;
+      const owner = findManagedOwner(processInfo.pid, processList, managedByPid);
+      return {
+        pid: processInfo.pid,
+        ppid: processInfo.ppid,
+        agent,
+        command: processInfo.command,
+        managedTerminalId: owner?.id ?? null,
+        managedTerminalTitle: owner?.title ?? null,
+        workspace: owner?.workspace ?? extractWorkspaceFromCommand(processInfo.command),
+      };
+    })
+    .filter((item): item is AgentProcessDiagnostic => Boolean(item))
+    .sort((left, right) => Number(Boolean(left.managedTerminalId)) - Number(Boolean(right.managedTerminalId)) || left.pid - right.pid)
+    .slice(0, 80);
+}
+
+type ProcessInfo = {
+  pid: number;
+  ppid: number | null;
+  command: string;
+};
+
+function listSystemProcesses(): ProcessInfo[] {
+  if (process.platform === "linux") return listLinuxProcesses();
+  return listPsProcesses();
+}
+
+function listLinuxProcesses(): ProcessInfo[] {
+  try {
+    return fs.readdirSync("/proc", { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+      .map((entry) => readLinuxProcess(Number(entry.name)))
+      .filter((entry): entry is ProcessInfo => Boolean(entry));
+  } catch {
+    return listPsProcesses();
+  }
+}
+
+function readLinuxProcess(pid: number): ProcessInfo | null {
+  try {
+    const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+    const ppidMatch = status.match(/^PPid:\s+(\d+)/m);
+    const command = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim();
+    if (!command) return null;
+    return {
+      pid,
+      ppid: ppidMatch ? Number(ppidMatch[1]) : null,
+      command,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function listPsProcesses(): ProcessInfo[] {
+  try {
+    const output = execFileSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8", maxBuffer: 2_000_000 });
+    return output.split("\n").map((line): ProcessInfo | null => {
+      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+      if (!match) return null;
+      return {
+        pid: Number(match[1]),
+        ppid: Number(match[2]),
+        command: match[3],
+      };
+    }).filter((entry): entry is ProcessInfo => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function classifyAgentProcess(command: string): EmbeddedTerminalKind | null {
+  const lower = command.toLowerCase();
+  if (/\bclaude(\s|$)/.test(lower) || lower.includes("/claude ")) return "claude";
+  if (/\bcodex(\s|$)/.test(lower) || lower.includes("/codex ")) return "codex";
+  if (/\bopencode(\s|$)/.test(lower) || lower.includes("/opencode ")) return "opencode";
+  if (/\bhermes(\s|$)/.test(lower) || lower.includes("/hermes") || lower.includes("hermes_cli")) return "hermes";
+  return null;
+}
+
+function findManagedOwner(
+  pid: number,
+  processes: ProcessInfo[],
+  managedByPid: Map<number, { pid: number; id: string; title: string; workspace: string }>,
+) {
+  const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+  const seen = new Set<number>();
+  let current: number | null = pid;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    const managed = managedByPid.get(current);
+    if (managed) return managed;
+    current = byPid.get(current)?.ppid ?? null;
+  }
+  return null;
+}
+
+function extractWorkspaceFromCommand(command: string): string | null {
+  const cdMatch = command.match(/\bcd\s+'([^']+)'/);
+  if (cdMatch) return cdMatch[1];
+  const codexCdMatch = command.match(/--cd\s+('([^']+)'|"([^"]+)"|([^\s]+))/);
+  if (codexCdMatch) return codexCdMatch[2] ?? codexCdMatch[3] ?? codexCdMatch[4] ?? null;
+  return null;
 }
 
 export async function spawnEmbeddedTerminal(

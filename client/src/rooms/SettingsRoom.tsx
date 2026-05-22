@@ -240,6 +240,15 @@ export function SettingsRoom({
         </article>
         <article className="settingsSection wide">
           <div>
+            <strong>Agent process diagnostics</strong>
+            <span>{performance ? agentProcessSummary(performance) : "No agent process diagnostics loaded."}</span>
+          </div>
+          <StatusPill tone={performance?.agentProcesses.some((process) => !process.managedTerminalId) ? "warn" : "ok"}>
+            {performance ? `${performance.agentProcesses.filter((process) => !process.managedTerminalId).length} unmanaged` : "Unavailable"}
+          </StatusPill>
+        </article>
+        <article className="settingsSection wide">
+          <div>
             <strong>Recent control events</strong>
             <span>{performance ? controlEventsSummary(performance) : "No control events loaded."}</span>
           </div>
@@ -264,6 +273,18 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
   ].join("\n");
 }
 
+function agentProcessSummary(performance: PerformanceDiagnostics): string {
+  if (performance.agentProcesses.length === 0) return "No Codex, Claude, OpenCode, or Hermes processes detected.";
+  return performance.agentProcesses.slice(0, 14).map((process) => [
+    `${process.agent} · PID ${process.pid}${process.ppid == null ? "" : ` · parent ${process.ppid}`}`,
+    process.managedTerminalId
+      ? `managed by ${process.managedTerminalTitle ?? process.managedTerminalId}`
+      : "not managed by Athena",
+    process.workspace ? `workspace: ${process.workspace}` : null,
+    `command: ${truncateMiddle(process.command, 180)}`,
+  ].filter(Boolean).join("\n")).join("\n\n");
+}
+
 function terminalControlSummary(performance: PerformanceDiagnostics): string {
   if (performance.terminalControl.length === 0) return "No terminal control state recorded yet.";
   return performance.terminalControl.slice(0, 8).map((terminal) => [
@@ -275,6 +296,12 @@ function terminalControlSummary(performance: PerformanceDiagnostics): string {
     `last output: ${terminal.lastOutputAt ?? "none"}`,
     terminal.attentionReason ? `attention: ${terminal.attentionReason}` : null,
   ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const half = Math.floor((maxLength - 3) / 2);
+  return `${value.slice(0, half)}...${value.slice(-half)}`;
 }
 
 function controlEventsSummary(performance: PerformanceDiagnostics): string {

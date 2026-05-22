@@ -99,6 +99,17 @@ export type PerformanceDiagnostics = {
   lastOutputBatchAt: string | null;
   controlEvents: ControlEvent[];
   terminalControl: TerminalControlState[];
+  agentProcesses: AgentProcessDiagnostic[];
+};
+
+export type AgentProcessDiagnostic = {
+  pid: number;
+  ppid: number | null;
+  agent: EmbeddedTerminalKind;
+  command: string;
+  managedTerminalId: string | null;
+  managedTerminalTitle: string | null;
+  workspace: string | null;
 };
 
 export type ControlEvent = {
@@ -239,6 +250,7 @@ const browserFallback: WorkspaceApi = {
       lastOutputBatchAt: null,
       controlEvents: [],
       terminalControl: [],
+      agentProcesses: [],
     };
   },
   async killEmbeddedTerminal() { return { ...(await this.spawnEmbeddedTerminal("/preview")), status: "exited" }; },

@@ -139,6 +139,9 @@ type WorkspaceApi = {
   getControlState: () => Promise<ElectronControlStatus>;
   checkControlHealth: () => Promise<ElectronControlStatus>;
   restartControl: () => Promise<ElectronControlStatus>;
+  getPreferences: () => Promise<Record<string, string>>;
+  setPreference: (key: string, value: string) => Promise<Record<string, string>>;
+  removePreference: (key: string) => Promise<Record<string, string>>;
   getDefaultWorkspace: () => Promise<WorkspacePath>;
   toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalStatus>;
@@ -184,6 +187,9 @@ const browserFallback: WorkspaceApi = {
   async getControlState() { return fallbackControlState(); },
   async checkControlHealth() { return fallbackControlState(); },
   async restartControl() { return fallbackControlState(); },
+  async getPreferences() { return {}; },
+  async setPreference() { return {}; },
+  async removePreference() { return {}; },
   async getDefaultWorkspace() { return fallbackWorkspacePath(); },
   async toWorkspacePath(workspace: string) { return toFallbackWorkspacePath(workspace); },
   async getCodexTerminalState() { return { running: false, workspace: null, pid: null, lastError: null }; },

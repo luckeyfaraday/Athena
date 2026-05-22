@@ -6,6 +6,7 @@ import { checkControlHealth, getControlState, restartControlServer, type Control
 import type { CodexTerminalState } from "./codex-terminal.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
+import { getPreferences, removePreference, setPreference } from "./preferences.js";
 import {
   getCodexTerminalState,
   getNativeTerminalSessions,
@@ -63,6 +64,9 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("control:restart", (): Promise<ControlState> => restartControlServer());
   ipcMain.handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
   ipcMain.handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
+  ipcMain.handle("preferences:get", (): Record<string, string> => getPreferences());
+  ipcMain.handle("preferences:set", (_event, key: string, value: string): Record<string, string> => setPreference(key, value));
+  ipcMain.handle("preferences:remove", (_event, key: string): Record<string, string> => removePreference(key));
   ipcMain.handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());
   ipcMain.handle("codexTerminal:start", (event, workspace: string): Promise<CodexTerminalState> => {
     const window = BrowserWindow.fromWebContents(event.sender);

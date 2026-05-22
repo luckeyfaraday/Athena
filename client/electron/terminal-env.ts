@@ -15,7 +15,7 @@ export function sanitizedTerminalEnv(source: NodeJS.ProcessEnv = process.env): N
   }
   const prefix = npmGlobalPrefix(source);
   env.NPM_CONFIG_PREFIX = prefix;
-  prependPathEntry(env, prefix);
+  prependPathEntry(env, npmGlobalBinPath(prefix));
   return env;
 }
 
@@ -25,6 +25,10 @@ function npmGlobalPrefix(source: NodeJS.ProcessEnv): string {
   const userGlobal = path.join(os.homedir(), ".npm-global");
   if (fs.existsSync(userGlobal)) return userGlobal;
   return path.join(os.homedir(), ".npm-global");
+}
+
+function npmGlobalBinPath(prefix: string): string {
+  return process.platform === "win32" ? prefix : path.join(prefix, "bin");
 }
 
 function prependPathEntry(env: NodeJS.ProcessEnv, entry: string): void {

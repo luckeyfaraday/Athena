@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { sanitizedTerminalEnv } from "../dist-electron/terminal-env.js";
@@ -24,5 +26,5 @@ test("terminal env sets a user npm global prefix when none is configured", () =>
     PATH: "/bin",
   });
 
-  assert.match(env.NPM_CONFIG_PREFIX ?? "", /\/\.npm-global$/);
+  assert.equal(env.NPM_CONFIG_PREFIX ?? "", path.join(os.homedir(), ".npm-global"));
 });

@@ -209,7 +209,7 @@ export async function spawnEmbeddedTerminal(
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
     ? null
     : writeAgentContextPrompt(cwd, kind, contextMode, options.title, options.task, options.contextText);
   const backendUrl = getBackendState().baseUrl;
@@ -545,7 +545,7 @@ function terminalLaunch(
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcpConfigPath)],
       };
     }
-    if (kind !== "shell" && promptPath) {
+    if (kind !== "shell") {
       return {
         command: "powershell.exe",
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcpConfigPath)],
@@ -645,21 +645,23 @@ function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, 
   ].join("; ");
 }
 
-function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string, mcpConfigPath?: string | null): string {
+function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
-    `$promptPath = ${quotePowerShell(promptPath)}`,
+    promptPath ? `$promptPath = ${quotePowerShell(promptPath)}` : "",
     "Set-Location -LiteralPath $workspace",
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcpConfigPath ? `$mcpConfigPath = ${quotePowerShell(mcpConfigPath)}` : "",
-    "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan",
+    promptPath
+      ? "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan"
+      : "Write-Host \"[Context Workspace] Launching $agentLabel\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
-    "$prompt = Get-Content -LiteralPath $promptPath -Raw",
-    agent.powerShellCommand,
+    promptPath ? "$prompt = Get-Content -LiteralPath $promptPath -Raw" : "",
+    promptPath ? agent.powerShellCommand : agent.powerShellCommandWithoutPrompt,
   ].join("; ");
 }
 
@@ -742,6 +744,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   label: string;
   executable: string;
   powerShellCommand: string;
+  powerShellCommandWithoutPrompt: string;
   resumePowerShellCommand: string;
   args: (cwd: string, promptPath: string | null, shell: "bash", mcpConfigPath?: string | null) => string;
   resumeArgs: (cwd: string, sessionId: string, shell: "bash", mcpConfigPath?: string | null) => string;
@@ -751,6 +754,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
       label: "OpenCode",
       executable: "opencode",
       powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = @($workspace); & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @('--session', $sessionId, $workspace); & $agentCommand @agentArgs",
       args: (cwd, promptPath) => promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd),
       resumeArgs: (cwd, sessionId) => `opencode --session ${quoteShell(sessionId)} ${quoteShell(cwd)}`,
@@ -761,6 +765,7 @@ function agentConfig(kind: EmbeddedTerminalKind): {
       label: "Claude Code",
       executable: "claude",
       powerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += $prompt; & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += @('--resume', $sessionId); & $agentCommand @agentArgs",
       args: (_cwd, promptPath, _shell, mcpConfigPath) => [
         mcpConfigPath ? `--mcp-config ${quoteShell(mcpConfigPath)}` : "",
@@ -777,9 +782,10 @@ function agentConfig(kind: EmbeddedTerminalKind): {
   return {
     label: "Codex",
     executable: "codex",
-    powerShellCommand: "$agentArgs = @('--cd', $workspace, $prompt); & $agentCommand @agentArgs",
+    powerShellCommand: "$agentArgs = @('--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
+    powerShellCommandWithoutPrompt: "$agentArgs = @('--cd', $workspace); & $agentCommand @agentArgs",
     resumePowerShellCommand: "$agentArgs = @('resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
-    args: (cwd, promptPath) => promptPath ? `--cd ${quoteShell(cwd)} "$(cat ${quoteShell(promptPath)})"` : `--cd ${quoteShell(cwd)}`,
+    args: (cwd, promptPath) => promptPath ? `--cd ${quoteShell(cwd)} -- "$(cat ${quoteShell(promptPath)})"` : `--cd ${quoteShell(cwd)}`,
     resumeArgs: (cwd, sessionId) => `codex resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };
 }

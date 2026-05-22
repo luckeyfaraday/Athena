@@ -30,6 +30,8 @@ type SqliteValue = string | number | null;
 const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 30_000;
 const MAX_PROVIDER_ROWS = 1000;
+const MAX_JSONL_SCAN_DIRS = 160;
+const MAX_JSONL_SCAN_FILES = 1200;
 const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
 
 export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {
@@ -160,17 +162,24 @@ function readCodexJsonlMetadata(workspace: string): Map<string, Record<string, s
 
 function recentJsonlFiles(root: string, limit: number): string[] {
   const files: string[] = [];
+  let visitedDirs = 0;
+  let inspectedFiles = 0;
   const visit = (dir: string) => {
-    for (const name of safeReadDir(dir)) {
-      const filePath = path.join(dir, name);
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(filePath);
-      } catch {
-        continue;
+    if (visitedDirs >= MAX_JSONL_SCAN_DIRS || inspectedFiles >= MAX_JSONL_SCAN_FILES) return;
+    visitedDirs += 1;
+    const entries = safeReadDirEntries(dir).sort((left, right) => right.name.localeCompare(left.name));
+    for (const entry of entries) {
+      if (inspectedFiles >= MAX_JSONL_SCAN_FILES) return;
+      const filePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(filePath);
+      } else if (entry.name.endsWith(".jsonl")) {
+        inspectedFiles += 1;
+        files.push(filePath);
+        if (files.length >= limit * 2) return;
+      } else {
+        inspectedFiles += 1;
       }
-      if (stat.isDirectory()) visit(filePath);
-      else if (name.endsWith(".jsonl")) files.push(filePath);
     }
   };
   visit(root);
@@ -744,6 +753,14 @@ function legacyEncodeClaudeProjectPath(workspace: string): string {
 function safeReadDir(dir: string): string[] {
   try {
     return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+function safeReadDirEntries(dir: string): fs.Dirent[] {
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return [];
   }

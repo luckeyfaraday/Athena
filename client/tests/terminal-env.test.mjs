@@ -5,18 +5,23 @@ import test from "node:test";
 
 import { sanitizedTerminalEnv } from "../dist-electron/terminal-env.js";
 
+function npmGlobalBinPath(prefix) {
+  return process.platform === "win32" ? prefix : path.join(prefix, "bin");
+}
+
 test("terminal env strips lowercase npm prefix values that make nvm warn", () => {
+  const prefix = "/home/user/.npm-global";
   const env = sanitizedTerminalEnv({
     PATH: "/bin",
-    npm_config_prefix: "/home/user/.npm-global",
-    NPM_CONFIG_PREFIX: "/home/user/.npm-global",
+    npm_config_prefix: prefix,
+    NPM_CONFIG_PREFIX: prefix,
     npm_config_globalconfig: "/home/user/.npmrc",
     NPM_CONFIG_GLOBALCONFIG: "/home/user/.npmrc",
   });
 
-  assert.equal(env.PATH, ["/home/user/.npm-global/bin", "/bin"].join(path.delimiter));
+  assert.equal(env.PATH, [npmGlobalBinPath(prefix), "/bin"].join(path.delimiter));
   assert.equal("npm_config_prefix" in env, false);
-  assert.equal(env.NPM_CONFIG_PREFIX, "/home/user/.npm-global");
+  assert.equal(env.NPM_CONFIG_PREFIX, prefix);
   assert.equal("npm_config_globalconfig" in env, false);
   assert.equal("NPM_CONFIG_GLOBALCONFIG" in env, false);
 });
@@ -26,13 +31,14 @@ test("terminal env sets a user npm global prefix when none is configured", () =>
     PATH: "/bin",
   });
 
-  assert.equal(env.NPM_CONFIG_PREFIX ?? "", path.join(os.homedir(), ".npm-global"));
-  assert.equal(env.PATH?.split(path.delimiter).at(0), path.join(os.homedir(), ".npm-global", "bin"));
+  const prefix = path.join(os.homedir(), ".npm-global");
+  assert.equal(env.NPM_CONFIG_PREFIX ?? "", prefix);
+  assert.equal(env.PATH?.split(path.delimiter).at(0), npmGlobalBinPath(prefix));
 });
 
 test("terminal env does not duplicate npm global bin path in PATH", () => {
   const prefix = path.join(os.homedir(), ".npm-global");
-  const binPath = path.join(prefix, "bin");
+  const binPath = npmGlobalBinPath(prefix);
   const env = sanitizedTerminalEnv({
     PATH: [binPath, "/bin"].join(path.delimiter),
   });
@@ -48,6 +54,6 @@ test("terminal env preserves Windows-style Path key", () => {
   });
 
   assert.equal(env.NPM_CONFIG_PREFIX, prefix);
-  assert.equal(env.Path, [path.join(prefix, "bin"), "C:\\Windows\\System32"].join(path.delimiter));
+  assert.equal(env.Path, [npmGlobalBinPath(prefix), "C:\\Windows\\System32"].join(path.delimiter));
   assert.equal("PATH" in env, false);
 });

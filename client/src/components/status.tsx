@@ -36,7 +36,10 @@ export function electronControlStatusView(control: ElectronControlStatus | null)
 }
 
 export function hermesStatusView(hermes: HermesStatus | null): StatusView {
-  if (hermes?.installed) return { tone: "ok", label: hermes.version ?? "Installed" };
+  if (hermes?.installed) {
+    const versionLine = hermes.version?.split(/\r?\n/, 1)[0]?.trim();
+    return { tone: "ok", label: versionLine || "Installed" };
+  }
   return { tone: "bad", label: "Missing" };
 }
 

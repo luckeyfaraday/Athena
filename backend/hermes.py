@@ -207,7 +207,9 @@ def _hermes_version() -> str | None:
         return None
 
     output = (completed.stdout or completed.stderr).strip()
-    return output or None
+    if not output:
+        return None
+    return output.splitlines()[0].strip() or None
 
 
 def _is_native_windows() -> bool:

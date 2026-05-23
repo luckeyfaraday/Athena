@@ -175,7 +175,7 @@ def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.Monke
             "task": "Investigate videos",
             "resume_session_id": None,
             "session_label": "New",
-            "context_mode": None,
+            "context_mode": "task",
             "context": None,
         },
         {
@@ -186,10 +186,33 @@ def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.Monke
             "task": "Fix build",
             "resume_session_id": None,
             "session_label": "New",
-            "context_mode": None,
+            "context_mode": "task",
             "context": None,
         },
     ]
+
+
+def test_spawn_terminals_batch_defaults_context_from_spec(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": f"terminal-{len(calls)}"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    asyncio.run(
+        tools.context_workspace_spawn_terminals_batch(
+            str(tmp_path),
+            [
+                {"kind": "opencode", "task": "Review auth"},
+                {"kind": "opencode", "task": "Review auth", "context": "Use this prior decision."},
+                {"kind": "opencode"},
+            ],
+        )
+    )
+
+    assert [call["context_mode"] for call in calls] == ["task", "curated", None]
 
 
 def test_electron_control_discovery_reports_stale_health(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

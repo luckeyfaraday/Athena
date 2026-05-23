@@ -466,6 +466,7 @@ def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
     task = _string_or_none(spec.get("task"))
     title = _string_or_none(spec.get("title"))
     session_label = _string_or_none(spec.get("session_label"))
+    context = _string_or_none(spec.get("context")) or _string_or_none(spec.get("context_text"))
     if session_label is None and kind in {"codex", "opencode", "claude"}:
         session_label = "New"
     return {
@@ -475,8 +476,8 @@ def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
         "task": task,
         "resume_session_id": _string_or_none(spec.get("resume_session_id")),
         "session_label": session_label,
-        "context_mode": _context_mode_or_none(spec.get("context_mode")),
-        "context": _string_or_none(spec.get("context")) or _string_or_none(spec.get("context_text")),
+        "context_mode": _batch_context_mode(spec.get("context_mode"), task, context),
+        "context": context,
     }
 
 
@@ -506,6 +507,17 @@ def _context_mode_or_none(value: Any) -> str | None:
     if normalized not in {"none", "task", "curated"}:
         raise ValueError(f"Unsupported context_mode: {value}")
     return normalized
+
+
+def _batch_context_mode(value: Any, task: str | None, context: str | None) -> str | None:
+    explicit = _context_mode_or_none(value)
+    if explicit is not None:
+        return explicit
+    if context is not None:
+        return "curated"
+    if task is not None:
+        return "task"
+    return None
 
 
 def _title_for_task(kind: str, task: str) -> str:

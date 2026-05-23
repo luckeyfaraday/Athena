@@ -83,6 +83,7 @@ Visible terminal launch tool:
 ```text
 context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?, context_mode?, context?)
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, context_mode?, context?)
+context_workspace_spawn_terminals_batch(project_dir, specs)
 context_workspace_list_live_terminals(project_dir?)
 context_workspace_inject_terminal_input(target, text)
 context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
@@ -96,9 +97,11 @@ injects Athena recall or Hermes memory automatically.
 Context modes:
 
 - `none`: clean launch with no Athena prompt.
-- `task`: compact task-only prompt. This is the default for `spawn_agent`.
+- `task`: compact task-only prompt. This is the default for `spawn_agent` and
+  for batch specs that include `task`.
 - `curated`: task prompt plus context explicitly selected by Hermes in
-  `context`.
+  `context`. This is the default for batch specs that include `context` without
+  an explicit `context_mode`.
 
 Use `context_workspace_spawn_terminal` only when Hermes needs lower-level
 terminal control, such as opening a shell, Hermes pane, grid, or explicit resume.

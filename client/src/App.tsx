@@ -249,7 +249,6 @@ export function App() {
   const activeWorkspaceRef = useRef("");
   const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
-  const autoStartedTerminals = useRef<Set<string>>(new Set());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const restoreAttempted = useRef(false);
   const startupAttempted = useRef(false);
@@ -566,15 +565,6 @@ export function App() {
     document.addEventListener("keydown", exitOnEscape);
     return () => document.removeEventListener("keydown", exitOnEscape);
   }, [terminalFocus]);
-
-  useEffect(() => {
-    if (!workspace) return;
-    const key = normalizeWorkspaceKey(workspace);
-    const hasWorkspaceTerminal = embeddedSessions.some((session) => sameWorkspacePath(session.workspace, workspace));
-    if (autoStartedTerminals.current.has(key) || hasWorkspaceTerminal) return;
-    autoStartedTerminals.current.add(key);
-    void launchEmbedded("shell", 1);
-  }, [workspace, embeddedSessions]);
 
   useEffect(() => {
     if (!workspace || !state.recall?.stale || !state.recall.refresh_configured) return;

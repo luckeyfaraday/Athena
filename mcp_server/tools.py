@@ -278,6 +278,30 @@ async def context_workspace_list_live_terminals(project_dir: str | None = None) 
     }
 
 
+async def context_workspace_kill_terminal(target: str) -> dict[str, Any]:
+    """Kill a live Athena PTY by terminal id or provider session id.
+
+    Use context_workspace_list_live_terminals first to find the target. This
+    removes the terminal from Athena's restore state and stops its process.
+    """
+    return await ContextWorkspaceElectronClient().post(
+        "/terminals/kill",
+        {
+            "target": target,
+        },
+    )
+
+
+async def context_workspace_close_workspace(project_dir: str) -> dict[str, Any]:
+    """Close a workspace tab in Athena and kill its live embedded terminals."""
+    return await ContextWorkspaceElectronClient().post(
+        "/workspaces/close",
+        {
+            "project_dir": project_dir,
+        },
+    )
+
+
 async def context_workspace_inject_terminal_input(
     target: str,
     text: str,
@@ -427,6 +451,8 @@ def register_tools(mcp: Any) -> None:
         context_workspace_spawn_terminal,
         context_workspace_spawn_terminals_batch,
         context_workspace_list_live_terminals,
+        context_workspace_kill_terminal,
+        context_workspace_close_workspace,
         context_workspace_inject_terminal_input,
         context_workspace_list_runs,
         context_workspace_get_run,

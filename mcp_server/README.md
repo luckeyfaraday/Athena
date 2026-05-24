@@ -86,6 +86,8 @@ context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?,
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, context_mode?, context?, open_workspace?)
 context_workspace_spawn_terminals_batch(project_dir, specs, open_workspace?)
 context_workspace_list_live_terminals(project_dir?)
+context_workspace_kill_terminal(target)
+context_workspace_close_workspace(project_dir)
 context_workspace_inject_terminal_input(target, text)
 context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 ```
@@ -115,6 +117,10 @@ returned `id` or `providerSessionId`, then call
 `context_workspace_inject_terminal_input` to submit the next instruction into
 that running PTY. This is for live Codex/OpenCode/Claude/Hermes handoffs, not
 the legacy backend run board.
+
+Use `context_workspace_kill_terminal` to stop one live PTY. Use
+`context_workspace_close_workspace` when the user asks to close a workspace tab;
+Athena will close the workspace and stop its live embedded terminals.
 
 Do not call Athena's FastAPI `POST /agents/spawn` directly for OpenCode or
 Claude visible terminals. That route is the legacy backend run/artifact path.

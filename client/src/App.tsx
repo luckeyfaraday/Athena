@@ -528,6 +528,9 @@ export function App() {
       }
       setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
     });
+    const removeWorkspaceClose = desktop.onWorkspaceClose(({ workspace: closedWorkspace }) => {
+      closeWorkspaceTab(closedWorkspace);
+    });
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
       const kind = classifyTerminalAttention(payload.data);
       if (kind) markWorkspaceAttention(payload.id, kind);
@@ -541,6 +544,7 @@ export function App() {
     return () => {
       removeSession();
       removeWorkspaceOpen();
+      removeWorkspaceClose();
       removeData();
       removeExit();
     };
@@ -635,7 +639,9 @@ export function App() {
     if (workspaceSessionIds.length > 0) {
       setEmbeddedSessions((current) => current.filter((session) => !workspaceSessionIds.includes(session.id)));
       void Promise.allSettled(workspaceSessionIds.map((id) => desktop.killEmbeddedTerminal(id))).then((results) => {
-        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        const failure = results.find((result): result is PromiseRejectedResult =>
+          result.status === "rejected" && !String(result.reason).includes("Embedded terminal not found"),
+        );
         if (failure) setError(String(failure.reason));
       });
     }

@@ -97,6 +97,7 @@ export type WorkspaceApi = {
   onCodexTerminalState: (callback: (state: CodexTerminalState) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
   onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
+  onWorkspaceClose: (callback: (payload: { workspace: WorkspacePath }) => void) => () => void;
   minimizeWindow: () => Promise<void>;
   toggleMaximizeWindow: () => Promise<boolean>;
   closeWindow: () => Promise<void>;
@@ -124,6 +125,7 @@ const onEmbeddedTerminalSession = createIpcSubscription<EmbeddedTerminalSession>
 const onCodexTerminalData = createIpcSubscription<string>("codex-terminal:data");
 const onCodexTerminalState = createIpcSubscription<CodexTerminalState>("codex-terminal:state");
 const onWorkspaceOpen = createIpcSubscription<{ workspace: WorkspacePath; select: boolean }>("workspace:open");
+const onWorkspaceClose = createIpcSubscription<{ workspace: WorkspacePath }>("workspace:close");
 
 const api: WorkspaceApi = {
   getBackendState: () => ipcRenderer.invoke("backend:getState"),
@@ -164,6 +166,7 @@ const api: WorkspaceApi = {
   onCodexTerminalState,
   selectWorkspace: () => ipcRenderer.invoke("dialog:selectWorkspace"),
   onWorkspaceOpen,
+  onWorkspaceClose,
   minimizeWindow: () => ipcRenderer.invoke("window:minimize"),
   toggleMaximizeWindow: () => ipcRenderer.invoke("window:toggleMaximize"),
   closeWindow: () => ipcRenderer.invoke("window:close"),

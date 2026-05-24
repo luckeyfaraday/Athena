@@ -1,4 +1,5 @@
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
+import fs from "node:fs";
 import { listAgentSessionsCached, type AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
@@ -55,6 +56,18 @@ export function registerIpcHandlers(appRoot: string): void {
     if (!url) return false;
     await shell.openExternal(url);
     return true;
+  });
+  ipcMain.handle("shell:openPath", async (_event, value: string): Promise<boolean> => {
+    if (typeof value !== "string" || !value.trim()) return false;
+    let stat: fs.Stats | null = null;
+    try {
+      stat = fs.existsSync(value) ? fs.statSync(value) : null;
+    } catch {
+      return false;
+    }
+    if (!stat?.isDirectory()) return false;
+    const error = await shell.openPath(value);
+    return !error;
   });
   ipcMain.handle("backend:getState", (): BackendState => getBackendState());
   ipcMain.handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());

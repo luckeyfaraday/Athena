@@ -473,6 +473,34 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-size: 10px;
   font-weight: 800;
 }
+.workspaceContextMenu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, .34);
+}
+.workspaceContextMenu button {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 800;
+  text-align: left;
+}
+.workspaceContextMenu button:hover {
+  background: rgba(217, 196, 138, .14);
+}
 .workspaceTabEmpty {
   color: var(--muted);
   font-size: 10px;

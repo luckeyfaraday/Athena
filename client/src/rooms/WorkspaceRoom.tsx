@@ -23,6 +23,7 @@ export function WorkspaceRoom({
   busy,
   onAdd,
   onOpen,
+  onOpenInFiles,
   onRemove,
   onRename,
   onRefreshRecall,
@@ -34,6 +35,7 @@ export function WorkspaceRoom({
   busy: boolean;
   onAdd: () => Promise<void>;
   onOpen: (workspace: WorkspacePath) => void;
+  onOpenInFiles: (workspace: WorkspacePath) => void;
   onRemove: (workspace: WorkspacePath) => void;
   onRename: (workspace: WorkspacePath) => void;
   onRefreshRecall: () => void;
@@ -83,6 +85,7 @@ export function WorkspaceRoom({
             key={summary.workspace.nativePath}
             summary={summary}
             onOpen={onOpen}
+            onOpenInFiles={onOpenInFiles}
             onRename={onRename}
             onRemove={onRemove}
             onlyWorkspace={summaries.length === 1}
@@ -103,19 +106,24 @@ export function WorkspaceRoom({
 function WorkspaceRow({
   summary,
   onOpen,
+  onOpenInFiles,
   onRename,
   onRemove,
   onlyWorkspace,
 }: {
   summary: WorkspaceSummary;
   onOpen: (workspace: WorkspacePath) => void;
+  onOpenInFiles: (workspace: WorkspacePath) => void;
   onRename: (workspace: WorkspacePath) => void;
   onRemove: (workspace: WorkspacePath) => void;
   onlyWorkspace: boolean;
 }) {
   const recallStatus = recallStatusView(summary.recall, { active: summary.active });
   return (
-    <article className={summary.active ? "workspaceRow active" : "workspaceRow"} role="row">
+    <article className={summary.active ? "workspaceRow active" : "workspaceRow"} role="row" onContextMenu={(event) => {
+      event.preventDefault();
+      onOpenInFiles(summary.workspace);
+    }}>
       <div className="workspaceIdentity">
         <strong>{workspaceName(summary.workspace)}</strong>
         <span>{summary.workspace.displayPath}</span>
@@ -129,6 +137,9 @@ function WorkspaceRow({
       <div className="workspaceActions">
         <button type="button" onClick={() => onOpen(summary.workspace)} disabled={summary.active}>
           <Play size={13} /> {summary.active ? "Active" : "Open"}
+        </button>
+        <button type="button" onClick={() => onOpenInFiles(summary.workspace)}>
+          <FolderOpen size={13} /> Files
         </button>
         <button type="button" onClick={() => onRename(summary.workspace)}>
           <Edit3 size={13} /> Rename
@@ -170,4 +181,3 @@ function formatWorkspaceAge(value: string): string {
   if (!Number.isFinite(timestamp)) return "Unknown";
   return formatAge(Math.max(0, (Date.now() - timestamp) / 1000));
 }
-

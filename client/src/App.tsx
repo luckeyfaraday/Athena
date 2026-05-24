@@ -662,6 +662,16 @@ export function App() {
     setWorkspacePath((current) => current && workspaceKey(current) === workspaceKey(tab) ? { ...current, displayPath: trimmed } : current);
   }
 
+  async function openWorkspaceInFiles(tab: WorkspacePath) {
+    try {
+      const opened = await desktop.openPath(tab.nativePath);
+      if (!opened) setError(`Unable to open workspace folder: ${tab.nativePath}`);
+      else setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function refreshRecall(taskHint = "Manual recall refresh", options: { surfaceError?: boolean } = {}) {
     if (!client || !workspace || recallRefreshing) return null;
     const surfaceError = options.surfaceError ?? true;
@@ -953,6 +963,7 @@ export function App() {
               onSelect={activateWorkspace}
               onClose={closeWorkspaceTab}
               onAdd={selectWorkspace}
+              onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
             />
 
             {terminalFocus && activeRoom === "command" && (
@@ -965,6 +976,7 @@ export function App() {
                 onSelect={activateWorkspace}
                 onClose={closeWorkspaceTab}
                 onAdd={selectWorkspace}
+                onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
               />
             )}
 
@@ -1005,6 +1017,7 @@ export function App() {
                 busy={busy || recallRefreshing}
                 onAdd={selectWorkspace}
                 onOpen={activateWorkspace}
+                onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
                 onRemove={closeWorkspaceTab}
                 onRename={renameWorkspaceTab}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}

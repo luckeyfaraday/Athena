@@ -32,6 +32,7 @@ def test_tool_schema_resolves_future_annotations() -> None:
     assert schema["properties"]["context"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
+    assert schema["properties"]["open_workspace"] == {"type": "boolean"}
     assert schema["required"] == ["project_dir", "task"]
 
 
@@ -80,6 +81,15 @@ def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
     assert schema["properties"]["context"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
+    assert schema["properties"]["open_workspace"] == {"type": "boolean"}
+    assert schema["required"] == ["project_dir"]
+
+
+def test_open_workspace_tool_schema() -> None:
+    schema = server._tool_schema(tools.context_workspace_open_workspace)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {"type": "string"}
+    assert schema["properties"]["select"] == {"type": "boolean"}
     assert schema["required"] == ["project_dir"]
 
 
@@ -88,6 +98,7 @@ def test_spawn_terminals_batch_tool_schema() -> None:
 
     assert schema["properties"]["project_dir"] == {"type": "string"}
     assert schema["properties"]["specs"] == {"type": "array", "items": {"type": "object"}}
+    assert schema["properties"]["open_workspace"] == {"type": "boolean"}
     assert schema["required"] == ["project_dir", "specs"]
 
 
@@ -139,8 +150,46 @@ def test_spawn_agent_defaults_to_visible_terminal(monkeypatch: pytest.MonkeyPatc
             "task": "Optimize About page",
             "context_mode": "task",
             "context": None,
+            "open_workspace": False,
         }
     ]
+
+
+def test_spawn_agent_can_request_workspace_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    asyncio.run(
+        tools.context_workspace_spawn_agent(
+            str(tmp_path),
+            "Investigate",
+            agent_type="codex",
+            open_workspace=True,
+        )
+    )
+
+    assert calls[0]["open_workspace"] is True
+
+
+def test_open_workspace_posts_to_electron_control(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:
+            calls.append((path, json_body))
+            return {"workspace": {"nativePath": json_body["project_dir"]}, "selected": json_body["select"]}
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    result = asyncio.run(tools.context_workspace_open_workspace(str(tmp_path), select=False))
+
+    assert result["selected"] is False
+    assert calls == [("/workspaces/open", {"project_dir": str(tmp_path), "select": False})]
 
 
 def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

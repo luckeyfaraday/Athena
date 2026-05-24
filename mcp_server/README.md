@@ -81,9 +81,10 @@ into a visible terminal.
 Visible terminal launch tool:
 
 ```text
-context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?, context_mode?, context?)
-context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, context_mode?, context?)
-context_workspace_spawn_terminals_batch(project_dir, specs)
+context_workspace_open_workspace(project_dir, select?)
+context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?, context_mode?, context?, open_workspace?)
+context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, context_mode?, context?, open_workspace?)
+context_workspace_spawn_terminals_batch(project_dir, specs, open_workspace?)
 context_workspace_list_live_terminals(project_dir?)
 context_workspace_inject_terminal_input(target, text)
 context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
@@ -93,6 +94,9 @@ Use `context_workspace_spawn_agent` when Hermes should start Codex, OpenCode,
 or Claude for a user task. By default it opens a visible Command Room PTY
 through Electron control and injects only a compact task prompt. It no longer
 injects Athena recall or Hermes memory automatically.
+Set `open_workspace=true` when the target project is not already open in
+Athena, or call `context_workspace_open_workspace(project_dir)` directly to
+add/select a workspace before later actions.
 
 Context modes:
 

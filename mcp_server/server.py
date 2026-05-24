@@ -29,6 +29,8 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
         "context_workspace_spawn_terminal",
         "context_workspace_spawn_terminals_batch",
         "context_workspace_list_live_terminals",
+        "context_workspace_kill_terminal",
+        "context_workspace_close_workspace",
         "context_workspace_inject_terminal_input",
         "context_workspace_list_runs",
         "context_workspace_get_run",

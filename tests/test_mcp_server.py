@@ -119,6 +119,20 @@ def test_inject_terminal_input_tool_schema_requires_target_and_text() -> None:
     assert schema["required"] == ["target", "text"]
 
 
+def test_kill_terminal_tool_schema_requires_target() -> None:
+    schema = server._tool_schema(tools.context_workspace_kill_terminal)["inputSchema"]
+
+    assert schema["properties"]["target"] == {"type": "string"}
+    assert schema["required"] == ["target"]
+
+
+def test_close_workspace_tool_schema_requires_project_dir() -> None:
+    schema = server._tool_schema(tools.context_workspace_close_workspace)["inputSchema"]
+
+    assert schema["properties"]["project_dir"] == {"type": "string"}
+    assert schema["required"] == ["project_dir"]
+
+
 def test_read_agent_session_tool_schema() -> None:
     schema = server._tool_schema(tools.context_workspace_read_agent_session)["inputSchema"]
 
@@ -190,6 +204,38 @@ def test_open_workspace_posts_to_electron_control(monkeypatch: pytest.MonkeyPatc
 
     assert result["selected"] is False
     assert calls == [("/workspaces/open", {"project_dir": str(tmp_path), "select": False})]
+
+
+def test_kill_terminal_posts_to_electron_control(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:
+            calls.append((path, json_body))
+            return {"killed": True}
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    result = asyncio.run(tools.context_workspace_kill_terminal("terminal-1"))
+
+    assert result["killed"] is True
+    assert calls == [("/terminals/kill", {"target": "terminal-1"})]
+
+
+def test_close_workspace_posts_to_electron_control(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:
+            calls.append((path, json_body))
+            return {"closed": True}
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    result = asyncio.run(tools.context_workspace_close_workspace(str(tmp_path)))
+
+    assert result["closed"] is True
+    assert calls == [("/workspaces/close", {"project_dir": str(tmp_path)})]
 
 
 def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

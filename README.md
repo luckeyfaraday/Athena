@@ -412,6 +412,8 @@ context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit
 context_workspace_open_workspace(project_dir, select?)
 context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?, open_workspace?)
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, open_workspace?)
+context_workspace_kill_terminal(target)
+context_workspace_close_workspace(project_dir)
 context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 context_workspace_write_recall_cache(project_dir, markdown)
 context_workspace_read_recall_cache(project_dir)
@@ -419,6 +421,8 @@ context_workspace_clear_recall_cache(project_dir)
 ```
 
 Use `context_workspace_spawn_agent` for user-requested Codex, OpenCode, or Claude work. It opens a visible Command Room PTY by default through Electron control, so Athena must be running. Set `open_workspace=true` when Hermes should add/select a project folder in Athena before spawning. Use `context_workspace_spawn_terminal` for lower-level terminal control such as shells, grids, Hermes panes, or explicit resumes.
+
+Use `context_workspace_kill_terminal` to stop one live Athena PTY by terminal id or provider session id. Use `context_workspace_close_workspace` to close a workspace tab and stop its live embedded terminals.
 
 Do not use the FastAPI backend `POST /agents/spawn` route for OpenCode or Claude visible terminals. That backend route is the legacy run/artifact path. If visible spawning fails with an Electron control error, check `~/.context-workspace/electron-control.json` and restart the Athena desktop app.
 

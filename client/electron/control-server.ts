@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   findEmbeddedTerminal,
+  killEmbeddedTerminal,
   listEmbeddedTerminals,
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
@@ -56,6 +57,11 @@ type OpenWorkspaceRequest = {
   project_dir?: string;
   workspace?: string;
   select?: boolean;
+};
+
+type CloseWorkspaceRequest = {
+  project_dir?: string;
+  workspace?: string;
 };
 
 const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
@@ -194,6 +200,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, { workspace, selected: payload.select });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/workspaces/close") {
+      const payload = parseCloseWorkspaceRequest(await readJsonBody(request));
+      const result = closeWorkspaceInRenderer(payload.workspace);
+      sendJson(response, 200, result);
+      return;
+    }
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/resolve")) {
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/resolve".length));
       sendJson(response, 200, { terminal: findEmbeddedTerminal(target) });
@@ -210,6 +222,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         throw error;
       });
       sendJson(response, 200, { written: true, terminal: session });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/terminals/kill") {
+      const payload = parseKillTerminalRequest(await readJsonBody(request));
+      const terminal = requireResolvedTerminal(payload.target);
+      const killed = killEmbeddedTerminal(terminal.id);
+      sendJson(response, 200, { killed: true, terminal: killed });
       return;
     }
     if (request.method === "POST" && url.pathname === "/terminals/spawn") {
@@ -266,6 +285,18 @@ function parseWriteTerminalRequest(body: unknown): { target: string; text: strin
   return { target, text };
 }
 
+function parseKillTerminalRequest(body: unknown): { target: string } {
+  if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
+  const request = body as WriteTerminalRequest;
+  const target = stringValue(request.target)
+    ?? stringValue(request.terminal_id)
+    ?? stringValue(request.terminalId)
+    ?? stringValue(request.session_id)
+    ?? stringValue(request.sessionId);
+  if (!target) throw new Error("terminal_id, session_id, or target is required.");
+  return { target };
+}
+
 function parseSpawnTerminalRequest(body: unknown): {
   workspace: string;
   openWorkspace: boolean;
@@ -315,6 +346,12 @@ function parseOpenWorkspaceRequest(body: unknown): { workspace: string; select: 
     workspace: validatedWorkspacePath(request.project_dir ?? request.workspace),
     select: booleanValue(request.select, true),
   };
+}
+
+function parseCloseWorkspaceRequest(body: unknown): { workspace: string } {
+  if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
+  const request = body as CloseWorkspaceRequest;
+  return { workspace: validatedWorkspacePath(request.project_dir ?? request.workspace) };
 }
 
 function validatedWorkspacePath(value: unknown): string {
@@ -369,6 +406,23 @@ function openWorkspaceInRenderer(workspace: string, select: boolean): WorkspaceP
     if (!window.isDestroyed()) window.webContents.send("workspace:open", { workspace: workspacePath, select });
   }
   return workspacePath;
+}
+
+function closeWorkspaceInRenderer(workspace: string): { closed: true; workspace: WorkspacePath; killed: EmbeddedTerminalSession[] } {
+  const workspacePath = toWorkspacePath(workspace);
+  const killed = listEmbeddedTerminals()
+    .filter((terminal) => sameControlPath(terminal.workspace, workspacePath.nativePath))
+    .map((terminal) => killEmbeddedTerminal(terminal.id));
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send("workspace:close", { workspace: workspacePath });
+  }
+  return { closed: true, workspace: workspacePath, killed };
+}
+
+function requireResolvedTerminal(target: string): EmbeddedTerminalSession {
+  const terminal = findEmbeddedTerminal(target);
+  if (!terminal) throw new Error(`Embedded terminal target not found: ${target}`);
+  return terminal;
 }
 
 function terminalGridTitle(kind: EmbeddedTerminalKind, index: number): string {

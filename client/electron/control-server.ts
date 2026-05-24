@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { BrowserWindow } from "electron";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -12,6 +13,7 @@ import {
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
 import { recordControlFailure } from "./control-events.js";
+import { isUncPath, isWindowsPath, normalizeNativePath, toWorkspacePath, type WorkspacePath } from "./platform.js";
 
 type ControlState = {
   baseUrl: string | null;
@@ -23,6 +25,10 @@ type ControlState = {
 type SpawnTerminalRequest = {
   project_dir?: string;
   workspace?: string;
+  open_workspace?: boolean;
+  openWorkspace?: boolean;
+  select_workspace?: boolean;
+  selectWorkspace?: boolean;
   kind?: string;
   count?: number;
   title?: string;
@@ -46,10 +52,18 @@ type WriteTerminalRequest = {
   input?: string;
 };
 
+type OpenWorkspaceRequest = {
+  project_dir?: string;
+  workspace?: string;
+  select?: boolean;
+};
+
 const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
+const PROTECTED_POSIX_ROOTS = new Set(["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var"]);
+const PROTECTED_WINDOWS_ROOT_NAMES = new Set(["windows", "program files", "program files (x86)", "programdata"]);
 
 let server: http.Server | null = null;
 let watchdog: NodeJS.Timeout | null = null;
@@ -174,6 +188,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, { terminals: listEmbeddedTerminals() });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/workspaces/open") {
+      const payload = parseOpenWorkspaceRequest(await readJsonBody(request));
+      const workspace = openWorkspaceInRenderer(payload.workspace, payload.select);
+      sendJson(response, 200, { workspace, selected: payload.select });
+      return;
+    }
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/resolve")) {
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/resolve".length));
       sendJson(response, 200, { terminal: findEmbeddedTerminal(target) });
@@ -194,6 +214,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "POST" && url.pathname === "/terminals/spawn") {
       const payload = parseSpawnTerminalRequest(await readJsonBody(request));
+      if (payload.openWorkspace) {
+        payload.workspace = openWorkspaceInRenderer(payload.workspace, payload.selectWorkspace).nativePath;
+      }
       const sessions: EmbeddedTerminalSession[] = [];
       for (let index = 0; index < payload.count; index += 1) {
         const session = await spawnEmbeddedTerminal(payload.workspace, {
@@ -245,6 +268,8 @@ function parseWriteTerminalRequest(body: unknown): { target: string; text: strin
 
 function parseSpawnTerminalRequest(body: unknown): {
   workspace: string;
+  openWorkspace: boolean;
+  selectWorkspace: boolean;
   kind: EmbeddedTerminalKind;
   count: number;
   title?: string;
@@ -268,6 +293,8 @@ function parseSpawnTerminalRequest(body: unknown): {
   const count = Math.max(1, Math.min(Number.isFinite(rawCount) ? Math.floor(rawCount) : 1, MAX_TERMINAL_SPAWN_COUNT));
   return {
     workspace,
+    openWorkspace: booleanValue(request.open_workspace ?? request.openWorkspace),
+    selectWorkspace: booleanValue(request.select_workspace ?? request.selectWorkspace ?? request.open_workspace ?? request.openWorkspace, true),
     kind: kind as EmbeddedTerminalKind,
     count,
     title: stringValue(request.title),
@@ -279,6 +306,69 @@ function parseSpawnTerminalRequest(body: unknown): {
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
   };
+}
+
+function parseOpenWorkspaceRequest(body: unknown): { workspace: string; select: boolean } {
+  if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
+  const request = body as OpenWorkspaceRequest;
+  return {
+    workspace: validatedWorkspacePath(request.project_dir ?? request.workspace),
+    select: booleanValue(request.select, true),
+  };
+}
+
+function validatedWorkspacePath(value: unknown): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) throw new Error("project_dir is required.");
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) throw new Error("Project directory must be a local filesystem path, not a URL.");
+  if (isUncPath(raw)) throw new Error("UNC workspace paths are not supported by Electron control yet.");
+  if (!path.isAbsolute(raw) && !isWindowsPath(raw)) throw new Error("Project directory must be an absolute path.");
+
+  const normalized = normalizeNativePath(raw);
+  const resolved = fs.realpathSync.native(normalized);
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) throw new Error(`Project directory is not a directory: ${resolved}`);
+
+  const home = fs.realpathSync.native(os.homedir());
+  if (sameControlPath(resolved, home)) throw new Error("Refusing to use the home directory as a project root.");
+
+  if (process.platform === "win32" || isWindowsPath(resolved)) {
+    rejectProtectedWindowsWorkspace(resolved);
+    return resolved;
+  }
+
+  if (PROTECTED_POSIX_ROOTS.has(path.posix.normalize(resolved))) {
+    throw new Error(`Refusing to use protected directory as a project root: ${resolved}`);
+  }
+  return resolved;
+}
+
+function rejectProtectedWindowsWorkspace(workspace: string): void {
+  const parsed = path.win32.parse(workspace);
+  const normalized = path.win32.normalize(workspace);
+  if (sameControlPath(normalized, parsed.root)) {
+    throw new Error(`Refusing to use drive root as a project root: ${workspace}`);
+  }
+  const relativeParts = normalized.slice(parsed.root.length).split(/[\\/]+/).filter(Boolean);
+  const firstPart = relativeParts[0]?.toLowerCase();
+  if (firstPart && PROTECTED_WINDOWS_ROOT_NAMES.has(firstPart)) {
+    throw new Error(`Refusing to use protected Windows directory as a project root: ${workspace}`);
+  }
+}
+
+function sameControlPath(left: string, right: string): boolean {
+  const normalize = process.platform === "win32" || isWindowsPath(left) || isWindowsPath(right)
+    ? (value: string) => path.win32.normalize(value).toLowerCase()
+    : (value: string) => path.posix.normalize(value);
+  return normalize(left) === normalize(right);
+}
+
+function openWorkspaceInRenderer(workspace: string, select: boolean): WorkspacePath {
+  const workspacePath = toWorkspacePath(workspace);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send("workspace:open", { workspace: workspacePath, select });
+  }
+  return workspacePath;
 }
 
 function terminalGridTitle(kind: EmbeddedTerminalKind, index: number): string {
@@ -300,6 +390,16 @@ function numberValue(value: unknown): number | undefined {
   if (value == null) return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? Math.floor(number) : undefined;
+}
+
+function booleanValue(value: unknown, defaultValue = false): boolean {
+  if (value == null) return defaultValue;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(text)) return true;
+  if (["0", "false", "no", "off"].includes(text)) return false;
+  return defaultValue;
 }
 
 function contextModeValue(value: unknown): "none" | "task" | "curated" | undefined {

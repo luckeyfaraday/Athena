@@ -520,6 +520,14 @@ export function App() {
     const removeSession = desktop.onEmbeddedTerminalSession((session) => {
       setEmbeddedSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
     });
+    const removeWorkspaceOpen = desktop.onWorkspaceOpen(({ workspace: nextWorkspace, select }) => {
+      if (select) {
+        activateWorkspace(nextWorkspace);
+        setActiveRoom("command");
+        return;
+      }
+      setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
+    });
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
       const kind = classifyTerminalAttention(payload.data);
       if (kind) markWorkspaceAttention(payload.id, kind);
@@ -532,6 +540,7 @@ export function App() {
     });
     return () => {
       removeSession();
+      removeWorkspaceOpen();
       removeData();
       removeExit();
     };

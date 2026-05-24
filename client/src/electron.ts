@@ -175,6 +175,7 @@ type WorkspaceApi = {
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   openExternalUrl: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
+  onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -282,6 +283,7 @@ const browserFallback: WorkspaceApi = {
     return true;
   },
   async openPath() { return false; },
+  onWorkspaceOpen() { return () => undefined; },
   onEmbeddedTerminalData() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },

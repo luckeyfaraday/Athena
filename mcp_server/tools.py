@@ -121,6 +121,22 @@ async def context_workspace_summarize_agent_sessions(
     return summary if isinstance(summary, str) else ""
 
 
+async def context_workspace_open_workspace(project_dir: str, select: bool = True) -> dict[str, Any]:
+    """Open/add a workspace folder in the Athena desktop UI.
+
+    Use this before visible terminal spawning when the user asks Hermes to work
+    in a project that is not already open in Athena. The desktop app must be
+    running because this routes through Athena's Electron control server.
+    """
+    return await ContextWorkspaceElectronClient().post(
+        "/workspaces/open",
+        {
+            "project_dir": project_dir,
+            "select": select,
+        },
+    )
+
+
 async def context_workspace_spawn_agent(
     project_dir: str,
     task: str,
@@ -130,6 +146,7 @@ async def context_workspace_spawn_agent(
     visible_terminal: bool = True,
     context_mode: str = "task",
     context: str | None = None,
+    open_workspace: bool = False,
 ) -> dict[str, Any]:
     """Spawn Codex/OpenCode/Claude as a visible Athena terminal by default.
 
@@ -138,8 +155,9 @@ async def context_workspace_spawn_agent(
     app must be running. Visible spawns no longer receive Athena recall/memory
     automatically. Use context_mode=\"task\" for a compact task-only prompt,
     context_mode=\"curated\" with context for Hermes-selected background, or
-    context_mode=\"none\" for a clean launch. Set visible_terminal=false only
-    for the legacy backend run/artifact path.
+    context_mode=\"none\" for a clean launch. Set open_workspace=true when the
+    target project is not already open in Athena. Set visible_terminal=false
+    only for the legacy backend run/artifact path.
     """
     normalized_agent = _terminal_kind_for_agent(agent_type)
     if visible_terminal:
@@ -154,6 +172,7 @@ async def context_workspace_spawn_agent(
                 task=task,
                 context_mode=context_mode,
                 context=context,
+                open_workspace=open_workspace,
             ),
         }
 
@@ -179,11 +198,13 @@ async def context_workspace_spawn_terminal(
     session_label: str | None = None,
     context_mode: str | None = None,
     context: str | None = None,
+    open_workspace: bool = False,
 ) -> dict[str, Any]:
     """Low-level visible terminal spawner using Athena's Electron control server.
 
     context_mode accepts: none, task, curated. Manual/clean launches should use
-    none. Hermes-curated launches should use curated and pass context.
+    none. Hermes-curated launches should use curated and pass context. Set
+    open_workspace=true to add/select the target workspace before spawning.
     """
     return await ContextWorkspaceElectronClient().post(
         "/terminals/spawn",
@@ -197,6 +218,7 @@ async def context_workspace_spawn_terminal(
             "session_label": session_label,
             "context_mode": context_mode,
             "context": context,
+            "open_workspace": open_workspace,
         },
     )
 
@@ -204,6 +226,7 @@ async def context_workspace_spawn_terminal(
 async def context_workspace_spawn_terminals_batch(
     project_dir: str,
     specs: list[dict[str, Any]],
+    open_workspace: bool = False,
 ) -> dict[str, Any]:
     """Spawn multiple visible Athena terminals with one MCP call.
 
@@ -211,12 +234,14 @@ async def context_workspace_spawn_terminals_batch(
     OpenCode panes and one Codex pane. Each spec accepts kind, count, title,
     task, resume_session_id, session_label, context_mode, and context. Athena
     groups compatible same-provider specs into count-based spawn calls where
-    possible and returns every created terminal id in one response.
+    possible and returns every created terminal id in one response. Set
+    open_workspace=true to add/select the target workspace before spawning.
     """
     if not specs:
         raise ValueError("specs must include at least one terminal request.")
 
     grouped_requests = _group_batch_spawn_specs(specs)
+    opened_workspace = await context_workspace_open_workspace(project_dir) if open_workspace else None
     results: list[dict[str, Any]] = []
     sessions: list[dict[str, Any]] = []
     for request in grouped_requests:
@@ -229,6 +254,7 @@ async def context_workspace_spawn_terminals_batch(
         "mode": "visible_terminal_batch",
         "requested": specs,
         "spawn_calls": len(grouped_requests),
+        "opened_workspace": opened_workspace,
         "sessions": sessions,
         "results": results,
     }
@@ -396,6 +422,7 @@ def register_tools(mcp: Any) -> None:
         context_workspace_recent_memory,
         context_workspace_list_agent_sessions,
         context_workspace_summarize_agent_sessions,
+        context_workspace_open_workspace,
         context_workspace_spawn_agent,
         context_workspace_spawn_terminal,
         context_workspace_spawn_terminals_batch,

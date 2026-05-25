@@ -44,12 +44,12 @@ export function listAgentSessionsCached(workspace: string, liveTerminals: Embedd
 }
 
 async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
-  const [codex, opencode, hermes] = await Promise.all([
+  const [codex, opencode, claude, hermes] = await Promise.all([
     readCodexSessions(workspace),
     readOpenCodeSessions(workspace),
+    readClaudeSessions(workspace),
     readHermesSessions(workspace),
   ]);
-  const claude = readClaudeSessions(workspace);
   return mergeSessions([...codex, ...opencode, ...claude, ...hermes]);
 }
 
@@ -83,7 +83,7 @@ function liveTerminalSession(session: EmbeddedTerminalSession): AgentSession {
 }
 
 async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
-  const jsonlMetadata = readCodexJsonlMetadata(workspace);
+  const jsonlMetadata = await readCodexJsonlMetadata(workspace);
   const dbPath = path.join(os.homedir(), ".codex", "state_5.sqlite");
   const sessions: AgentSession[] = [];
   const seenIds = new Set<string>();
@@ -146,12 +146,13 @@ async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
   return sessions;
 }
 
-function readCodexJsonlMetadata(workspace: string): Map<string, Record<string, string>> {
+async function readCodexJsonlMetadata(workspace: string): Promise<Map<string, Record<string, string>>> {
   const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
   const byId = new Map<string, Record<string, string>>();
   if (!fs.existsSync(sessionsDir)) return byId;
-  for (const filePath of recentJsonlFiles(sessionsDir, 400)) {
-    const metadata = readCodexJsonlFileMetadata(filePath);
+  const files = await recentJsonlFiles(sessionsDir, 400);
+  const results = await Promise.all(files.map((filePath) => readCodexJsonlFileMetadata(filePath)));
+  for (const metadata of results) {
     const id = metadata.session_id;
     const cwd = metadata.cwd;
     if (!id || !cwd || !sameOrDescendantPath(cwd, workspace)) continue;
@@ -160,19 +161,19 @@ function readCodexJsonlMetadata(workspace: string): Map<string, Record<string, s
   return byId;
 }
 
-function recentJsonlFiles(root: string, limit: number): string[] {
+async function recentJsonlFiles(root: string, limit: number): Promise<string[]> {
   const files: string[] = [];
   let visitedDirs = 0;
   let inspectedFiles = 0;
-  const visit = (dir: string) => {
+  const visit = async (dir: string): Promise<void> => {
     if (visitedDirs >= MAX_JSONL_SCAN_DIRS || inspectedFiles >= MAX_JSONL_SCAN_FILES) return;
     visitedDirs += 1;
-    const entries = safeReadDirEntries(dir).sort((left, right) => right.name.localeCompare(left.name));
+    const entries = (await safeReadDirEntries(dir)).sort((left, right) => right.name.localeCompare(left.name));
     for (const entry of entries) {
       if (inspectedFiles >= MAX_JSONL_SCAN_FILES) return;
       const filePath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        visit(filePath);
+        await visit(filePath);
       } else if (entry.name.endsWith(".jsonl")) {
         inspectedFiles += 1;
         files.push(filePath);
@@ -182,23 +183,24 @@ function recentJsonlFiles(root: string, limit: number): string[] {
       }
     }
   };
-  visit(root);
-  return files.sort((left, right) => safeMtimeMs(right) - safeMtimeMs(left)).slice(0, limit);
+  await visit(root);
+  const mtimes = await Promise.all(files.map(async (f) => ({ f, mt: await safeMtimeMs(f) })));
+  return mtimes.sort((a, b) => b.mt - a.mt).map((x) => x.f).slice(0, limit);
 }
 
-function safeMtimeMs(filePath: string): number {
+async function safeMtimeMs(filePath: string): Promise<number> {
   try {
-    return fs.statSync(filePath).mtimeMs;
+    return (await fs.promises.stat(filePath)).mtimeMs;
   } catch {
     return 0;
   }
 }
 
-function readCodexJsonlFileMetadata(filePath: string): Record<string, string> {
+async function readCodexJsonlFileMetadata(filePath: string): Promise<Record<string, string>> {
   const metadata: Record<string, string> = { jsonl_path: filePath };
   let lines: string[];
   try {
-    lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).slice(0, 240);
+    lines = (await fs.promises.readFile(filePath, "utf8")).split(/\r?\n/).filter(Boolean).slice(0, 240);
   } catch {
     return metadata;
   }
@@ -302,37 +304,57 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
   }).filter((session) => Boolean(session.id));
 }
 
-function readClaudeSessions(workspace: string): AgentSession[] {
+async function readClaudeSessions(workspace: string): Promise<AgentSession[]> {
   const projectsDir = path.join(os.homedir(), ".claude", "projects");
   if (!fs.existsSync(projectsDir)) return [];
   const candidateDirs = claudeProjectPathCandidates(projectsDir, workspace);
   const seenFiles = new Set<string>();
   const sessions: AgentSession[] = [];
   for (const dir of candidateDirs) {
-    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) continue;
-    for (const name of safeReadDir(dir)) {
-      if (!name.endsWith(".jsonl")) continue;
-      const filePath = path.join(dir, name);
-      if (seenFiles.has(filePath)) continue;
-      seenFiles.add(filePath);
-      const session = readClaudeSessionFile(filePath, workspace, { allowMissingCwd: true });
-      if (session) sessions.push(session);
+    let dirStat: fs.Stats;
+    try {
+      dirStat = await fs.promises.stat(dir);
+    } catch {
+      continue;
     }
+    if (!dirStat.isDirectory()) continue;
+    const names = (await safeReadDir(dir)).filter((name) => name.endsWith(".jsonl"));
+    const candidateFiles = names
+      .map((name) => path.join(dir, name))
+      .filter((filePath) => {
+        if (seenFiles.has(filePath)) return false;
+        seenFiles.add(filePath);
+        return true;
+      });
+    const results = await Promise.all(
+      candidateFiles.map((filePath) => readClaudeSessionFile(filePath, workspace, { allowMissingCwd: true })),
+    );
+    sessions.push(...results.filter((s): s is AgentSession => s !== null));
   }
-  for (const filePath of recentJsonlFiles(projectsDir, MAX_PROVIDER_ROWS)) {
-    if (seenFiles.has(filePath)) continue;
-    seenFiles.add(filePath);
-    const session = readClaudeSessionFile(filePath, workspace, { allowMissingCwd: false });
-    if (session) sessions.push(session);
-  }
+  const recentFiles = (await recentJsonlFiles(projectsDir, MAX_PROVIDER_ROWS))
+    .filter((filePath) => {
+      if (seenFiles.has(filePath)) return false;
+      seenFiles.add(filePath);
+      return true;
+    });
+  const recentResults = await Promise.all(
+    recentFiles.map((filePath) => readClaudeSessionFile(filePath, workspace, { allowMissingCwd: false })),
+  );
+  sessions.push(...recentResults.filter((s): s is AgentSession => s !== null));
   return sessions
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
     .slice(0, 50);
 }
 
-function readClaudeSessionFile(filePath: string, workspace: string, options: { allowMissingCwd: boolean }): AgentSession | null {
-  const stat = fs.statSync(filePath);
-  const lines = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean).slice(0, 120);
+async function readClaudeSessionFile(filePath: string, workspace: string, options: { allowMissingCwd: boolean }): Promise<AgentSession | null> {
+  let stat: fs.Stats;
+  let lines: string[];
+  try {
+    stat = await fs.promises.stat(filePath);
+    lines = (await fs.promises.readFile(filePath, "utf8")).split("\n").filter(Boolean).slice(0, 120);
+  } catch {
+    return null;
+  }
   let sessionId = path.basename(filePath, ".jsonl");
   let createdAt: string | null = null;
   let updatedAt: string | null = null;
@@ -387,7 +409,7 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
   if (!hermesDir) return [];
   const dbPath = path.join(hermesDir, "state.db");
   const sessionsDir = path.join(hermesDir, "sessions");
-  const manifest = readHermesManifest(path.join(sessionsDir, "sessions.json"));
+  const manifest = await readHermesManifest(path.join(sessionsDir, "sessions.json"));
   const sessionsById = new Map<string, AgentSession>();
 
   if (fs.existsSync(dbPath)) {
@@ -400,7 +422,7 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
     for (const row of rows) {
       const id = stringValue(row[0]);
       if (!id) continue;
-      const metadata = readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
+      const metadata = await readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
       const manifestEntry = manifest.get(id);
       if (!hermesSessionMatchesWorkspace(metadata, manifestEntry, workspace)) continue;
       const agent = hermesAgentLabel(nullableString(row[1]), manifestEntry, metadata);
@@ -426,13 +448,13 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
   }
 
   if (sessionsById.size === 0 && fs.existsSync(sessionsDir)) {
-    for (const name of safeReadDir(sessionsDir)) {
+    for (const name of await safeReadDir(sessionsDir)) {
       const match = name.match(/^session_(.+)\.json$/);
       if (!match || sessionsById.has(match[1])) continue;
       const filePath = path.join(sessionsDir, name);
-      const metadata = readHermesSessionFile(filePath);
+      const metadata = await readHermesSessionFile(filePath);
       if (!metadata) continue;
-      const stat = fs.statSync(filePath);
+      const stat = await fs.promises.stat(filePath);
       const manifestEntry = manifest.get(match[1]);
       if (!hermesSessionMatchesWorkspace(metadata, manifestEntry, workspace)) continue;
       sessionsById.set(match[1], {
@@ -494,9 +516,9 @@ type HermesSessionFileMetadata = {
   searchText: string;
 };
 
-function readHermesManifest(filePath: string): Map<string, HermesManifestEntry> {
+async function readHermesManifest(filePath: string): Promise<Map<string, HermesManifestEntry>> {
   const manifest = new Map<string, HermesManifestEntry>();
-  const parsed = readJsonObject(filePath);
+  const parsed = await readJsonObject(filePath);
   if (!parsed) return manifest;
   for (const value of Object.values(parsed)) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
@@ -515,8 +537,8 @@ function readHermesManifest(filePath: string): Map<string, HermesManifestEntry> 
   return manifest;
 }
 
-function readHermesSessionFile(filePath: string): HermesSessionFileMetadata | null {
-  const parsed = readJsonObject(filePath);
+async function readHermesSessionFile(filePath: string): Promise<HermesSessionFileMetadata | null> {
+  const parsed = await readJsonObject(filePath);
   if (!parsed) return null;
   return {
     title: firstHermesUserMessage(parsed),
@@ -529,10 +551,9 @@ function readHermesSessionFile(filePath: string): HermesSessionFileMetadata | nu
   };
 }
 
-function readJsonObject(filePath: string): Record<string, unknown> | null {
-  if (!fs.existsSync(filePath)) return null;
+async function readJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
   try {
-    return parseJsonObject(fs.readFileSync(filePath, "utf8"));
+    return parseJsonObject(await fs.promises.readFile(filePath, "utf8"));
   } catch {
     return null;
   }
@@ -754,17 +775,17 @@ function legacyEncodeClaudeProjectPath(workspace: string): string {
   return path.resolve(workspace).replace(/:/g, "").replace(/[\\/]/g, "-");
 }
 
-function safeReadDir(dir: string): string[] {
+async function safeReadDir(dir: string): Promise<string[]> {
   try {
-    return fs.readdirSync(dir);
+    return await fs.promises.readdir(dir);
   } catch {
     return [];
   }
 }
 
-function safeReadDirEntries(dir: string): fs.Dirent[] {
+async function safeReadDirEntries(dir: string): Promise<fs.Dirent[]> {
   try {
-    return fs.readdirSync(dir, { withFileTypes: true });
+    return await fs.promises.readdir(dir, { withFileTypes: true });
   } catch {
     return [];
   }

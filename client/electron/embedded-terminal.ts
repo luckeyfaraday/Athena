@@ -22,6 +22,8 @@ import {
 import { getBackendState } from "./backend.js";
 import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
+import { isTerminalRestorePaused } from "./launch-state.js";
+import { selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
   defaultShell,
@@ -69,17 +71,6 @@ type ManagedTerminal = {
   session: EmbeddedTerminalSession;
   process: pty.IPty;
   restore: RestorableTerminal;
-};
-
-type RestorableTerminal = {
-  id: string;
-  workspace: string;
-  kind: EmbeddedTerminalKind;
-  title: string;
-  sessionLabel: string | null;
-  providerSessionId: string | null;
-  resumeSessionId: string | null;
-  createdAt: string;
 };
 
 let _appRoot: string | null = null;
@@ -169,15 +160,18 @@ export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | 
 }
 
 export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> {
-  if (restoreInFlight || terminals.size > 0) return listEmbeddedTerminals();
+  if (isTerminalRestorePaused()) {
+    console.warn("[Athena] Terminal restore is paused because the previous launch did not exit cleanly.");
+    return listEmbeddedTerminals();
+  }
+  if (restoreInFlight) return listEmbeddedTerminals();
   restoreInFlight = true;
   try {
     const restored: EmbeddedTerminalSession[] = [];
-    const allowed = restoreWorkspaceSet(allowedWorkspaces);
     const entries = readRestoreEntries();
-    for (const entry of entries) {
-      if (allowed && !allowed.has(normalizeRestoreWorkspace(entry.workspace))) continue;
-      removeRestoreEntry(entry.id);
+    const plan = selectEmbeddedTerminalRestoreEntries(entries, allowedWorkspaces);
+    writeRestoreEntries(plan.retained);
+    for (const entry of plan.restore) {
       if (!fs.existsSync(entry.workspace)) continue;
       const session = await spawnEmbeddedTerminal(entry.workspace, {
         kind: entry.kind,
@@ -195,22 +189,6 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
     return restored;
   } finally {
     restoreInFlight = false;
-  }
-}
-
-function restoreWorkspaceSet(workspaces?: string[]): Set<string> | null {
-  if (!workspaces || workspaces.length === 0) return null;
-  const normalized = workspaces
-    .map((workspace) => normalizeRestoreWorkspace(workspace))
-    .filter(Boolean);
-  return normalized.length > 0 ? new Set(normalized) : null;
-}
-
-function normalizeRestoreWorkspace(workspace: string): string {
-  try {
-    return path.resolve(workspace);
-  } catch {
-    return workspace;
   }
 }
 

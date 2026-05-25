@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus, type RecallStatus } from "./api";
-import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
+import { desktop, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -242,6 +242,8 @@ export function App() {
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
   const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptState | null>(null);
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
+  const [launchState, setLaunchState] = useState<AthenaLaunchState | null>(null);
+  const [restoreRequest, setRestoreRequest] = useState<{ workspaceKey: string; nonce: number } | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef<string | null>(null);
@@ -250,7 +252,6 @@ export function App() {
   const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
-  const restoreAttempted = useRef(false);
   const startupAttempted = useRef(false);
   const preferencesLoaded = useRef(false);
 
@@ -337,6 +338,20 @@ export function App() {
       setError(String(err));
     }
   }, [sessionRenames]);
+
+  async function clearTerminalRestorePause() {
+    const nextState = await desktop.clearTerminalRestorePause();
+    setLaunchState(nextState);
+    if (!workspacePath) return;
+    const sessions = await desktop.restoreEmbeddedTerminals([workspacePath.nativePath]);
+    const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenames);
+    setEmbeddedSessions((current) => {
+      const byId = new Map(current.map((session) => [session.id, session]));
+      for (const session of nextSessions) byId.set(session.id, session);
+      const merged = Array.from(byId.values());
+      return sameEmbeddedSessions(current, merged) ? current : merged;
+    });
+  }
 
   const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {
     if (!workspace) {
@@ -456,7 +471,7 @@ export function App() {
       const stored = parseStoredWorkspace(preferences[workspaceStorageKey] ?? storedWorkspaceValue());
       const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
       workspacePromise
-        .then((resolved) => activateWorkspace(resolved))
+        .then((resolved) => activateWorkspace(resolved, { restoreTerminals: false }))
         .catch((err) => setError(String(err)));
     })();
 
@@ -474,26 +489,36 @@ export function App() {
         if (status.running) void refreshElectronControl();
       })
       .catch((err) => setError(String(err)));
+    desktop
+      .getLaunchState()
+      .then((status) => {
+        setLaunchState(status);
+        if (status?.terminalRestorePaused) {
+          setError("Terminal restore is paused because the previous Athena launch did not exit cleanly. Open Settings to resume restore when ready.");
+        }
+      })
+      .catch(() => undefined);
   }, [refreshData, refreshElectronControl, refreshSessions, sessionRenames]);
 
   useEffect(() => {
-    if (!workspacePath || restoreAttempted.current) return;
-    restoreAttempted.current = true;
-    const allowedWorkspaces = Array.from(new Set([
-      workspacePath.nativePath,
-      ...workspaceTabs.map((tab) => tab.nativePath),
-    ].filter(Boolean)));
+    if (!workspacePath || !restoreRequest || restoreRequest.workspaceKey !== workspaceKey(workspacePath)) return;
+    const allowedWorkspaces = [workspacePath.nativePath].filter(Boolean);
     desktop
       .restoreEmbeddedTerminals(allowedWorkspaces)
       .then((sessions) => {
         const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenames);
-        setEmbeddedSessions((current) => sameEmbeddedSessions(current, nextSessions) ? current : nextSessions);
+        setEmbeddedSessions((current) => {
+          const byId = new Map(current.map((session) => [session.id, session]));
+          for (const session of nextSessions) byId.set(session.id, session);
+          const merged = Array.from(byId.values());
+          return sameEmbeddedSessions(current, merged) ? current : merged;
+        });
       })
       .catch((err) => {
         setError(String(err));
         void refreshSessions();
       });
-  }, [refreshSessions, sessionRenames, workspacePath, workspaceTabs]);
+  }, [refreshSessions, restoreRequest, sessionRenames, workspacePath]);
 
   useEffect(() => {
     void refreshAgentSessions({ force: true });
@@ -622,13 +647,16 @@ export function App() {
     }
   }
 
-  function activateWorkspace(nextWorkspace: WorkspacePath) {
+  function activateWorkspace(nextWorkspace: WorkspacePath, options: { restoreTerminals?: boolean } = {}) {
     setWorkspacePath(nextWorkspace);
     setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
     clearWorkspaceAttention(nextWorkspace);
     setSelectedSessionKey(null);
     setAgentSessions([]);
     setState((current) => ({ ...current, recall: null }));
+    if (options.restoreTerminals !== false) {
+      setRestoreRequest({ workspaceKey: workspaceKey(nextWorkspace), nonce: Date.now() });
+    }
   }
 
   function closeWorkspaceTab(tab: WorkspacePath) {
@@ -1087,9 +1115,11 @@ export function App() {
                 uiTheme={uiTheme}
                 terminalFocus={terminalFocus}
                 performance={performanceDiagnostics}
+                launchState={launchState}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
                 onRestartControl={restartElectronControl}
+                onClearTerminalRestorePause={clearTerminalRestorePause}
                 onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
                 onInterfaceModeChange={setInterfaceMode}
                 onThemeChange={setUiTheme}

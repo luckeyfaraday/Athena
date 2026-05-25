@@ -143,6 +143,14 @@ export type TerminalControlState = {
   attentionReason: string | null;
 };
 
+export type AthenaLaunchState = {
+  pid: number;
+  startedAt: string;
+  cleanExit: boolean;
+  terminalRestorePaused: boolean;
+  previousCrashAt: string | null;
+};
+
 type WorkspaceApi = {
   getBackendState: () => Promise<BackendStatus>;
   checkBackendHealth: () => Promise<BackendStatus>;
@@ -150,6 +158,8 @@ type WorkspaceApi = {
   getControlState: () => Promise<ElectronControlStatus>;
   checkControlHealth: () => Promise<ElectronControlStatus>;
   restartControl: () => Promise<ElectronControlStatus>;
+  getLaunchState: () => Promise<AthenaLaunchState | null>;
+  clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
   getPreferences: () => Promise<Record<string, string>>;
   setPreference: (key: string, value: string) => Promise<Record<string, string>>;
   removePreference: (key: string) => Promise<Record<string, string>>;
@@ -202,6 +212,16 @@ const browserFallback: WorkspaceApi = {
   async getControlState() { return fallbackControlState(); },
   async checkControlHealth() { return fallbackControlState(); },
   async restartControl() { return fallbackControlState(); },
+  async getLaunchState() { return null; },
+  async clearTerminalRestorePause() {
+    return {
+      pid: 0,
+      startedAt: new Date().toISOString(),
+      cleanExit: true,
+      terminalRestorePaused: false,
+      previousCrashAt: null,
+    };
+  },
   async getPreferences() { return {}; },
   async setPreference() { return {}; },
   async removePreference() { return {}; },

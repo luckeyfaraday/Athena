@@ -6,6 +6,7 @@ import { checkBackendHealth, getBackendState, restartBackend } from "./backend.j
 import { checkControlHealth, getControlState, restartControlServer, type ControlState } from "./control-server.js";
 import type { CodexTerminalState } from "./codex-terminal.js";
 import { normalizeExternalUrl } from "./external-links.js";
+import { clearTerminalRestorePause, readAthenaLaunchState, type AthenaLaunchState } from "./launch-state.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { getPreferences, removePreference, setPreference } from "./preferences.js";
 import {
@@ -78,6 +79,8 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("control:getState", (): ControlState => getControlState());
   ipcMain.handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth());
   ipcMain.handle("control:restart", (): Promise<ControlState> => restartControlServer());
+  ipcMain.handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
+  ipcMain.handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => clearTerminalRestorePause());
   ipcMain.handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
   ipcMain.handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
   ipcMain.handle("preferences:get", (): Record<string, string> => getPreferences());

@@ -8,6 +8,7 @@ import { prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
+import { beginAthenaLaunch, markAthenaCleanExit } from "./launch-state.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -149,6 +150,7 @@ app.on("second-instance", () => {
 
 if (singleInstanceLock) {
   app.whenReady().then(async () => {
+    beginAthenaLaunch();
     installApplicationMenu();
     registerIpcHandlers(appRoot);
     void startControlServer().catch((error) => {
@@ -223,6 +225,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  markAthenaCleanExit();
   prepareEmbeddedTerminalRestoreForQuit();
   void stopBackend();
   void stopControlServer();

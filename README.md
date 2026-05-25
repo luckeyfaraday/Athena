@@ -259,6 +259,9 @@ npm run build
 
 The tests use fake CLI agent fixtures so execution flow can be verified without hosted models or external agent tools.
 
+For the first public release gate, see
+[`docs/release-0.1.0-checklist.md`](docs/release-0.1.0-checklist.md).
+
 ## How Agent Sessions Work
 
 Athena's primary workflow is embedded, interactive agent sessions. The Electron main process launches terminal panes for shell, Hermes, Codex, OpenCode, and Claude. The React UI renders those panes with `xterm.js`.

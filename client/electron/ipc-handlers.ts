@@ -111,7 +111,7 @@ export function registerIpcHandlers(appRoot: string): void {
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
   ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
-  ipcMain.handle("performance:diagnostics", (): PerformanceDiagnostics => getPerformanceDiagnostics());
+  ipcMain.handle("performance:diagnostics", (): Promise<PerformanceDiagnostics> => getPerformanceDiagnostics());
   ipcMain.handle(
     "embeddedTerminal:spawn",
     (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> =>

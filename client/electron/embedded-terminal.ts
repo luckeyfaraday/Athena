@@ -1,7 +1,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 import { BrowserWindow } from "electron";
 import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
@@ -192,10 +195,11 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
   }
 }
 
-export function getPerformanceDiagnostics(): PerformanceDiagnostics {
+export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostics> {
   updatePerformanceRates();
   const pendingOutputBytes = Array.from(pendingOutput.values()).reduce((total, value) => total + Buffer.byteLength(value), 0);
   const bufferedTerminalChars = Array.from(outputBuffers.values()).reduce((total, value) => total + value.length, 0);
+  const agentProcesses = await detectAgentProcesses();
   return {
     activeTerminals: terminals.size,
     bufferedTerminalChars,
@@ -210,18 +214,18 @@ export function getPerformanceDiagnostics(): PerformanceDiagnostics {
     lastOutputBatchAt: perfCounters.lastBatchAt,
     controlEvents: recentControlEvents(),
     terminalControl: terminalControlStates(),
-    agentProcesses: detectAgentProcesses(),
+    agentProcesses,
   };
 }
 
-function detectAgentProcesses(): AgentProcessDiagnostic[] {
+async function detectAgentProcesses(): Promise<AgentProcessDiagnostic[]> {
   const managed = Array.from(terminals.values()).map((entry) => ({
     pid: entry.session.pid,
     id: entry.session.id,
     title: entry.session.title,
     workspace: entry.session.workspace,
   })).filter((entry): entry is { pid: number; id: string; title: string; workspace: string } => entry.pid != null);
-  const processList = listSystemProcesses();
+  const processList = await listSystemProcesses();
   const managedByPid = new Map(managed.map((entry) => [entry.pid, entry]));
 
   return processList
@@ -250,27 +254,32 @@ type ProcessInfo = {
   command: string;
 };
 
-function listSystemProcesses(): ProcessInfo[] {
+async function listSystemProcesses(): Promise<ProcessInfo[]> {
   if (process.platform === "linux") return listLinuxProcesses();
   return listPsProcesses();
 }
 
-function listLinuxProcesses(): ProcessInfo[] {
+async function listLinuxProcesses(): Promise<ProcessInfo[]> {
   try {
-    return fs.readdirSync("/proc", { withFileTypes: true })
+    const entries = await fs.promises.readdir("/proc", { withFileTypes: true });
+    const pids = entries
       .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-      .map((entry) => readLinuxProcess(Number(entry.name)))
-      .filter((entry): entry is ProcessInfo => Boolean(entry));
+      .map((entry) => Number(entry.name));
+    const results = await Promise.all(pids.map((pid) => readLinuxProcess(pid)));
+    return results.filter((entry): entry is ProcessInfo => Boolean(entry));
   } catch {
     return listPsProcesses();
   }
 }
 
-function readLinuxProcess(pid: number): ProcessInfo | null {
+async function readLinuxProcess(pid: number): Promise<ProcessInfo | null> {
   try {
-    const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+    const [status, cmdline] = await Promise.all([
+      fs.promises.readFile(`/proc/${pid}/status`, "utf8"),
+      fs.promises.readFile(`/proc/${pid}/cmdline`, "utf8"),
+    ]);
     const ppidMatch = status.match(/^PPid:\s+(\d+)/m);
-    const command = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim();
+    const command = cmdline.replace(/\0/g, " ").trim();
     if (!command) return null;
     return {
       pid,
@@ -282,10 +291,10 @@ function readLinuxProcess(pid: number): ProcessInfo | null {
   }
 }
 
-function listPsProcesses(): ProcessInfo[] {
+async function listPsProcesses(): Promise<ProcessInfo[]> {
   try {
-    const output = execFileSync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8", maxBuffer: 2_000_000 });
-    return output.split("\n").map((line): ProcessInfo | null => {
+    const { stdout } = await execFileAsync("ps", ["-eo", "pid=,ppid=,args="], { encoding: "utf8", maxBuffer: 2_000_000 });
+    return stdout.split("\n").map((line): ProcessInfo | null => {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
       if (!match) return null;
       return {

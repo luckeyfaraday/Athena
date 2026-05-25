@@ -283,6 +283,7 @@ export function App() {
     const now = Date.now();
     if (now - (lastWorkspaceAttentionAt.current.get(throttleKey) ?? 0) < 30_000) return;
     lastWorkspaceAttentionAt.current.set(throttleKey, now);
+    void desktop.playAttentionSound();
     setWorkspaceAttention((current) => ({
       ...current,
       [key]: mergeWorkspaceAttention(current[key], kind),

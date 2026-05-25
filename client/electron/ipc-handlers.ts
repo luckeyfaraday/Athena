@@ -69,6 +69,9 @@ export function registerIpcHandlers(appRoot: string): void {
     const error = await shell.openPath(value);
     return !error;
   });
+  ipcMain.handle("shell:beep", (): void => {
+    shell.beep();
+  });
   ipcMain.handle("backend:getState", (): BackendState => getBackendState());
   ipcMain.handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
   ipcMain.handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));

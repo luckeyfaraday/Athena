@@ -90,6 +90,7 @@ export type WorkspaceApi = {
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   openExternalUrl: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
+  playAttentionSound: () => Promise<void>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
@@ -159,6 +160,7 @@ const api: WorkspaceApi = {
   getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
   openExternalUrl: (url) => ipcRenderer.invoke("shell:openExternal", url),
   openPath: (path) => ipcRenderer.invoke("shell:openPath", path),
+  playAttentionSound: () => ipcRenderer.invoke("shell:beep"),
   onEmbeddedTerminalData,
   onEmbeddedTerminalExit,
   onEmbeddedTerminalSession,

@@ -4,6 +4,7 @@ import type { BackendState } from "./backend.js";
 import type { ControlState } from "./control-server.js";
 import type { CodexTerminalState, NativeTerminalResult, NativeTerminalSession } from "./codex-terminal.js";
 import type { EmbeddedTerminalKind, EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
+import type { AthenaLaunchState } from "./launch-state.js";
 import type { WorkspacePath } from "./platform.js";
 
 export type PerformanceDiagnostics = {
@@ -65,6 +66,8 @@ export type WorkspaceApi = {
   getControlState: () => Promise<ControlState>;
   checkControlHealth: () => Promise<ControlState>;
   restartControl: () => Promise<ControlState>;
+  getLaunchState: () => Promise<AthenaLaunchState | null>;
+  clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
   getPreferences: () => Promise<Record<string, string>>;
   setPreference: (key: string, value: string) => Promise<Record<string, string>>;
   removePreference: (key: string) => Promise<Record<string, string>>;
@@ -135,6 +138,8 @@ const api: WorkspaceApi = {
   getControlState: () => ipcRenderer.invoke("control:getState"),
   checkControlHealth: () => ipcRenderer.invoke("control:checkHealth"),
   restartControl: () => ipcRenderer.invoke("control:restart"),
+  getLaunchState: () => ipcRenderer.invoke("launchState:get"),
+  clearTerminalRestorePause: () => ipcRenderer.invoke("launchState:clearTerminalRestorePause"),
   getPreferences: () => ipcRenderer.invoke("preferences:get"),
   setPreference: (key, value) => ipcRenderer.invoke("preferences:set", key, value),
   removePreference: (key) => ipcRenderer.invoke("preferences:remove", key),

@@ -1,7 +1,7 @@
 import { Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
-import type { PerformanceDiagnostics } from "../electron";
+import type { AthenaLaunchState, PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
 type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
@@ -19,9 +19,11 @@ export function SettingsRoom({
   uiTheme,
   terminalFocus,
   performance,
+  launchState,
   onSelectWorkspace,
   onRestartBackend,
   onRestartControl,
+  onClearTerminalRestorePause,
   onRefreshRecall,
   onInterfaceModeChange,
   onThemeChange,
@@ -39,9 +41,11 @@ export function SettingsRoom({
   uiTheme: UiTheme;
   terminalFocus: boolean;
   performance: PerformanceDiagnostics | null;
+  launchState: AthenaLaunchState | null;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
   onRestartControl: () => Promise<void>;
+  onClearTerminalRestorePause: () => Promise<void>;
   onRefreshRecall: () => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
@@ -93,6 +97,20 @@ export function SettingsRoom({
           <StatusPill tone={electronControlStatus.tone}>{electronControlStatus.label}</StatusPill>
           <button className="ghostButton" type="button" onClick={() => void onRestartControl()} disabled={busy}>
             <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
+          </button>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Terminal restore</strong>
+            <span>{launchState?.terminalRestorePaused
+              ? `Paused after previous unclean launch${launchState.previousCrashAt ? ` at ${launchState.previousCrashAt}` : ""}.`
+              : "Restore is enabled for the selected workspace."}</span>
+          </div>
+          <StatusPill tone={launchState?.terminalRestorePaused ? "warn" : "ok"}>
+            {launchState?.terminalRestorePaused ? "Paused" : "Enabled"}
+          </StatusPill>
+          <button className="ghostButton" type="button" onClick={() => void onClearTerminalRestorePause()} disabled={busy || !launchState?.terminalRestorePaused}>
+            <RefreshCw size={14} /> Resume Restore
           </button>
         </article>
         <article className="settingsSection">

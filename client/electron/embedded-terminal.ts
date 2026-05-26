@@ -3,10 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
 import { BrowserWindow } from "electron";
-import * as pty from "node-pty";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import {
   recentControlEvents,
@@ -26,6 +23,7 @@ import { getBackendState } from "./backend.js";
 import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { isTerminalRestorePaused } from "./launch-state.js";
+import { ptyHost } from "./pty-host-client.js";
 import { selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
@@ -37,6 +35,8 @@ import {
   tempWorkspaceDirectory,
   windowsPathToWslPath,
 } from "./platform.js";
+
+const execFileAsync = promisify(execFile);
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 
@@ -72,21 +72,23 @@ export type EmbeddedTerminalSpawnOptions = {
 
 type ManagedTerminal = {
   session: EmbeddedTerminalSession;
-  process: pty.IPty;
   restore: RestorableTerminal;
 };
 
 let _appRoot: string | null = null;
 let appQuitting = false;
 let restoreInFlight = false;
+let ptyHostListenersInstalled = false;
 
 export function initEmbeddedTerminals(appRoot: string): void {
   _appRoot = appRoot;
+  installPtyHostListeners();
   startEventLoopMonitor();
 }
 
 export function prepareEmbeddedTerminalRestoreForQuit(): void {
   appQuitting = true;
+  ptyHost.shutdown();
 }
 
 const terminals = new Map<string, ManagedTerminal>();
@@ -404,9 +406,11 @@ export async function spawnEmbeddedTerminal(
 
   try {
     const openCodeBaseline = kind === "opencode" ? resolveOpenCodeBaselineBinary() : null;
-    const baseEnv = sanitizedTerminalEnv();
-    const term = pty.spawn(launch.command, launch.args, {
-      name: "xterm-256color",
+    const baseEnv = stringEnv(sanitizedTerminalEnv());
+    const pid = await ptyHost.spawn({
+      id,
+      command: launch.command,
+      args: launch.args,
       cwd,
       cols: options.cols ?? 96,
       rows: options.rows ?? 28,
@@ -422,8 +426,8 @@ export async function spawnEmbeddedTerminal(
       },
     });
 
-    session.pid = term.pid;
-    terminals.set(id, { session, process: term, restore: restoreEntry });
+    session.pid = pid;
+    terminals.set(id, { session, restore: restoreEntry });
     upsertRestoreEntry(restoreEntry);
     recordSpawnSucceeded({
       terminalId: session.id,
@@ -431,25 +435,7 @@ export async function spawnEmbeddedTerminal(
       kind: session.kind,
       workspace: session.workspace,
       source: controlSource,
-      pid: session.pid,
-    });
-
-    term.onData((data) => {
-      recordTerminalOutput(id);
-      appendBuffer(id, data);
-      queueOutput(id, data);
-    });
-
-    term.onExit(({ exitCode }) => {
-      flushOutput(id);
-      const entry = terminals.get(id);
-      if (entry) {
-        entry.session = { ...entry.session, status: "exited", exitCode };
-        recordTerminalExited(id, exitCode);
-        emit("embedded-terminal:exit", { id, exitCode });
-        terminals.delete(id);
-        if (!appQuitting) removeRestoreEntry(id);
-      }
+      pid,
     });
 
     emit("embedded-terminal:session", session);
@@ -469,9 +455,13 @@ export async function spawnEmbeddedTerminal(
   }
 }
 
-export function writeEmbeddedTerminal(id: string, data: string): EmbeddedTerminalSession {
+function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+export async function writeEmbeddedTerminal(id: string, data: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminal(id);
-  entry.process.write(data);
+  await ptyHost.write(id, data);
   return { ...entry.session };
 }
 
@@ -493,7 +483,7 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
   const writes = terminalInputWritesForKind(entry.session.kind, text);
   try {
     for (const write of writes) {
-      entry.process.write(write.data);
+      await ptyHost.write(entry.session.id, write.data);
       if (write.delayAfterMs) await delay(write.delayAfterMs);
     }
   } catch (error) {
@@ -504,21 +494,80 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
   return { ...entry.session };
 }
 
-export function resizeEmbeddedTerminal(id: string, cols: number, rows: number): EmbeddedTerminalSession {
+export async function resizeEmbeddedTerminal(id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> {
   const entry = terminals.get(id);
   if (!entry) return missingSession(id);
-  entry.process.resize(Math.max(20, Math.floor(cols)), Math.max(6, Math.floor(rows)));
+  await ptyHost.resize(id, Math.max(20, Math.floor(cols)), Math.max(6, Math.floor(rows)));
   return { ...entry.session };
 }
 
-export function killEmbeddedTerminal(id: string): EmbeddedTerminalSession {
+export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminal(id);
-  entry.process.kill();
+  await ptyHost.kill(id);
   entry.session = { ...entry.session, status: "exited", exitCode: null };
   terminals.delete(id);
   removeRestoreEntry(id);
   emit("embedded-terminal:exit", { id, exitCode: null });
   return { ...entry.session };
+}
+
+function installPtyHostListeners(): void {
+  if (ptyHostListenersInstalled) return;
+  ptyHostListenersInstalled = true;
+  ptyHost.on("data", ({ id, data }) => {
+    recordTerminalOutput(id);
+    appendBuffer(id, data);
+    queueOutput(id, data);
+  });
+  ptyHost.on("exit", ({ id, exitCode }) => {
+    flushOutput(id);
+    const entry = terminals.get(id);
+    if (!entry) return;
+    entry.session = { ...entry.session, status: "exited", exitCode };
+    recordTerminalExited(id, exitCode);
+    emit("embedded-terminal:exit", { id, exitCode });
+    terminals.delete(id);
+    if (!appQuitting) removeRestoreEntry(id);
+  });
+  ptyHost.on("error", ({ id, error }) => {
+    if (!id) {
+      console.error("[Athena] PTY host error:", error);
+      return;
+    }
+    const entry = terminals.get(id);
+    if (!entry) return;
+    entry.session = { ...entry.session, status: "failed", error };
+    recordSpawnFailed({
+      terminalId: entry.session.id,
+      title: entry.session.title,
+      kind: entry.session.kind,
+      workspace: entry.session.workspace,
+      source: "pty-host",
+      error,
+    });
+    emit("embedded-terminal:session", entry.session);
+  });
+  ptyHost.on("crash", ({ ids, error }) => {
+    console.error("[Athena] PTY host crashed:", error);
+    for (const id of ids) {
+      flushOutput(id);
+      const entry = terminals.get(id);
+      if (!entry) continue;
+      entry.session = { ...entry.session, status: "failed", error };
+      recordSpawnFailed({
+        terminalId: entry.session.id,
+        title: entry.session.title,
+        kind: entry.session.kind,
+        workspace: entry.session.workspace,
+        source: "pty-host",
+        error,
+      });
+      emit("embedded-terminal:session", entry.session);
+      emit("embedded-terminal:exit", { id, exitCode: null });
+      terminals.delete(id);
+      if (!appQuitting) removeRestoreEntry(id);
+    }
+  });
 }
 
 function restoreFilePath(): string {

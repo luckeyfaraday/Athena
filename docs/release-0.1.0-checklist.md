@@ -180,6 +180,27 @@ npm run dist
 If a broad check has unrelated failures, document the failure and run the
 narrowest relevant checks for the release-blocking area.
 
+## Version And Tag Gate
+
+Complete this before creating or pushing a release tag:
+
+- Decide the exact release version, for example `0.1.2`.
+- Update `client/package.json` to that version.
+- Update `client/package-lock.json` to the same version.
+- Update any visible README badge or release text that hardcodes the previous
+  version.
+- Run `npm run build` from `client/` and confirm the generated package metadata
+  uses the intended version.
+- Run `npm run dist` from `client/` and confirm generated asset names match the
+  tag version, for example `ATHENA-0.1.2.AppImage` and
+  `ATHENA.Setup.0.1.2.exe`.
+- Create the git tag only after the version bump is merged to `main`.
+- After the tag workflow finishes, verify the GitHub release assets match the
+  tag before announcing the release.
+
+Do not tag a new release while `client/package.json`, `client/package-lock.json`,
+the README badge, or generated asset names still reference the previous release.
+
 ## Deferred From 0.1.0
 
 These should not block the first release unless they regress existing behavior:

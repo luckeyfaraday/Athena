@@ -103,14 +103,14 @@ export function SettingsRoom({
           <div>
             <strong>Terminal restore</strong>
             <span>{launchState?.terminalRestorePaused
-              ? `Paused after previous unclean launch${launchState.previousCrashAt ? ` at ${launchState.previousCrashAt}` : ""}.`
-              : "Restore is enabled for the selected workspace."}</span>
+              ? `Paused after previous unclean launch${launchState.previousCrashAt ? ` at ${launchState.previousCrashAt}` : ""}. Enabling starts fresh.`
+              : "Restore is enabled when a workspace is opened or selected."}</span>
           </div>
           <StatusPill tone={launchState?.terminalRestorePaused ? "warn" : "ok"}>
             {launchState?.terminalRestorePaused ? "Paused" : "Enabled"}
           </StatusPill>
           <button className="ghostButton" type="button" onClick={() => void onClearTerminalRestorePause()} disabled={busy || !launchState?.terminalRestorePaused}>
-            <RefreshCw size={14} /> Resume Restore
+            <RefreshCw size={14} /> Enable Restore
           </button>
         </article>
         <article className="settingsSection">

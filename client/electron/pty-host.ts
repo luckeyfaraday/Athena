@@ -2,9 +2,22 @@ import * as pty from "node-pty";
 import type { PtyHostMessage, PtyHostRequest, PtyHostSpawnRequest } from "./pty-host-protocol.js";
 
 const terminals = new Map<string, pty.IPty>();
+const pendingOutput = new Map<string, string>();
+const FLUSH_INTERVAL_MS = 16;
+const MAX_BATCH_CHARS = 64_000;
+let flushTimer: NodeJS.Timeout | null = null;
+let shuttingDown = false;
 
 function send(message: PtyHostMessage): void {
-  if (process.send) process.send(message);
+  if (!process.send || !process.connected) {
+    shutdown(0);
+    return;
+  }
+  try {
+    process.send(message);
+  } catch {
+    shutdown(1);
+  }
 }
 
 function response(requestId: string, ok: true, pid?: number | null): void;
@@ -27,12 +40,44 @@ function spawnTerminal(payload: PtyHostSpawnRequest): number {
     env: payload.env,
   });
   terminals.set(payload.id, terminal);
-  terminal.onData((data) => send({ type: "data", id: payload.id, data }));
+  terminal.onData((data) => queueOutput(payload.id, data));
   terminal.onExit(({ exitCode }) => {
+    flushOutput(payload.id);
     terminals.delete(payload.id);
     send({ type: "exit", id: payload.id, exitCode });
   });
   return terminal.pid;
+}
+
+function queueOutput(id: string, data: string): void {
+  const next = (pendingOutput.get(id) ?? "") + data;
+  if (next.length >= MAX_BATCH_CHARS) {
+    pendingOutput.set(id, next);
+    flushOutput(id);
+    return;
+  }
+  pendingOutput.set(id, next);
+  scheduleFlush();
+}
+
+function scheduleFlush(): void {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushAllOutput();
+  }, FLUSH_INTERVAL_MS);
+  flushTimer.unref?.();
+}
+
+function flushOutput(id: string): void {
+  const data = pendingOutput.get(id);
+  if (!data) return;
+  pendingOutput.delete(id);
+  send({ type: "data", id, data });
+}
+
+function flushAllOutput(): void {
+  for (const id of Array.from(pendingOutput.keys())) flushOutput(id);
 }
 
 function requireTerminal(id: string): pty.IPty {
@@ -59,16 +104,15 @@ process.on("message", (message: PtyHostRequest) => {
       return;
     }
     if (message.type === "kill") {
+      flushOutput(message.id);
       requireTerminal(message.id).kill();
       terminals.delete(message.id);
       response(message.requestId, true, null);
       return;
     }
     if (message.type === "shutdown") {
-      for (const terminal of terminals.values()) terminal.kill();
-      terminals.clear();
+      shutdown(0);
       response(message.requestId, true, null);
-      process.exit(0);
     }
   } catch (error) {
     const id = "id" in message && typeof message.id === "string" ? message.id : null;
@@ -78,12 +122,30 @@ process.on("message", (message: PtyHostRequest) => {
   }
 });
 
+function shutdown(exitCode: number): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  flushAllOutput();
+  for (const terminal of terminals.values()) terminal.kill();
+  terminals.clear();
+  pendingOutput.clear();
+  setTimeout(() => process.exit(exitCode), 0).unref?.();
+}
+
+process.on("disconnect", () => {
+  shutdown(0);
+});
+
 process.on("uncaughtException", (error) => {
   send({ type: "error", id: null, error: String(error) });
-  process.exit(1);
+  shutdown(1);
 });
 
 process.on("unhandledRejection", (error) => {
   send({ type: "error", id: null, error: String(error) });
-  process.exit(1);
+  shutdown(1);
 });

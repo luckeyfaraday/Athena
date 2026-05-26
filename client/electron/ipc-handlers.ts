@@ -117,12 +117,12 @@ export function registerIpcHandlers(appRoot: string): void {
     (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> =>
       spawnEmbeddedTerminal(workspace, options),
   );
-  ipcMain.handle("embeddedTerminal:write", (_event, id: string, data: string): EmbeddedTerminalSession => writeEmbeddedTerminal(id, data));
+  ipcMain.handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> => writeEmbeddedTerminal(id, data));
   ipcMain.handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession => renameEmbeddedTerminal(id, title));
-  ipcMain.handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): EmbeddedTerminalSession =>
+  ipcMain.handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> =>
     resizeEmbeddedTerminal(id, cols, rows),
   );
-  ipcMain.handle("embeddedTerminal:kill", (_event, id: string): EmbeddedTerminalSession => killEmbeddedTerminal(id));
+  ipcMain.handle("embeddedTerminal:kill", (_event, id: string): Promise<EmbeddedTerminalSession> => killEmbeddedTerminal(id));
   ipcMain.handle("agentSessions:list", (_event, workspace: string): Promise<AgentSession[]> =>
     listAgentSessionsCached(workspace, listEmbeddedTerminals()),
   );

@@ -202,7 +202,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "POST" && url.pathname === "/workspaces/close") {
       const payload = parseCloseWorkspaceRequest(await readJsonBody(request));
-      const result = closeWorkspaceInRenderer(payload.workspace);
+      const result = await closeWorkspaceInRenderer(payload.workspace);
       sendJson(response, 200, result);
       return;
     }
@@ -227,7 +227,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "POST" && url.pathname === "/terminals/kill") {
       const payload = parseKillTerminalRequest(await readJsonBody(request));
       const terminal = requireResolvedTerminal(payload.target);
-      const killed = killEmbeddedTerminal(terminal.id);
+      const killed = await killEmbeddedTerminal(terminal.id);
       sendJson(response, 200, { killed: true, terminal: killed });
       return;
     }
@@ -408,11 +408,11 @@ function openWorkspaceInRenderer(workspace: string, select: boolean): WorkspaceP
   return workspacePath;
 }
 
-function closeWorkspaceInRenderer(workspace: string): { closed: true; workspace: WorkspacePath; killed: EmbeddedTerminalSession[] } {
+async function closeWorkspaceInRenderer(workspace: string): Promise<{ closed: true; workspace: WorkspacePath; killed: EmbeddedTerminalSession[] }> {
   const workspacePath = toWorkspacePath(workspace);
-  const killed = listEmbeddedTerminals()
+  const killed = await Promise.all(listEmbeddedTerminals()
     .filter((terminal) => sameControlPath(terminal.workspace, workspacePath.nativePath))
-    .map((terminal) => killEmbeddedTerminal(terminal.id));
+    .map((terminal) => killEmbeddedTerminal(terminal.id)));
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send("workspace:close", { workspace: workspacePath });
   }

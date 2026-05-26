@@ -174,8 +174,12 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
   try {
     const restored: EmbeddedTerminalSession[] = [];
     const entries = readRestoreEntries();
-    const plan = selectEmbeddedTerminalRestoreEntries(entries, allowedWorkspaces);
-    writeRestoreEntries(plan.retained);
+    const plan = selectEmbeddedTerminalRestoreEntries(entries, allowedWorkspaces, terminals.keys());
+    writeRestoreEntries([...plan.retained, ...plan.live]);
+    for (const entry of plan.live) {
+      const liveSession = terminals.get(entry.id)?.session;
+      if (liveSession) restored.push({ ...liveSession });
+    }
     for (const entry of plan.restore) {
       if (!fs.existsSync(entry.workspace)) continue;
       const session = await spawnEmbeddedTerminal(entry.workspace, {

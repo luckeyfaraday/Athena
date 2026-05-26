@@ -27,6 +27,7 @@ test("workspace restore restores every saved terminal for the selected workspace
 
   assert.deepEqual(plan.restore.map((item) => item.id), ["shell-1", "codex-1", "claude-1", "hermes-1"]);
   assert.deepEqual(plan.retained, []);
+  assert.deepEqual(plan.live, []);
 });
 
 test("workspace restore keeps entries for workspaces outside the selected workspace", () => {
@@ -39,4 +40,18 @@ test("workspace restore keeps entries for workspaces outside the selected worksp
 
   assert.deepEqual(plan.restore.map((item) => item.id), ["active-shell", "active-codex"]);
   assert.deepEqual(plan.retained.map((item) => item.id), ["other-shell", "other-codex"]);
+  assert.deepEqual(plan.live, []);
+});
+
+test("workspace restore keeps already live terminals instead of restoring duplicates", () => {
+  const plan = selectEmbeddedTerminalRestoreEntries([
+    entry("active-codex", "codex", "/home/dev/active", { resumeSessionId: "codex-session" }),
+    entry("active-claude", "claude", "/home/dev/active", { providerSessionId: "claude-session" }),
+    entry("stopped-shell", "shell", "/home/dev/active"),
+    entry("other-codex", "codex", "/home/dev/other", { resumeSessionId: "other-codex-session" }),
+  ], ["/home/dev/active"], ["active-codex", "active-claude"]);
+
+  assert.deepEqual(plan.restore.map((item) => item.id), ["stopped-shell"]);
+  assert.deepEqual(plan.live.map((item) => item.id), ["active-codex", "active-claude"]);
+  assert.deepEqual(plan.retained.map((item) => item.id), ["other-codex"]);
 });

@@ -15,20 +15,27 @@ export type RestorableTerminal = {
 export function selectEmbeddedTerminalRestoreEntries(
   entries: RestorableTerminal[],
   allowedWorkspaces?: string[],
-): { restore: RestorableTerminal[]; retained: RestorableTerminal[] } {
+  activeTerminalIds: Iterable<string> = [],
+): { restore: RestorableTerminal[]; retained: RestorableTerminal[]; live: RestorableTerminal[] } {
   const allowed = restoreWorkspaceSet(allowedWorkspaces);
+  const active = new Set(activeTerminalIds);
   const restore: RestorableTerminal[] = [];
   const retained: RestorableTerminal[] = [];
+  const live: RestorableTerminal[] = [];
 
   for (const entry of entries) {
     if (allowed && !allowed.has(normalizeRestoreWorkspace(entry.workspace))) {
       retained.push(entry);
       continue;
     }
+    if (active.has(entry.id)) {
+      live.push(entry);
+      continue;
+    }
     restore.push(entry);
   }
 
-  return { restore, retained };
+  return { restore, retained, live };
 }
 
 function restoreWorkspaceSet(workspaces?: string[]): Set<string> | null {

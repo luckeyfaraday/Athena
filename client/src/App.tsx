@@ -342,15 +342,7 @@ export function App() {
   async function clearTerminalRestorePause() {
     const nextState = await desktop.clearTerminalRestorePause();
     setLaunchState(nextState);
-    if (!workspacePath) return;
-    const sessions = await desktop.restoreEmbeddedTerminals([workspacePath.nativePath]);
-    const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenames);
-    setEmbeddedSessions((current) => {
-      const byId = new Map(current.map((session) => [session.id, session]));
-      for (const session of nextSessions) byId.set(session.id, session);
-      const merged = Array.from(byId.values());
-      return sameEmbeddedSessions(current, merged) ? current : merged;
-    });
+    setError(null);
   }
 
   const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {

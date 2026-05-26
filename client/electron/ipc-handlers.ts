@@ -21,6 +21,7 @@ import {
   type NativeTerminalSession,
 } from "./codex-terminal.js";
 import {
+  clearSavedEmbeddedTerminalRestores,
   getEmbeddedTerminalBuffer,
   getPerformanceDiagnostics,
   initEmbeddedTerminals,
@@ -80,7 +81,10 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth());
   ipcMain.handle("control:restart", (): Promise<ControlState> => restartControlServer());
   ipcMain.handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
-  ipcMain.handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => clearTerminalRestorePause());
+  ipcMain.handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => {
+    clearSavedEmbeddedTerminalRestores();
+    return clearTerminalRestorePause();
+  });
   ipcMain.handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
   ipcMain.handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
   ipcMain.handle("preferences:get", (): Record<string, string> => getPreferences());

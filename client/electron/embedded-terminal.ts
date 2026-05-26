@@ -22,7 +22,7 @@ import {
 import { getBackendState } from "./backend.js";
 import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
-import { isTerminalRestorePaused } from "./launch-state.js";
+import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.js";
 import { ptyHost } from "./pty-host-client.js";
 import { selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
@@ -75,6 +75,11 @@ type ManagedTerminal = {
   restore: RestorableTerminal;
 };
 
+type RestoreAttemptState = {
+  startedAt: string;
+  entries: RestorableTerminal[];
+};
+
 let _appRoot: string | null = null;
 let appQuitting = false;
 let restoreInFlight = false;
@@ -83,11 +88,13 @@ let ptyHostListenersInstalled = false;
 export function initEmbeddedTerminals(appRoot: string): void {
   _appRoot = appRoot;
   installPtyHostListeners();
+  quarantinePendingRestoreAttemptsAfterCrash();
   startEventLoopMonitor();
 }
 
 export function prepareEmbeddedTerminalRestoreForQuit(): void {
   appQuitting = true;
+  clearRestoreAttempts();
   ptyHost.shutdown();
 }
 
@@ -176,6 +183,7 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
     const entries = readRestoreEntries();
     const plan = selectEmbeddedTerminalRestoreEntries(entries, allowedWorkspaces, terminals.keys());
     writeRestoreEntries([...plan.retained, ...plan.live]);
+    recordRestoreAttempts(plan.restore);
     for (const entry of plan.live) {
       const liveSession = terminals.get(entry.id)?.session;
       if (liveSession) restored.push({ ...liveSession });
@@ -199,6 +207,14 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
   } finally {
     restoreInFlight = false;
   }
+}
+
+export function clearSavedEmbeddedTerminalRestores(): number {
+  const entries = readRestoreEntries();
+  if (entries.length === 0) return 0;
+  archiveRestoreEntries(entries);
+  writeRestoreEntries([]);
+  return entries.length;
 }
 
 export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostics> {
@@ -578,6 +594,10 @@ function restoreFilePath(): string {
   return path.join(os.homedir(), ".context-workspace", "embedded-terminals.json");
 }
 
+function restoreAttemptsFilePath(): string {
+  return path.join(os.homedir(), ".context-workspace", "embedded-terminal-restore-attempts.json");
+}
+
 function readRestoreEntries(): RestorableTerminal[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(restoreFilePath(), "utf8"));
@@ -588,6 +608,70 @@ function readRestoreEntries(): RestorableTerminal[] {
   }
 }
 
+function readRestoreAttempts(): RestoreAttemptState | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(restoreAttemptsFilePath(), "utf8"));
+    if (!parsed || typeof parsed !== "object") return null;
+    const state = parsed as Partial<RestoreAttemptState>;
+    if (typeof state.startedAt !== "string" || !Array.isArray(state.entries)) return null;
+    const entries = state.entries.filter(isRestorableTerminal);
+    return entries.length > 0 ? { startedAt: state.startedAt, entries } : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRestoreAttempts(state: RestoreAttemptState): void {
+  try {
+    const filePath = restoreAttemptsFilePath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(state, null, 2), "utf8");
+  } catch {
+    // Restore attempt state is a crash-loop guard; app startup must continue.
+  }
+}
+
+function recordRestoreAttempts(entries: RestorableTerminal[]): void {
+  if (entries.length === 0) return;
+  const previous = readRestoreAttempts();
+  const byId = new Map<string, RestorableTerminal>();
+  for (const entry of previous?.entries ?? []) byId.set(entry.id, entry);
+  for (const entry of entries) byId.set(entry.id, entry);
+  writeRestoreAttempts({
+    startedAt: previous?.startedAt ?? new Date().toISOString(),
+    entries: Array.from(byId.values()),
+  });
+}
+
+function clearRestoreAttempts(): void {
+  try {
+    fs.unlinkSync(restoreAttemptsFilePath());
+  } catch {
+    // Missing or unreadable attempt state should not block clean shutdown.
+  }
+}
+
+function quarantinePendingRestoreAttemptsAfterCrash(): void {
+  const launchState = readAthenaLaunchState();
+  if (!launchState?.terminalRestorePaused && launchState?.cleanExit !== false) return;
+  const attempts = readRestoreAttempts();
+  if (!attempts) return;
+
+  const attemptedIds = new Set(attempts.entries.map((entry) => entry.id));
+  const currentEntries = readRestoreEntries();
+  const quarantined = currentEntries.filter((entry) => attemptedIds.has(entry.id));
+  if (quarantined.length > 0) {
+    archiveRestoreEntries(quarantined, "quarantine", {
+      reason: "Previous launch ended before restored terminals exited cleanly.",
+      attemptedAt: attempts.startedAt,
+      quarantinedAt: new Date().toISOString(),
+    });
+    writeRestoreEntries(currentEntries.filter((entry) => !attemptedIds.has(entry.id)));
+    console.warn(`[Athena] Quarantined ${quarantined.length} embedded terminal restore entries after an unclean launch.`);
+  }
+  clearRestoreAttempts();
+}
+
 function writeRestoreEntries(entries: RestorableTerminal[]): void {
   try {
     const filePath = restoreFilePath();
@@ -595,6 +679,19 @@ function writeRestoreEntries(entries: RestorableTerminal[]): void {
     fs.writeFileSync(filePath, JSON.stringify(entries, null, 2), "utf8");
   } catch {
     // Restore state is best-effort; live PTY control remains authoritative.
+  }
+}
+
+function archiveRestoreEntries(entries: RestorableTerminal[], suffix = "bak", metadata?: Record<string, unknown>): void {
+  try {
+    const filePath = restoreFilePath();
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const archivePath = `${filePath}.${stamp}.${suffix}`;
+    const payload = metadata ? { ...metadata, entries } : entries;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(archivePath, JSON.stringify(payload, null, 2), "utf8");
+  } catch {
+    // Archiving is best-effort. Clearing stale restore state should still proceed.
   }
 }
 

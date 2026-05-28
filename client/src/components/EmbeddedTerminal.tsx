@@ -31,7 +31,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, monospace",
       fontSize: 10,
       lineHeight: 1.25,
-      scrollback: 10000,
+      scrollback: 2000,
       convertEol: false,
       theme: readTerminalTheme(),
     });

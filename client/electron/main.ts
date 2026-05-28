@@ -3,6 +3,7 @@ import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import os from "node:os";
 import { registerIpcHandlers } from "./ipc-handlers.js";
 import { prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
@@ -21,6 +22,17 @@ const singleInstanceLock = app.isPackaged ? app.requestSingleInstanceLock() : tr
 
 if (!singleInstanceLock) {
   app.quit();
+}
+
+function enableChromiumLogging(): void {
+  try {
+    const logPath = path.join(os.homedir(), ".context-workspace", "athena-chromium.log");
+    app.commandLine.appendSwitch("enable-logging", "file");
+    app.commandLine.appendSwitch("log-file", logPath);
+    app.commandLine.appendSwitch("log-level", "0");
+  } catch {
+    // Logging setup is best-effort; never block startup over diagnostics.
+  }
 }
 
 function shouldUseHeadlessGraphicsMode(): boolean {
@@ -129,17 +141,25 @@ function installExternalLinkHandler(window: BrowserWindow): void {
   });
 }
 
-// Keep hardware acceleration enabled for normal desktop runs; xterm rendering
-// and scrolling are noticeably worse when Electron is forced into CPU paint.
-// These switches must be set before app.whenReady() and window creation.
+// GPU-accelerated compositing in the browser process is the source of the
+// recurring `segfault at 0 ip 0` crashes on Linux (flaky Mesa/Intel drivers
+// call a null GL entry point). Disable hardware acceleration by default on
+// Linux and in headless mode; CPU paint is slightly less smooth but stable.
+// Set CONTEXT_WORKSPACE_ENABLE_GPU=1 to opt back in on machines with healthy
+// drivers. These switches must be set before app.whenReady() / window creation.
 app.commandLine.appendSwitch("no-sandbox");
-if (shouldUseHeadlessGraphicsMode()) {
+const forceGpu = process.env.CONTEXT_WORKSPACE_ENABLE_GPU === "1";
+if (!forceGpu && (process.platform === "linux" || shouldUseHeadlessGraphicsMode())) {
   app.commandLine.appendSwitch("disable-gpu");
   app.commandLine.appendSwitch("disable-software-rasterizer");
   app.commandLine.appendSwitch("disable-gpu-compositing");
   app.commandLine.appendSwitch("disable-gpu-rasterization");
   app.disableHardwareAcceleration();
 }
+
+// Capture Chromium/GPU/V8 diagnostics to a file so the next crash leaves a
+// real stack instead of a bare null-pointer core dump.
+enableChromiumLogging();
 
 app.on("second-instance", () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;

@@ -476,3 +476,35 @@ def test_formats_empty_and_populated_summary(tmp_path: Path) -> None:
 
     assert format_agent_sessions_summary([]) == "No native agent sessions were found for this workspace."
     assert list_native_agent_sessions(workspace, home_dir=home) == []
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "../../../../etc/passwd",
+        "/etc/passwd",
+        "..",
+        "a/../../b",
+        "session\\..\\..\\secret",
+        "id with spaces",
+        "with\x00null",
+        "",
+        "   ",
+    ],
+)
+def test_transcript_rejects_unsafe_session_ids(tmp_path: Path, bad_id: str) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    for provider in ("codex", "opencode", "claude", "hermes"):
+        with pytest.raises(ValueError):
+            read_agent_session_transcript(provider, bad_id, home_dir=home)
+
+
+def test_transcript_accepts_typical_session_ids(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    # Valid ids that simply have no backing file should surface as "not found",
+    # never as a validation error.
+    for valid_id in ("ses_abc123", "9f8e7d6c-1234-5678-9abc-def012345678", "h1.2"):
+        with pytest.raises(FileNotFoundError):
+            read_agent_session_transcript("claude", valid_id, home_dir=home)

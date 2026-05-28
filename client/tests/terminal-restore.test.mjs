@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
+import { canAutoRestoreEmbeddedTerminal, claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
 
 function entry(id, kind, workspace = "/home/dev/project", extras = {}) {
   return {
@@ -71,4 +71,10 @@ test("claude project path candidates include current and legacy encodings", () =
       "/home/dev/.claude/projects/-home-dev-project.name",
     ],
   );
+});
+
+test("saved terminal entries are not auto-restored as live PTYs", () => {
+  for (const kind of ["shell", "hermes", "codex", "opencode", "claude"]) {
+    assert.equal(canAutoRestoreEmbeddedTerminal(entry(`${kind}-1`, kind)), false);
+  }
 });

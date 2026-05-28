@@ -38,6 +38,13 @@ export function selectEmbeddedTerminalRestoreEntries(
   return { restore, retained, live };
 }
 
+export function canAutoRestoreEmbeddedTerminal(_entry: RestorableTerminal): boolean {
+  // Saved terminals are durable metadata only. Re-launching real agent PTYs
+  // from restore has repeatedly crashed Electron main after delayed output
+  // bursts, so resumes must be explicit user/Hermes actions.
+  return false;
+}
+
 export function claudeProjectPathCandidates(projectsDir: string, workspace: string): string[] {
   return Array.from(new Set([
     path.join(projectsDir, encodeClaudeProjectPath(workspace)),

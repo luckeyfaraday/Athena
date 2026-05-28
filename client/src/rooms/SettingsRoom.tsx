@@ -104,7 +104,7 @@ export function SettingsRoom({
             <strong>Terminal restore</strong>
             <span>{launchState?.terminalRestorePaused
               ? `Paused after previous unclean launch${launchState.previousCrashAt ? ` at ${launchState.previousCrashAt}` : ""}. Enabling starts fresh.`
-              : "Restore is enabled when a workspace is opened or selected."}</span>
+              : "Saved terminal metadata is kept, but live PTYs are resumed only by explicit user or Hermes action."}</span>
           </div>
           <StatusPill tone={launchState?.terminalRestorePaused ? "warn" : "ok"}>
             {launchState?.terminalRestorePaused ? "Paused" : "Enabled"}

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   findEmbeddedTerminal,
+  getEmbeddedTerminalBuffer,
   killEmbeddedTerminal,
   listEmbeddedTerminals,
   spawnEmbeddedTerminal,
@@ -192,6 +193,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "GET" && url.pathname === "/terminals") {
       sendJson(response, 200, { terminals: listEmbeddedTerminals() });
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/buffer")) {
+      const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/buffer".length));
+      const terminal = requireResolvedTerminal(target);
+      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
+      const buffer = tailText(getEmbeddedTerminalBuffer(terminal.id), maxChars);
+      sendJson(response, 200, {
+        terminal,
+        buffer,
+        chars: buffer.length,
+        max_chars: maxChars,
+      });
       return;
     }
     if (request.method === "POST" && url.pathname === "/workspaces/open") {
@@ -461,6 +475,16 @@ function contextModeValue(value: unknown): "none" | "task" | "curated" | undefin
   const mode = String(value).trim().toLowerCase();
   if (mode === "none" || mode === "task" || mode === "curated") return mode;
   throw new Error(`Unsupported context_mode: ${value}`);
+}
+
+function boundedMaxChars(value: string | null): number {
+  const parsed = Number(value ?? 40_000);
+  if (!Number.isFinite(parsed)) return 40_000;
+  return Math.max(1_000, Math.min(Math.floor(parsed), 200_000));
+}
+
+function tailText(value: string, maxChars: number): string {
+  return value.length > maxChars ? value.slice(-maxChars) : value;
 }
 
 function readJsonBody(request: IncomingMessage): Promise<unknown> {

@@ -59,3 +59,51 @@ def test_registry_request_cancel_marks_run_cancelled(tmp_path: Path) -> None:
     assert cancelled.status == RunStatus.CANCELLED
     assert registry.cancel_requested(run.run_id) is True
 
+
+
+def test_registry_evicts_oldest_terminal_runs_when_capped(tmp_path: Path) -> None:
+    registry = RunRegistry(max_retained_runs=3)
+    created = []
+    for index in range(5):
+        run = registry.create_run(agent_type="codex", project_dir=tmp_path, task=f"Task {index}")
+        registry.update_status(run.run_id, RunStatus.SUCCEEDED)
+        created.append(run)
+
+    listed = registry.list_runs()
+    assert len(listed) == 3
+    retained_ids = {run.run_id for run in listed}
+    # Oldest two completed runs were evicted; newest three remain.
+    assert created[0].run_id not in retained_ids
+    assert created[1].run_id not in retained_ids
+    assert created[4].run_id in retained_ids
+
+
+def test_registry_never_evicts_active_runs(tmp_path: Path) -> None:
+    registry = RunRegistry(max_retained_runs=2)
+    active = [
+        registry.create_run(agent_type="codex", project_dir=tmp_path, task=f"Active {index}")
+        for index in range(4)
+    ]
+
+    # All four are still pending/running, so none may be dropped even past the cap.
+    assert len(registry.list_runs()) == 4
+    assert {run.run_id for run in registry.list_runs()} == {run.run_id for run in active}
+
+    # Completing the oldest then adding more lets eviction reclaim only the terminal one.
+    registry.update_status(active[0].run_id, RunStatus.SUCCEEDED)
+    registry.create_run(agent_type="codex", project_dir=tmp_path, task="newer")
+    assert active[0].run_id not in {run.run_id for run in registry.list_runs()}
+    assert active[1].run_id in {run.run_id for run in registry.list_runs()}
+
+
+def test_registry_drops_cancel_flag_on_eviction(tmp_path: Path) -> None:
+    registry = RunRegistry(max_retained_runs=1)
+    first = registry.create_run(agent_type="codex", project_dir=tmp_path, task="first")
+    registry.request_cancel(first.run_id)
+    assert registry.cancel_requested(first.run_id) is True
+
+    second = registry.create_run(agent_type="codex", project_dir=tmp_path, task="second")
+    registry.update_status(second.run_id, RunStatus.SUCCEEDED)
+    # Adding/completing another run evicts the cancelled one and forgets its flag.
+    assert first.run_id not in {run.run_id for run in registry.list_runs()}
+    assert registry.cancel_requested(first.run_id) is False

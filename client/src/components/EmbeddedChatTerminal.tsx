@@ -1,6 +1,5 @@
 import { DragEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
-import { Terminal } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
 import {
   promptHistoryForSession,
@@ -296,33 +295,7 @@ function normalizeTerminalText(value: string): string {
 
 function renderTerminalSnapshot(value: string): string {
   if (!value.trim()) return "";
-  try {
-    const terminal = new Terminal({
-      cols: 120,
-      rows: 80,
-      scrollback: 300,
-      convertEol: true,
-      disableStdin: true,
-      allowProposedApi: true,
-    });
-    const writable = terminal as Terminal & { writeSync?: (data: string, maxSubsequentCalls?: number) => void };
-    if (typeof writable.writeSync === "function") {
-      writable.writeSync(value, 10_000);
-    } else {
-      return stripAnsi(value);
-    }
-    const buffer = terminal.buffer.active;
-    const lines: string[] = [];
-    const start = Math.max(0, buffer.length - 180);
-    for (let index = start; index < buffer.length; index += 1) {
-      const line = buffer.getLine(index)?.translateToString(true) ?? "";
-      lines.push(line);
-    }
-    terminal.dispose();
-    return lines.join("\n");
-  } catch {
-    return stripAnsi(value);
-  }
+  return stripAnsi(value);
 }
 
 function capChatBuffer(value: string): string {

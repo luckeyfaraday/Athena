@@ -24,12 +24,7 @@ import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.js";
 import { ptyHost } from "./pty-host-client.js";
-import {
-  canAutoRestoreEmbeddedTerminal,
-  claudeProjectPathCandidates,
-  selectEmbeddedTerminalRestoreEntries,
-  type RestorableTerminal,
-} from "./terminal-restore-policy.js";
+import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import {
   defaultShell,
@@ -189,15 +184,13 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
     const restored: EmbeddedTerminalSession[] = [];
     const entries = readRestoreEntries();
     const plan = selectEmbeddedTerminalRestoreEntries(entries, allowedWorkspaces, terminals.keys());
-    const autoRestore = plan.restore.filter(canAutoRestoreEmbeddedTerminal);
-    const dormantRestore = plan.restore.filter((entry) => !canAutoRestoreEmbeddedTerminal(entry));
-    writeRestoreEntries([...plan.retained, ...plan.live, ...dormantRestore]);
-    recordRestoreAttempts(autoRestore);
+    writeRestoreEntries([...plan.retained, ...plan.live]);
+    recordRestoreAttempts(plan.restore);
     for (const entry of plan.live) {
       const liveSession = terminals.get(entry.id)?.session;
       if (liveSession) restored.push({ ...liveSession });
     }
-    for (const entry of autoRestore) {
+    for (const entry of plan.restore) {
       if (!fs.existsSync(entry.workspace)) continue;
       const session = await spawnEmbeddedTerminal(entry.workspace, {
         kind: entry.kind,

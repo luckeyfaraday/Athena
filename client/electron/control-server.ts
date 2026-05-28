@@ -16,6 +16,7 @@ import {
 } from "./embedded-terminal.js";
 import { recordControlFailure } from "./control-events.js";
 import { isUncPath, isWindowsPath, normalizeNativePath, toWorkspacePath, type WorkspacePath } from "./platform.js";
+import { boundedTerminalBufferMaxChars, formatTerminalBuffer } from "./terminal-buffer.js";
 
 type ControlState = {
   baseUrl: string | null;
@@ -198,13 +199,11 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/buffer")) {
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/buffer".length));
       const terminal = requireResolvedTerminal(target);
-      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
-      const buffer = tailText(getEmbeddedTerminalBuffer(terminal.id), maxChars);
+      const maxChars = boundedTerminalBufferMaxChars(url.searchParams.get("max_chars"));
+      const buffer = formatTerminalBuffer(getEmbeddedTerminalBuffer(terminal.id), maxChars);
       sendJson(response, 200, {
         terminal,
-        buffer,
-        chars: buffer.length,
-        max_chars: maxChars,
+        ...buffer,
       });
       return;
     }
@@ -475,16 +474,6 @@ function contextModeValue(value: unknown): "none" | "task" | "curated" | undefin
   const mode = String(value).trim().toLowerCase();
   if (mode === "none" || mode === "task" || mode === "curated") return mode;
   throw new Error(`Unsupported context_mode: ${value}`);
-}
-
-function boundedMaxChars(value: string | null): number {
-  const parsed = Number(value ?? 40_000);
-  if (!Number.isFinite(parsed)) return 40_000;
-  return Math.max(1_000, Math.min(Math.floor(parsed), 200_000));
-}
-
-function tailText(value: string, maxChars: number): string {
-  return value.length > maxChars ? value.slice(-maxChars) : value;
 }
 
 function readJsonBody(request: IncomingMessage): Promise<unknown> {

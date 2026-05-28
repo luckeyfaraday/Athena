@@ -1,5 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { listAgentSessionsCached, type AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
@@ -40,26 +42,40 @@ import {
 
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
-  ipcMain.handle("window:minimize", (event): void => {
+  const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
+    ipcMain.handle(channel, async (event, ...args) => {
+      recordIpcBreadcrumb(channel, "start", args);
+      try {
+        const result = await listener(event, ...args);
+        recordIpcBreadcrumb(channel, "ok", args);
+        return result;
+      } catch (error) {
+        recordIpcBreadcrumb(channel, "error", args, String(error));
+        throw error;
+      }
+    });
+  };
+
+  handle("window:minimize", (event): void => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
   });
-  ipcMain.handle("window:toggleMaximize", (event): boolean => {
+  handle("window:toggleMaximize", (event): boolean => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) return false;
     if (window.isMaximized()) window.unmaximize();
     else window.maximize();
     return window.isMaximized();
   });
-  ipcMain.handle("window:close", (event): void => {
+  handle("window:close", (event): void => {
     BrowserWindow.fromWebContents(event.sender)?.close();
   });
-  ipcMain.handle("shell:openExternal", async (_event, value: string): Promise<boolean> => {
+  handle("shell:openExternal", async (_event, value: string): Promise<boolean> => {
     const url = normalizeExternalUrl(value);
     if (!url) return false;
     await shell.openExternal(url);
     return true;
   });
-  ipcMain.handle("shell:openPath", async (_event, value: string): Promise<boolean> => {
+  handle("shell:openPath", async (_event, value: string): Promise<boolean> => {
     if (typeof value !== "string" || !value.trim()) return false;
     let stat: fs.Stats | null = null;
     try {
@@ -71,27 +87,31 @@ export function registerIpcHandlers(appRoot: string): void {
     const error = await shell.openPath(value);
     return !error;
   });
-  ipcMain.handle("shell:beep", (): void => {
-    shell.beep();
+  handle("shell:beep", (): void => {
+    // Electron's native shell.beep() has crashed Linux AppImage main during
+    // background workspace attention notifications. Visual attention remains
+    // authoritative; native audio can be reintroduced via a renderer-owned
+    // implementation if needed.
+    if (process.platform !== "linux") shell.beep();
   });
-  ipcMain.handle("backend:getState", (): BackendState => getBackendState());
-  ipcMain.handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
-  ipcMain.handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));
-  ipcMain.handle("control:getState", (): ControlState => getControlState());
-  ipcMain.handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth());
-  ipcMain.handle("control:restart", (): Promise<ControlState> => restartControlServer());
-  ipcMain.handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
-  ipcMain.handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => {
+  handle("backend:getState", (): BackendState => getBackendState());
+  handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
+  handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));
+  handle("control:getState", (): ControlState => getControlState());
+  handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth());
+  handle("control:restart", (): Promise<ControlState> => restartControlServer());
+  handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
+  handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => {
     clearSavedEmbeddedTerminalRestores();
     return clearTerminalRestorePause();
   });
-  ipcMain.handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
-  ipcMain.handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
-  ipcMain.handle("preferences:get", (): Record<string, string> => getPreferences());
-  ipcMain.handle("preferences:set", (_event, key: string, value: string): Record<string, string> => setPreference(key, value));
-  ipcMain.handle("preferences:remove", (_event, key: string): Record<string, string> => removePreference(key));
-  ipcMain.handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());
-  ipcMain.handle("codexTerminal:start", (event, workspace: string): Promise<CodexTerminalState> => {
+  handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
+  handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
+  handle("preferences:get", (): Record<string, string> => getPreferences());
+  handle("preferences:set", (_event, key: string, value: string): Record<string, string> => setPreference(key, value));
+  handle("preferences:remove", (_event, key: string): Record<string, string> => removePreference(key));
+  handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());
+  handle("codexTerminal:start", (event, workspace: string): Promise<CodexTerminalState> => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) {
       return Promise.resolve({
@@ -103,38 +123,65 @@ export function registerIpcHandlers(appRoot: string): void {
     }
     return startCodexTerminal(workspace, window);
   });
-  ipcMain.handle("codexTerminal:write", (_event, data: string): CodexTerminalState => writeCodexTerminal(data));
-  ipcMain.handle("codexTerminal:stop", (): Promise<CodexTerminalState> => stopCodexTerminal());
-  ipcMain.handle("codexTerminal:openNative", (_event, workspace: string): Promise<NativeTerminalResult> => openNativeCodexTerminal(workspace));
-  ipcMain.handle("codexTerminal:openGrid", (_event, workspace: string, panes?: number): Promise<NativeTerminalResult> =>
+  handle("codexTerminal:write", (_event, data: string): CodexTerminalState => writeCodexTerminal(data));
+  handle("codexTerminal:stop", (): Promise<CodexTerminalState> => stopCodexTerminal());
+  handle("codexTerminal:openNative", (_event, workspace: string): Promise<NativeTerminalResult> => openNativeCodexTerminal(workspace));
+  handle("codexTerminal:openGrid", (_event, workspace: string, panes?: number): Promise<NativeTerminalResult> =>
     openNativeCodexGrid(workspace, panes),
   );
-  ipcMain.handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
-  ipcMain.handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
-  ipcMain.handle("embeddedTerminal:restore", (_event, allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> =>
+  handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
+  handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
+  handle("embeddedTerminal:restore", (_event, allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> =>
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
-  ipcMain.handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
-  ipcMain.handle("performance:diagnostics", (): Promise<PerformanceDiagnostics> => getPerformanceDiagnostics());
-  ipcMain.handle(
+  handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
+  handle("performance:diagnostics", (): Promise<PerformanceDiagnostics> => getPerformanceDiagnostics());
+  handle(
     "embeddedTerminal:spawn",
     (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> =>
       spawnEmbeddedTerminal(workspace, options),
   );
-  ipcMain.handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> => writeEmbeddedTerminal(id, data));
-  ipcMain.handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession => renameEmbeddedTerminal(id, title));
-  ipcMain.handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> =>
+  handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> => writeEmbeddedTerminal(id, data));
+  handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession => renameEmbeddedTerminal(id, title));
+  handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> =>
     resizeEmbeddedTerminal(id, cols, rows),
   );
-  ipcMain.handle("embeddedTerminal:kill", (_event, id: string): Promise<EmbeddedTerminalSession> => killEmbeddedTerminal(id));
-  ipcMain.handle("agentSessions:list", (_event, workspace: string): Promise<AgentSession[]> =>
+  handle("embeddedTerminal:kill", (_event, id: string): Promise<EmbeddedTerminalSession> => killEmbeddedTerminal(id));
+  handle("agentSessions:list", (_event, workspace: string): Promise<AgentSession[]> =>
     listAgentSessionsCached(workspace, listEmbeddedTerminals()),
   );
-  ipcMain.handle("dialog:selectWorkspace", async (): Promise<WorkspacePath | null> => {
+  handle("dialog:selectWorkspace", async (): Promise<WorkspacePath | null> => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],
     });
     const selected = result.canceled ? null : result.filePaths[0] ?? null;
     return selected ? toWorkspacePath(selected) : null;
+  });
+}
+
+function recordIpcBreadcrumb(channel: string, phase: "start" | "ok" | "error", args: unknown[], error?: string): void {
+  try {
+    const directory = path.join(os.homedir(), ".context-workspace");
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, "ipc-breadcrumb.json"), JSON.stringify({
+      at: new Date().toISOString(),
+      pid: process.pid,
+      channel,
+      phase,
+      args: summarizeIpcArgs(args),
+      error: error?.slice(0, 500) ?? null,
+    }, null, 2), "utf8");
+  } catch {
+    // Crash breadcrumbs are best-effort and must never affect IPC handling.
+  }
+}
+
+function summarizeIpcArgs(args: unknown[]): unknown[] {
+  return args.map((arg) => {
+    if (typeof arg === "string") return { type: "string", length: arg.length, preview: arg.slice(0, 80) };
+    if (typeof arg === "number" || typeof arg === "boolean" || arg == null) return arg;
+    if (Array.isArray(arg)) return { type: "array", length: arg.length };
+    if (typeof arg === "object") return { type: "object", keys: Object.keys(arg).slice(0, 20) };
+    return { type: typeof arg };
   });
 }

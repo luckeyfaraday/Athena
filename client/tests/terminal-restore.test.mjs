@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
+import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
 
 function entry(id, kind, workspace = "/home/dev/project", extras = {}) {
   return {
@@ -54,4 +54,21 @@ test("workspace restore keeps already live terminals instead of restoring duplic
   assert.deepEqual(plan.restore.map((item) => item.id), ["stopped-shell"]);
   assert.deepEqual(plan.live.map((item) => item.id), ["active-codex", "active-claude"]);
   assert.deepEqual(plan.retained.map((item) => item.id), ["other-codex"]);
+});
+
+test("claude project path candidates include current and legacy encodings", () => {
+  assert.deepEqual(
+    claudeProjectPathCandidates("/home/dev/.claude/projects", "/home/dev/My Project"),
+    [
+      "/home/dev/.claude/projects/-home-dev-My-Project",
+      "/home/dev/.claude/projects/-home-dev-My Project",
+    ],
+  );
+
+  assert.deepEqual(
+    claudeProjectPathCandidates("/home/dev/.claude/projects", "/home/dev/project.name"),
+    [
+      "/home/dev/.claude/projects/-home-dev-project.name",
+    ],
+  );
 });

@@ -88,7 +88,11 @@ export function registerIpcHandlers(appRoot: string): void {
     return !error;
   });
   handle("shell:beep", (): void => {
-    shell.beep();
+    // Electron's native shell.beep() has crashed Linux AppImage main during
+    // background workspace attention notifications. Visual attention remains
+    // authoritative; native audio can be reintroduced via a renderer-owned
+    // implementation if needed.
+    if (process.platform !== "linux") shell.beep();
   });
   handle("backend:getState", (): BackendState => getBackendState());
   handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());

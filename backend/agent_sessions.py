@@ -18,6 +18,22 @@ AgentSessionProvider = Literal["codex", "opencode", "claude", "hermes"]
 AgentSessionStatus = Literal["historical"]
 MAX_PROVIDER_ROWS = 1000
 
+# Session ids are interpolated into filesystem paths and glob patterns when
+# reading transcripts. Constrain them to characters real providers use so a
+# crafted id (path separators, "..", null bytes, glob metacharacters) cannot
+# escape the provider's session directory. This guards the function directly
+# rather than relying on the HTTP router to reject "/" in the path segment.
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+
+
+def _validate_session_id(session_id: str) -> str:
+    normalized = session_id.strip()
+    if not normalized:
+        raise ValueError("session_id is required.")
+    if not _SAFE_SESSION_ID_RE.fullmatch(normalized) or ".." in normalized:
+        raise ValueError(f"Invalid session_id: {session_id!r}")
+    return normalized
+
 
 @dataclass(frozen=True)
 class AgentSession:
@@ -93,9 +109,7 @@ def read_agent_session_transcript(
     tail: bool = True,
 ) -> str:
     """Return a provider-native session transcript as markdown."""
-    normalized_id = session_id.strip()
-    if not normalized_id:
-        raise ValueError("session_id is required.")
+    normalized_id = _validate_session_id(session_id)
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
     if provider == "opencode":
         markdown = _read_opencode_transcript(normalized_id, home)

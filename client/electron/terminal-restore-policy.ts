@@ -38,6 +38,21 @@ export function selectEmbeddedTerminalRestoreEntries(
   return { restore, retained, live };
 }
 
+export function claudeProjectPathCandidates(projectsDir: string, workspace: string): string[] {
+  return Array.from(new Set([
+    path.join(projectsDir, encodeClaudeProjectPath(workspace)),
+    path.join(projectsDir, legacyEncodeClaudeProjectPath(workspace)),
+  ]));
+}
+
+function encodeClaudeProjectPath(workspace: string): string {
+  return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
+}
+
+function legacyEncodeClaudeProjectPath(workspace: string): string {
+  return path.resolve(workspace).replace(/:/g, "").replace(/[\\/]/g, "-");
+}
+
 function restoreWorkspaceSet(workspaces?: string[]): Set<string> | null {
   if (!workspaces || workspaces.length === 0) return null;
   const normalized = workspaces

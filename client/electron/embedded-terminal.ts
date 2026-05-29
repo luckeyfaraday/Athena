@@ -24,7 +24,7 @@ import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.js";
 import { ptyHost } from "./pty-host-client.js";
-import { selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
+import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
@@ -99,6 +99,8 @@ const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
 const PTY_FLUSH_INTERVAL_MS = 16;
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 1000;
+const CLAUDE_SESSION_DISCOVERY_ATTEMPTS = 20;
+const CLAUDE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 const pendingOutput = new Map<string, string>();
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
@@ -154,6 +156,82 @@ export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
 
 export function getEmbeddedTerminalBuffer(id: string): string {
   return outputBuffers.get(id) ?? "";
+}
+
+type TerminalDataListener = (chunk: string) => void;
+type TerminalExitListener = (exitCode: number | null) => void;
+
+const dataListeners = new Map<string, Set<TerminalDataListener>>();
+const exitListeners = new Map<string, Set<TerminalExitListener>>();
+
+/**
+ * Subscribe to live PTY output for a terminal from inside the main process. This
+ * powers the control server's SSE stream endpoint (remote viewers such as the
+ * mobile app) alongside the existing renderer IPC fan-out. The listener receives
+ * raw terminal chunks exactly as they are appended to the rolling buffer.
+ * Returns an unsubscribe function; `onExit` (if provided) fires once when the
+ * terminal exits or crashes.
+ */
+export function subscribeEmbeddedTerminalData(
+  id: string,
+  onData: TerminalDataListener,
+  onExit?: TerminalExitListener,
+): () => void {
+  let dataSet = dataListeners.get(id);
+  if (!dataSet) {
+    dataSet = new Set();
+    dataListeners.set(id, dataSet);
+  }
+  dataSet.add(onData);
+
+  if (onExit) {
+    let exitSet = exitListeners.get(id);
+    if (!exitSet) {
+      exitSet = new Set();
+      exitListeners.set(id, exitSet);
+    }
+    exitSet.add(onExit);
+  }
+
+  return () => {
+    const currentData = dataListeners.get(id);
+    if (currentData) {
+      currentData.delete(onData);
+      if (currentData.size === 0) dataListeners.delete(id);
+    }
+    if (onExit) {
+      const currentExit = exitListeners.get(id);
+      if (currentExit) {
+        currentExit.delete(onExit);
+        if (currentExit.size === 0) exitListeners.delete(id);
+      }
+    }
+  };
+}
+
+function notifyTerminalData(id: string, chunk: string): void {
+  const listeners = dataListeners.get(id);
+  if (!listeners) return;
+  for (const listener of listeners) {
+    try {
+      listener(chunk);
+    } catch {
+      // A failing stream subscriber must not break PTY fan-out to other clients.
+    }
+  }
+}
+
+function notifyTerminalExit(id: string, exitCode: number | null): void {
+  const listeners = exitListeners.get(id);
+  if (!listeners) return;
+  for (const listener of Array.from(listeners)) {
+    try {
+      listener(exitCode);
+    } catch {
+      // Ignore subscriber errors raised during stream teardown.
+    }
+  }
+  exitListeners.delete(id);
 }
 
 export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | null {
@@ -455,6 +533,7 @@ export async function spawnEmbeddedTerminal(
     });
 
     emit("embedded-terminal:session", session);
+    maybeDiscoverClaudeSessionId(session.id, cwd, restoreEntry.createdAt);
     return { ...session };
   } catch (error) {
     const failed = { ...session, status: "failed" as const, error: String(error) };
@@ -533,10 +612,12 @@ function installPtyHostListeners(): void {
   ptyHost.on("data", ({ id, data }) => {
     recordTerminalOutput(id);
     appendBuffer(id, data);
+    notifyTerminalData(id, data);
     queueOutput(id, data);
   });
   ptyHost.on("exit", ({ id, exitCode }) => {
     flushOutput(id);
+    notifyTerminalExit(id, exitCode);
     const entry = terminals.get(id);
     if (!entry) return;
     entry.session = { ...entry.session, status: "exited", exitCode };
@@ -567,6 +648,7 @@ function installPtyHostListeners(): void {
     console.error("[Athena] PTY host crashed:", error);
     for (const id of ids) {
       flushOutput(id);
+      notifyTerminalExit(id, null);
       const entry = terminals.get(id);
       if (!entry) continue;
       entry.session = { ...entry.session, status: "failed", error };
@@ -895,6 +977,100 @@ function defaultSessionLabel(kind: EmbeddedTerminalKind, resumeSessionId?: strin
   if (kind === "shell") return null;
   if (kind === "hermes") return resumeSessionId ? resumeSessionId : null;
   return resumeSessionId ? resumeSessionId : "New";
+}
+
+function maybeDiscoverClaudeSessionId(terminalId: string, workspace: string, createdAt: string): void {
+  const entry = terminals.get(terminalId);
+  if (!entry || entry.session.kind !== "claude" || entry.session.providerSessionId) return;
+  void discoverClaudeSessionId(terminalId, workspace, createdAt);
+}
+
+async function discoverClaudeSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
+  const startedAtMs = Date.parse(createdAt);
+  const minMtimeMs = Number.isFinite(startedAtMs) ? startedAtMs - 10_000 : Date.now() - 10_000;
+
+  for (let attempt = 0; attempt < CLAUDE_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+    const entry = terminals.get(terminalId);
+    if (!entry || entry.session.kind !== "claude" || entry.session.providerSessionId || entry.session.status !== "running") return;
+    const sessionId = await newestClaudeSessionIdForWorkspace(workspace, minMtimeMs);
+    if (sessionId) {
+      attachProviderSessionId(terminalId, sessionId);
+      return;
+    }
+    await delay(CLAUDE_SESSION_DISCOVERY_INTERVAL_MS);
+  }
+}
+
+async function newestClaudeSessionIdForWorkspace(workspace: string, minMtimeMs: number): Promise<string | null> {
+  const projectsDir = path.join(os.homedir(), ".claude", "projects");
+  const candidates: { id: string; mtimeMs: number }[] = [];
+  for (const dir of claudeProjectPathCandidates(projectsDir, workspace)) {
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".jsonl")) continue;
+      const filePath = path.join(dir, name);
+      try {
+        const stat = await fs.promises.stat(filePath);
+        if (stat.mtimeMs < minMtimeMs) continue;
+        const id = await claudeSessionIdFromFile(filePath, path.basename(name, ".jsonl"));
+        if (id) candidates.push({ id, mtimeMs: stat.mtimeMs });
+      } catch {
+        // Claude session discovery is best-effort; restore still falls back to a fresh Claude launch.
+      }
+    }
+  }
+  return candidates.sort((left, right) => right.mtimeMs - left.mtimeMs)[0]?.id ?? null;
+}
+
+async function claudeSessionIdFromFile(filePath: string, fallback: string): Promise<string | null> {
+  try {
+    const lines = (await fs.promises.readFile(filePath, "utf8")).split("\n").filter(Boolean).slice(0, 20);
+    for (const line of lines) {
+      const entry = parseJsonObject(line);
+      const sessionId = stringProperty(entry, "sessionId");
+      if (sessionId) return sessionId;
+    }
+  } catch {
+    return null;
+  }
+  return fallback || null;
+}
+
+function attachProviderSessionId(terminalId: string, providerSessionId: string): void {
+  const entry = terminals.get(terminalId);
+  if (!entry || entry.session.kind !== "claude") return;
+  entry.session = {
+    ...entry.session,
+    providerSessionId,
+    sessionLabel: entry.session.sessionLabel === "New" || !entry.session.sessionLabel ? providerSessionId : entry.session.sessionLabel,
+  };
+  entry.restore = {
+    ...entry.restore,
+    providerSessionId,
+    resumeSessionId: providerSessionId,
+    sessionLabel: entry.restore.sessionLabel === "New" || !entry.restore.sessionLabel ? providerSessionId : entry.restore.sessionLabel,
+  };
+  upsertRestoreEntry(entry.restore);
+  emit("embedded-terminal:session", entry.session);
+}
+
+function parseJsonObject(line: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(line);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringProperty(value: Record<string, unknown> | null, key: string): string | null {
+  const item = value?.[key];
+  return typeof item === "string" && item.trim() ? item : null;
 }
 
 function isAgentKind(kind: EmbeddedTerminalKind): boolean {

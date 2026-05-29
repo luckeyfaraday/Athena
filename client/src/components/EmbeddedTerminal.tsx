@@ -14,6 +14,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const activeRef = useRef(active);
+  const lastResizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const dragDepthRef = useRef(0);
   const [imageDropActive, setImageDropActive] = useState(false);
 
@@ -31,7 +32,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, monospace",
       fontSize: 10,
       lineHeight: 1.25,
-      scrollback: 10000,
+      scrollback: 2000,
       convertEol: false,
       theme: readTerminalTheme(),
     });
@@ -45,7 +46,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     terminal.open(container);
     terminalRef.current = terminal;
     fitRef.current = fit;
-    fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current);
+    fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current, lastResizeRef);
     if (activeRef.current) terminal.focus();
 
     void desktop.getEmbeddedTerminalBuffer(session.id)
@@ -66,7 +67,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     });
 
     const resize = () => {
-      fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current);
+      fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current, lastResizeRef);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container);
@@ -97,7 +98,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       const terminal = terminalRef.current;
       const fit = fitRef.current;
       if (!container || !terminal || !fit) return;
-      fitVisibleTerminal(container, terminal, fit, session.id, true);
+      fitVisibleTerminal(container, terminal, fit, session.id, true, lastResizeRef);
       terminal.focus();
     };
     const timers = [30, 160].map((delay) => window.setTimeout(refit, delay));
@@ -211,10 +212,15 @@ function fitVisibleTerminal(
   fit: FitAddon,
   sessionId: string,
   active: boolean,
+  lastResizeRef: { current: { cols: number; rows: number } | null },
 ) {
   if (!active || !hasUsableTerminalSize(container)) return;
   try {
     fit.fit();
+    const nextSize = { cols: terminal.cols, rows: terminal.rows };
+    const lastSize = lastResizeRef.current;
+    if (lastSize?.cols === nextSize.cols && lastSize.rows === nextSize.rows) return;
+    lastResizeRef.current = nextSize;
     void desktop.resizeEmbeddedTerminal(sessionId, terminal.cols, terminal.rows).catch(() => undefined);
   } catch {
     // xterm fit can throw while the pane is temporarily hidden during workspace changes.

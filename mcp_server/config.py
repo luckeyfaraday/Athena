@@ -12,6 +12,7 @@ class Settings(BaseModel):
         os.environ.get("CONTEXT_WORKSPACE_BACKEND_STATE", Path.home() / ".context-workspace" / "backend.json")
     )
     electron_control_url: str | None = os.environ.get("CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL")
+    electron_control_token: str | None = os.environ.get("CONTEXT_WORKSPACE_ELECTRON_CONTROL_TOKEN")
     electron_control_state_path: Path = Path(
         os.environ.get(
             "CONTEXT_WORKSPACE_ELECTRON_CONTROL_STATE",

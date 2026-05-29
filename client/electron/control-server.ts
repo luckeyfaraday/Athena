@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { BrowserWindow } from "electron";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
@@ -6,15 +7,24 @@ import os from "node:os";
 import path from "node:path";
 import {
   findEmbeddedTerminal,
+  getEmbeddedTerminalBuffer,
   killEmbeddedTerminal,
   listEmbeddedTerminals,
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
+  subscribeEmbeddedTerminalData,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
 import { recordControlFailure } from "./control-events.js";
-import { isUncPath, isWindowsPath, normalizeNativePath, toWorkspacePath, type WorkspacePath } from "./platform.js";
+import {
+  boundedMaxChars,
+  evaluateControlAccess,
+  sameControlPath,
+  tailText,
+  validatedWorkspacePath,
+} from "./control-access.js";
+import { toWorkspacePath, type WorkspacePath } from "./platform.js";
 
 type ControlState = {
   baseUrl: string | null;
@@ -68,8 +78,14 @@ const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
-const PROTECTED_POSIX_ROOTS = new Set(["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var"]);
-const PROTECTED_WINDOWS_ROOT_NAMES = new Set(["windows", "program files", "program files (x86)", "programdata"]);
+
+// The control server can spawn processes, inject input into live PTYs, and read
+// terminal buffers, so every non-/health endpoint requires a per-launch secret.
+// The token is shared only via the 0600 discovery file, which is readable by the
+// same OS user that already controls the desktop session. This both stops other
+// processes that lack filesystem access and defeats browser CSRF / DNS-rebinding
+// (a web page cannot read the token, and Host/Origin are loopback-checked too).
+let controlToken: string | null = null;
 
 let server: http.Server | null = null;
 let watchdog: NodeJS.Timeout | null = null;
@@ -120,6 +136,7 @@ export async function startControlServer(): Promise<ControlState> {
   }
 
   const port = await findFreePort();
+  controlToken = crypto.randomBytes(32).toString("hex");
   const nextServer = http.createServer((request, response) => {
     void handleRequest(request, response);
   });
@@ -190,8 +207,41 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, { status: "ok", service: "electron-control" });
       return;
     }
+    const access = evaluateControlAccess(
+      {
+        host: headerValue(request.headers.host),
+        origin: headerValue(request.headers.origin),
+        authorization: headerValue(request.headers.authorization),
+        token: headerValue(request.headers["x-athena-control-token"]),
+      },
+      controlToken,
+    );
+    if (!access.ok) {
+      sendJson(response, access.status, { error: access.reason });
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/terminals") {
       sendJson(response, 200, { terminals: listEmbeddedTerminals() });
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/buffer")) {
+      const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/buffer".length));
+      const terminal = requireResolvedTerminal(target);
+      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
+      const buffer = tailText(getEmbeddedTerminalBuffer(terminal.id), maxChars);
+      sendJson(response, 200, {
+        terminal,
+        buffer,
+        chars: buffer.length,
+        max_chars: maxChars,
+      });
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/stream")) {
+      const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/stream".length));
+      const terminal = requireResolvedTerminal(target);
+      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
+      streamEmbeddedTerminal(request, response, terminal.id, maxChars);
       return;
     }
     if (request.method === "POST" && url.pathname === "/workspaces/open") {
@@ -271,28 +321,27 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 }
 
-function parseWriteTerminalRequest(body: unknown): { target: string; text: string } {
+function targetFromBody(body: unknown): string | undefined {
   if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
   const request = body as WriteTerminalRequest;
-  const target = stringValue(request.target)
+  return stringValue(request.target)
     ?? stringValue(request.terminal_id)
     ?? stringValue(request.terminalId)
     ?? stringValue(request.session_id)
     ?? stringValue(request.sessionId);
+}
+
+function parseWriteTerminalRequest(body: unknown): { target: string; text: string } {
+  const target = targetFromBody(body);
   if (!target) throw new Error("terminal_id, session_id, or target is required.");
+  const request = body as WriteTerminalRequest;
   const text = stringValue(request.text) ?? stringValue(request.input);
   if (!text) throw new Error("text is required.");
   return { target, text };
 }
 
 function parseKillTerminalRequest(body: unknown): { target: string } {
-  if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
-  const request = body as WriteTerminalRequest;
-  const target = stringValue(request.target)
-    ?? stringValue(request.terminal_id)
-    ?? stringValue(request.terminalId)
-    ?? stringValue(request.session_id)
-    ?? stringValue(request.sessionId);
+  const target = targetFromBody(body);
   if (!target) throw new Error("terminal_id, session_id, or target is required.");
   return { target };
 }
@@ -354,52 +403,6 @@ function parseCloseWorkspaceRequest(body: unknown): { workspace: string } {
   return { workspace: validatedWorkspacePath(request.project_dir ?? request.workspace) };
 }
 
-function validatedWorkspacePath(value: unknown): string {
-  const raw = String(value ?? "").trim();
-  if (!raw) throw new Error("project_dir is required.");
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) throw new Error("Project directory must be a local filesystem path, not a URL.");
-  if (isUncPath(raw)) throw new Error("UNC workspace paths are not supported by Electron control yet.");
-  if (!path.isAbsolute(raw) && !isWindowsPath(raw)) throw new Error("Project directory must be an absolute path.");
-
-  const normalized = normalizeNativePath(raw);
-  const resolved = fs.realpathSync.native(normalized);
-  const stat = fs.statSync(resolved);
-  if (!stat.isDirectory()) throw new Error(`Project directory is not a directory: ${resolved}`);
-
-  const home = fs.realpathSync.native(os.homedir());
-  if (sameControlPath(resolved, home)) throw new Error("Refusing to use the home directory as a project root.");
-
-  if (process.platform === "win32" || isWindowsPath(resolved)) {
-    rejectProtectedWindowsWorkspace(resolved);
-    return resolved;
-  }
-
-  if (PROTECTED_POSIX_ROOTS.has(path.posix.normalize(resolved))) {
-    throw new Error(`Refusing to use protected directory as a project root: ${resolved}`);
-  }
-  return resolved;
-}
-
-function rejectProtectedWindowsWorkspace(workspace: string): void {
-  const parsed = path.win32.parse(workspace);
-  const normalized = path.win32.normalize(workspace);
-  if (sameControlPath(normalized, parsed.root)) {
-    throw new Error(`Refusing to use drive root as a project root: ${workspace}`);
-  }
-  const relativeParts = normalized.slice(parsed.root.length).split(/[\\/]+/).filter(Boolean);
-  const firstPart = relativeParts[0]?.toLowerCase();
-  if (firstPart && PROTECTED_WINDOWS_ROOT_NAMES.has(firstPart)) {
-    throw new Error(`Refusing to use protected Windows directory as a project root: ${workspace}`);
-  }
-}
-
-function sameControlPath(left: string, right: string): boolean {
-  const normalize = process.platform === "win32" || isWindowsPath(left) || isWindowsPath(right)
-    ? (value: string) => path.win32.normalize(value).toLowerCase()
-    : (value: string) => path.posix.normalize(value);
-  return normalize(left) === normalize(right);
-}
-
 function openWorkspaceInRenderer(workspace: string, select: boolean): WorkspacePath {
   const workspacePath = toWorkspacePath(workspace);
   for (const window of BrowserWindow.getAllWindows()) {
@@ -434,6 +437,11 @@ function terminalGridTitle(kind: EmbeddedTerminalKind, index: number): string {
         ? ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"]
         : [];
   return titles[index] ?? `${kind}-${index + 1}`;
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value ?? undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -486,6 +494,70 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
       }
     });
   });
+}
+
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Stream a terminal's live output as Server-Sent Events. The current rolling
+ * buffer is replayed first as a `snapshot` event (so a remote viewer matches the
+ * on-screen state, and an EventSource reconnect re-syncs instead of duplicating),
+ * then every subsequent PTY chunk is pushed as a `data` event. Chunks are base64
+ * encoded because raw terminal output contains newlines and control bytes that
+ * would otherwise break SSE's line-based framing. Keystrokes continue to flow
+ * back over POST /terminals/write; this channel is output-only.
+ */
+function streamEmbeddedTerminal(
+  request: IncomingMessage,
+  response: ServerResponse,
+  terminalId: string,
+  maxChars: number,
+): void {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    Connection: "keep-alive",
+    // Disable proxy buffering so chunks are delivered immediately.
+    "X-Accel-Buffering": "no",
+  });
+  // An initial comment flushes headers so EventSource fires `open` right away.
+  response.write(": athena-control stream\n\n");
+
+  const send = (event: string, payloadBase64: string): void => {
+    response.write(`event: ${event}\ndata: ${payloadBase64}\n\n`);
+  };
+
+  let closed = false;
+  let unsubscribe: (() => void) | null = null;
+  let heartbeat: NodeJS.Timeout | null = null;
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe?.();
+  };
+
+  const snapshot = tailText(getEmbeddedTerminalBuffer(terminalId), maxChars);
+  send("snapshot", Buffer.from(snapshot, "utf8").toString("base64"));
+
+  unsubscribe = subscribeEmbeddedTerminalData(
+    terminalId,
+    (chunk) => {
+      if (chunk) send("data", Buffer.from(chunk, "utf8").toString("base64"));
+    },
+    (exitCode) => {
+      send("exit", Buffer.from(JSON.stringify({ exitCode }), "utf8").toString("base64"));
+      cleanup();
+      response.end();
+    },
+  );
+
+  heartbeat = setInterval(() => response.write(": keep-alive\n\n"), SSE_HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
+
+  request.on("close", cleanup);
+  response.on("close", cleanup);
+  response.on("error", cleanup);
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
@@ -568,12 +640,15 @@ function writeControlDiscovery(): void {
           pid: process.pid,
           running: state.running,
           lastError: state.lastError,
+          token: controlToken,
           updatedAt: new Date().toISOString(),
         },
         null,
         2,
       ),
-      "utf8",
+      // 0600: the token authorizes process spawning, so keep it readable only
+      // by the owning user even on shared machines.
+      { encoding: "utf8", mode: 0o600 },
     );
   } catch {
     // Discovery is best-effort; the in-app control server remains authoritative.

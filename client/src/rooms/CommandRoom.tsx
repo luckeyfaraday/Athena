@@ -308,9 +308,8 @@ export function CommandRoom({
 
       {activeTab === "terminals" ? (
         <div className="terminalStage embeddedStage slotTerminalStage">
-          {orderedSessions.map((session) => {
-            const inActiveWorkspace = sameWorkspacePath(session.workspace, workspace);
-            const displayed = inActiveWorkspace && displayedTerminalSessions.some((item) => item.id === session.id);
+          {visibleSessions.map((session) => {
+            const displayed = displayedTerminalSessions.some((item) => item.id === session.id);
             return (
             <div
               key={session.id}

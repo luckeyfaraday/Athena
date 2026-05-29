@@ -12,6 +12,7 @@ import {
   listEmbeddedTerminals,
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
+  writeEmbeddedTerminalInputRaw,
   subscribeEmbeddedTerminalData,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
@@ -64,6 +65,7 @@ type WriteTerminalRequest = {
   target?: string;
   text?: string;
   input?: string;
+  data?: string;
 };
 
 type OpenWorkspaceRequest = {
@@ -275,6 +277,19 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, { written: true, terminal: session });
       return;
     }
+    if (request.method === "POST" && url.pathname === "/terminals/input") {
+      const payload = parseRawInputRequest(await readJsonBody(request));
+      const session = await writeEmbeddedTerminalInputRaw(payload.target, payload.data).catch((error) => {
+        recordControlFailure({
+          kind: "input.failed",
+          detail: String(error),
+          preview: payload.data,
+        });
+        throw error;
+      });
+      sendJson(response, 200, { written: true, terminal: session });
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/terminals/kill") {
       const payload = parseKillTerminalRequest(await readJsonBody(request));
       const terminal = requireResolvedTerminal(payload.target);
@@ -339,6 +354,17 @@ function parseWriteTerminalRequest(body: unknown): { target: string; text: strin
   const text = stringValue(request.text) ?? stringValue(request.input);
   if (!text) throw new Error("text is required.");
   return { target, text };
+}
+
+// Raw input is written to the PTY verbatim, so `data` must NOT be trimmed:
+// a space keystroke or trailing control bytes are meaningful and must survive.
+function parseRawInputRequest(body: unknown): { target: string; data: string } {
+  const target = targetFromBody(body);
+  if (!target) throw new Error("terminal_id, session_id, or target is required.");
+  const request = body as WriteTerminalRequest;
+  const data = typeof request.data === "string" && request.data.length ? request.data : undefined;
+  if (!data) throw new Error("data is required.");
+  return { target, data };
 }
 
 function parseKillTerminalRequest(body: unknown): { target: string } {

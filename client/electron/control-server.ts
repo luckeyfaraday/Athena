@@ -12,6 +12,7 @@ import {
   listEmbeddedTerminals,
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
+  subscribeEmbeddedTerminalData,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
@@ -234,6 +235,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
         chars: buffer.length,
         max_chars: maxChars,
       });
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/stream")) {
+      const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/stream".length));
+      const terminal = requireResolvedTerminal(target);
+      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
+      streamEmbeddedTerminal(request, response, terminal.id, maxChars);
       return;
     }
     if (request.method === "POST" && url.pathname === "/workspaces/open") {
@@ -486,6 +494,70 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
       }
     });
   });
+}
+
+const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * Stream a terminal's live output as Server-Sent Events. The current rolling
+ * buffer is replayed first as a `snapshot` event (so a remote viewer matches the
+ * on-screen state, and an EventSource reconnect re-syncs instead of duplicating),
+ * then every subsequent PTY chunk is pushed as a `data` event. Chunks are base64
+ * encoded because raw terminal output contains newlines and control bytes that
+ * would otherwise break SSE's line-based framing. Keystrokes continue to flow
+ * back over POST /terminals/write; this channel is output-only.
+ */
+function streamEmbeddedTerminal(
+  request: IncomingMessage,
+  response: ServerResponse,
+  terminalId: string,
+  maxChars: number,
+): void {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    Connection: "keep-alive",
+    // Disable proxy buffering so chunks are delivered immediately.
+    "X-Accel-Buffering": "no",
+  });
+  // An initial comment flushes headers so EventSource fires `open` right away.
+  response.write(": athena-control stream\n\n");
+
+  const send = (event: string, payloadBase64: string): void => {
+    response.write(`event: ${event}\ndata: ${payloadBase64}\n\n`);
+  };
+
+  let closed = false;
+  let unsubscribe: (() => void) | null = null;
+  let heartbeat: NodeJS.Timeout | null = null;
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe?.();
+  };
+
+  const snapshot = tailText(getEmbeddedTerminalBuffer(terminalId), maxChars);
+  send("snapshot", Buffer.from(snapshot, "utf8").toString("base64"));
+
+  unsubscribe = subscribeEmbeddedTerminalData(
+    terminalId,
+    (chunk) => {
+      if (chunk) send("data", Buffer.from(chunk, "utf8").toString("base64"));
+    },
+    (exitCode) => {
+      send("exit", Buffer.from(JSON.stringify({ exitCode }), "utf8").toString("base64"));
+      cleanup();
+      response.end();
+    },
+  );
+
+  heartbeat = setInterval(() => response.write(": keep-alive\n\n"), SSE_HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
+
+  request.on("close", cleanup);
+  response.on("close", cleanup);
+  response.on("error", cleanup);
 }
 
 function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {

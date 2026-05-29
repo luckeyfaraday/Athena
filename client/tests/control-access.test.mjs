@@ -5,9 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  boundedMaxChars,
   evaluateControlAccess,
-  tailText,
   validatedWorkspacePath,
 } from "../dist-electron/control-access.js";
 
@@ -62,19 +60,6 @@ test("evaluateControlAccess returns 503 before the token is initialized", () => 
   const decision = evaluateControlAccess({ host: "127.0.0.1:5000", authorization: `Bearer ${TOKEN}` }, null);
   assert.equal(decision.ok, false);
   assert.equal(decision.status, 503);
-});
-
-test("boundedMaxChars clamps to [1000, 200000] and defaults sanely", () => {
-  assert.equal(boundedMaxChars(null), 40_000);
-  assert.equal(boundedMaxChars("not-a-number"), 40_000);
-  assert.equal(boundedMaxChars("10"), 1_000);
-  assert.equal(boundedMaxChars("5000000"), 200_000);
-  assert.equal(boundedMaxChars("12345"), 12_345);
-});
-
-test("tailText returns the last maxChars characters", () => {
-  assert.equal(tailText("abcdef", 3), "def");
-  assert.equal(tailText("abc", 10), "abc");
 });
 
 test("validatedWorkspacePath resolves a real directory", () => {

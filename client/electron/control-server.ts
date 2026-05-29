@@ -18,12 +18,15 @@ import {
 } from "./embedded-terminal.js";
 import { recordControlFailure } from "./control-events.js";
 import {
-  boundedMaxChars,
   evaluateControlAccess,
   sameControlPath,
-  tailText,
   validatedWorkspacePath,
 } from "./control-access.js";
+import {
+  boundedTerminalBufferMaxChars,
+  formatTerminalBuffer,
+  terminalBufferTail,
+} from "./terminal-buffer.js";
 import { toWorkspacePath, type WorkspacePath } from "./platform.js";
 
 type ControlState = {
@@ -227,20 +230,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/buffer")) {
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/buffer".length));
       const terminal = requireResolvedTerminal(target);
-      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
-      const buffer = tailText(getEmbeddedTerminalBuffer(terminal.id), maxChars);
+      const maxChars = boundedTerminalBufferMaxChars(url.searchParams.get("max_chars"));
+      const buffer = formatTerminalBuffer(getEmbeddedTerminalBuffer(terminal.id), maxChars);
       sendJson(response, 200, {
         terminal,
-        buffer,
-        chars: buffer.length,
-        max_chars: maxChars,
+        ...buffer,
       });
       return;
     }
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/stream")) {
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/stream".length));
       const terminal = requireResolvedTerminal(target);
-      const maxChars = boundedMaxChars(url.searchParams.get("max_chars"));
+      const maxChars = boundedTerminalBufferMaxChars(url.searchParams.get("max_chars"));
       streamEmbeddedTerminal(request, response, terminal.id, maxChars);
       return;
     }
@@ -537,7 +538,7 @@ function streamEmbeddedTerminal(
     unsubscribe?.();
   };
 
-  const snapshot = tailText(getEmbeddedTerminalBuffer(terminalId), maxChars);
+  const snapshot = terminalBufferTail(getEmbeddedTerminalBuffer(terminalId), maxChars);
   send("snapshot", Buffer.from(snapshot, "utf8").toString("base64"));
 
   unsubscribe = subscribeEmbeddedTerminalData(

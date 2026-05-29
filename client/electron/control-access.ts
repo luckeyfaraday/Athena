@@ -75,16 +75,6 @@ function timingSafeEquals(left: string, right: string): boolean {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-export function boundedMaxChars(value: string | null): number {
-  const parsed = Number(value ?? 40_000);
-  if (!Number.isFinite(parsed)) return 40_000;
-  return Math.max(1_000, Math.min(Math.floor(parsed), 200_000));
-}
-
-export function tailText(value: string, maxChars: number): string {
-  return value.length > maxChars ? value.slice(-maxChars) : value;
-}
-
 export function validatedWorkspacePath(value: unknown): string {
   const raw = String(value ?? "").trim();
   if (!raw) throw new Error("project_dir is required.");

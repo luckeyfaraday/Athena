@@ -34,13 +34,23 @@ class Run:
     error: str | None = None
 
 
-class RunRegistry:
-    """Tracks live runs and allocates deterministic agent ids per registry."""
+DEFAULT_MAX_RETAINED_RUNS = 500
 
-    def __init__(self) -> None:
+
+class RunRegistry:
+    """Tracks live runs and allocates deterministic agent ids per registry.
+
+    The registry is in-memory only. To bound memory (and the size of the
+    ``GET /agents/runs`` response) over a long-lived backend, completed runs
+    are evicted oldest-first once the total exceeds ``max_retained_runs``.
+    Active (pending/running) runs are never evicted.
+    """
+
+    def __init__(self, *, max_retained_runs: int = DEFAULT_MAX_RETAINED_RUNS) -> None:
         self._runs: dict[str, Run] = {}
         self._agent_counts: dict[str, int] = {}
         self._cancel_requested: set[str] = set()
+        self._max_retained_runs = max(1, max_retained_runs)
 
     def create_run(
         self,
@@ -72,7 +82,23 @@ class RunRegistry:
             updated_at=now,
         )
         self._runs[run.run_id] = run
+        self._evict_terminal_runs()
         return run
+
+    def _evict_terminal_runs(self) -> None:
+        """Drop oldest terminal runs once the registry exceeds its cap."""
+        overflow = len(self._runs) - self._max_retained_runs
+        if overflow <= 0:
+            return
+        # dict preserves insertion order, so the earliest-created runs come
+        # first. Only terminal runs are eligible for eviction.
+        for run_id in list(self._runs):
+            if overflow <= 0:
+                break
+            if self._runs[run_id].status in _TERMINAL_STATUSES:
+                del self._runs[run_id]
+                self._cancel_requested.discard(run_id)
+                overflow -= 1
 
     def get(self, run_id: str) -> Run:
         return self._runs[validate_run_id(run_id)]

@@ -162,6 +162,82 @@ export function getEmbeddedTerminalBuffer(id: string): string {
   return outputBuffers.get(id) ?? "";
 }
 
+type TerminalDataListener = (chunk: string) => void;
+type TerminalExitListener = (exitCode: number | null) => void;
+
+const dataListeners = new Map<string, Set<TerminalDataListener>>();
+const exitListeners = new Map<string, Set<TerminalExitListener>>();
+
+/**
+ * Subscribe to live PTY output for a terminal from inside the main process. This
+ * powers the control server's SSE stream endpoint (remote viewers such as the
+ * mobile app) alongside the existing renderer IPC fan-out. The listener receives
+ * raw terminal chunks exactly as they are appended to the rolling buffer.
+ * Returns an unsubscribe function; `onExit` (if provided) fires once when the
+ * terminal exits or crashes.
+ */
+export function subscribeEmbeddedTerminalData(
+  id: string,
+  onData: TerminalDataListener,
+  onExit?: TerminalExitListener,
+): () => void {
+  let dataSet = dataListeners.get(id);
+  if (!dataSet) {
+    dataSet = new Set();
+    dataListeners.set(id, dataSet);
+  }
+  dataSet.add(onData);
+
+  if (onExit) {
+    let exitSet = exitListeners.get(id);
+    if (!exitSet) {
+      exitSet = new Set();
+      exitListeners.set(id, exitSet);
+    }
+    exitSet.add(onExit);
+  }
+
+  return () => {
+    const currentData = dataListeners.get(id);
+    if (currentData) {
+      currentData.delete(onData);
+      if (currentData.size === 0) dataListeners.delete(id);
+    }
+    if (onExit) {
+      const currentExit = exitListeners.get(id);
+      if (currentExit) {
+        currentExit.delete(onExit);
+        if (currentExit.size === 0) exitListeners.delete(id);
+      }
+    }
+  };
+}
+
+function notifyTerminalData(id: string, chunk: string): void {
+  const listeners = dataListeners.get(id);
+  if (!listeners) return;
+  for (const listener of listeners) {
+    try {
+      listener(chunk);
+    } catch {
+      // A failing stream subscriber must not break PTY fan-out to other clients.
+    }
+  }
+}
+
+function notifyTerminalExit(id: string, exitCode: number | null): void {
+  const listeners = exitListeners.get(id);
+  if (!listeners) return;
+  for (const listener of Array.from(listeners)) {
+    try {
+      listener(exitCode);
+    } catch {
+      // Ignore subscriber errors raised during stream teardown.
+    }
+  }
+  exitListeners.delete(id);
+}
+
 export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | null {
   const normalized = target.trim();
   if (!normalized) return null;
@@ -540,10 +616,12 @@ function installPtyHostListeners(): void {
   ptyHost.on("data", ({ id, data }) => {
     recordTerminalOutput(id);
     appendBuffer(id, data);
+    notifyTerminalData(id, data);
     queueOutput(id, data);
   });
   ptyHost.on("exit", ({ id, exitCode }) => {
     flushOutput(id);
+    notifyTerminalExit(id, exitCode);
     const entry = terminals.get(id);
     if (!entry) return;
     entry.session = { ...entry.session, status: "exited", exitCode };
@@ -574,6 +652,7 @@ function installPtyHostListeners(): void {
     console.error("[Athena] PTY host crashed:", error);
     for (const id of ids) {
       flushOutput(id);
+      notifyTerminalExit(id, null);
       const entry = terminals.get(id);
       if (!entry) continue;
       entry.session = { ...entry.session, status: "failed", error };

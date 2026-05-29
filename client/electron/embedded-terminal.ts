@@ -589,6 +589,26 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
   return { ...entry.session };
 }
 
+/**
+ * Write raw bytes straight to the PTY with no line-submit sequencing. Unlike
+ * {@link submitEmbeddedTerminalInput}, nothing is appended — the caller controls
+ * every byte. This backs interactive remote input (e.g. mobile xterm onData),
+ * where keystrokes, arrows, and control codes must reach the agent TUI verbatim.
+ */
+export async function writeEmbeddedTerminalInputRaw(target: string, data: string): Promise<EmbeddedTerminalSession> {
+  const entry = requireTerminalTarget(target);
+  if (!data) throw new Error("Input data cannot be empty.");
+  recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview: data });
+  try {
+    await ptyHost.write(entry.session.id, data);
+  } catch (error) {
+    recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview: data, error: String(error) });
+    throw error;
+  }
+  recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview: data });
+  return { ...entry.session };
+}
+
 export async function resizeEmbeddedTerminal(id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> {
   const entry = terminals.get(id);
   if (!entry) return missingSession(id);

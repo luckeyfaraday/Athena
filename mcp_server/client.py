@@ -60,6 +60,28 @@ def get_electron_control_url(settings: Settings | None = None) -> str:
     raise RuntimeError("Context Workspace Electron control server is not available. Start the desktop app first.")
 
 
+def get_electron_control_token(settings: Settings | None = None) -> str | None:
+    """Return the shared secret the Electron control server requires.
+
+    Prefers an explicit env override, then the token published in the 0600
+    discovery file by the running desktop app. Returns None when neither is
+    available (callers then send no Authorization header and the server rejects
+    the request with 401, surfacing a clear "restart Athena" style error).
+    """
+    settings = settings or Settings()
+    if settings.electron_control_token:
+        return settings.electron_control_token
+    try:
+        if settings.electron_control_state_path.exists():
+            data = json.loads(settings.electron_control_state_path.read_text(encoding="utf-8"))
+            token = data.get("token")
+            if isinstance(token, str) and token.strip():
+                return token.strip()
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
 def get_electron_control_status(settings: Settings | None = None) -> dict[str, Any]:
     settings = settings or Settings()
     if settings.electron_control_url:
@@ -131,22 +153,27 @@ class ContextWorkspaceElectronClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings()
         self.base_url = get_electron_control_url(self.settings)
+        self.headers = _control_auth_headers(get_electron_control_token(self.settings))
 
     async def get(self, path: str, **params: Any) -> Any:
         async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
-            response = await client.get(f"{self.base_url}{path}", params=_compact_params(params))
+            response = await client.get(f"{self.base_url}{path}", params=_compact_params(params), headers=self.headers)
             response.raise_for_status()
             return response.json()
 
     async def post(self, path: str, json_body: dict[str, Any] | None = None) -> Any:
         async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
-            response = await client.post(f"{self.base_url}{path}", json=json_body or {})
+            response = await client.post(f"{self.base_url}{path}", json=json_body or {}, headers=self.headers)
             response.raise_for_status()
             return response.json()
 
 
 def _compact_params(params: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in params.items() if value is not None}
+
+
+def _control_auth_headers(token: str | None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _translate_backend_url_for_wsl(url: str, settings: Settings) -> str:

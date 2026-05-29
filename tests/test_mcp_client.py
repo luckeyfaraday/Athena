@@ -70,3 +70,34 @@ def test_resolv_conf_nameserver_can_supply_windows_host(tmp_path: Path) -> None:
     resolv.write_text("search localdomain\nnameserver 172.25.144.1\n", encoding="utf-8")
 
     assert client._windows_host_from_resolv_conf(resolv) == "172.25.144.1"
+
+
+def test_control_token_env_override_wins(tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(json.dumps({"baseUrl": "http://127.0.0.1:5", "token": "from-file"}), encoding="utf-8")
+    settings = Settings(electron_control_token="from-env", electron_control_state_path=state_path)
+
+    assert client.get_electron_control_token(settings) == "from-env"
+
+
+def test_control_token_read_from_discovery_file(tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(json.dumps({"baseUrl": "http://127.0.0.1:5", "token": "secret-123"}), encoding="utf-8")
+    settings = Settings(electron_control_token=None, electron_control_state_path=state_path)
+
+    assert client.get_electron_control_token(settings) == "secret-123"
+
+
+def test_control_token_absent_returns_none(tmp_path: Path) -> None:
+    state_path = tmp_path / "electron-control.json"
+    state_path.write_text(json.dumps({"baseUrl": "http://127.0.0.1:5"}), encoding="utf-8")
+    settings = Settings(electron_control_token=None, electron_control_state_path=state_path)
+
+    assert client.get_electron_control_token(settings) is None
+    # Missing file is also tolerated.
+    assert client.get_electron_control_token(Settings(electron_control_token=None, electron_control_state_path=tmp_path / "missing.json")) is None
+
+
+def test_control_auth_headers_shape() -> None:
+    assert client._control_auth_headers("abc") == {"Authorization": "Bearer abc"}
+    assert client._control_auth_headers(None) == {}

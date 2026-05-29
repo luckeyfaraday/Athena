@@ -391,6 +391,17 @@ From WSL, that file is available at:
 
 Set `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL` only when you need to override this discovery file.
 
+The Electron control server requires a per-launch secret token for every
+endpoint except `/health`. The desktop app generates the token at startup and
+writes it into `electron-control.json` (created with `0600` permissions). The
+MCP bridge reads the token from that discovery file automatically and sends it
+as a `Bearer` token, so no manual configuration is needed in the normal flow.
+When you override discovery with `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL`, also
+set `CONTEXT_WORKSPACE_ELECTRON_CONTROL_TOKEN` to the token from that file. The
+token, loopback-only `Host` enforcement, and rejection of cross-origin requests
+together prevent other local processes and malicious web pages from driving the
+control server (process spawning, terminal input injection, buffer reads).
+
 When Electron starts the backend, it configures a default recall refresh command:
 
 ```text

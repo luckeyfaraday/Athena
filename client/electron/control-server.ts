@@ -279,11 +279,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "POST" && url.pathname === "/terminals/input") {
       const payload = parseRawInputRequest(await readJsonBody(request));
+      const preview = rawInputPreview(payload.data);
       const session = await writeEmbeddedTerminalInputRaw(payload.target, payload.data).catch((error) => {
         recordControlFailure({
           kind: "input.failed",
           detail: String(error),
-          preview: payload.data,
+          preview,
         });
         throw error;
       });
@@ -365,6 +366,10 @@ function parseRawInputRequest(body: unknown): { target: string; data: string } {
   const data = typeof request.data === "string" && request.data.length ? request.data : undefined;
   if (!data) throw new Error("data is required.");
   return { target, data };
+}
+
+function rawInputPreview(data: string): string {
+  return `<raw PTY input: ${Buffer.byteLength(data, "utf8")} bytes>`;
 }
 
 function parseKillTerminalRequest(body: unknown): { target: string } {

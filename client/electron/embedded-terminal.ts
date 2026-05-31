@@ -598,15 +598,20 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
 export async function writeEmbeddedTerminalInputRaw(target: string, data: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminalTarget(target);
   if (!data) throw new Error("Input data cannot be empty.");
-  recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview: data });
+  const preview = rawInputPreview(data);
+  recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview });
   try {
     await ptyHost.write(entry.session.id, data);
   } catch (error) {
-    recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview: data, error: String(error) });
+    recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview, error: String(error) });
     throw error;
   }
-  recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview: data });
+  recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview });
   return { ...entry.session };
+}
+
+function rawInputPreview(data: string): string {
+  return `<raw PTY input: ${Buffer.byteLength(data, "utf8")} bytes>`;
 }
 
 export async function resizeEmbeddedTerminal(id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> {

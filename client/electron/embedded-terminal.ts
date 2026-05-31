@@ -24,7 +24,7 @@ import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.js";
 import { ptyHost } from "./pty-host-client.js";
-import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
+import { claudeProjectPathCandidates, newestCodexSessionIdForWorkspace, savedResumeSessionId, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import { rawInputPreview } from "./terminal-input.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
@@ -102,6 +102,8 @@ const PTY_FLUSH_INTERVAL_MS = 16;
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 1000;
 const CLAUDE_SESSION_DISCOVERY_ATTEMPTS = 20;
 const CLAUDE_SESSION_DISCOVERY_INTERVAL_MS = 750;
+const CODEX_SESSION_DISCOVERY_ATTEMPTS = 20;
+const CODEX_SESSION_DISCOVERY_INTERVAL_MS = 750;
 const pendingOutput = new Map<string, string>();
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
@@ -265,14 +267,15 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
     }
     for (const entry of plan.restore) {
       if (!fs.existsSync(entry.workspace)) continue;
+      const resumeSessionId = await resolveRestoreResumeSessionId(entry);
       const session = await spawnEmbeddedTerminal(entry.workspace, {
         kind: entry.kind,
         title: entry.title,
         cols: 96,
         rows: 28,
-        resumeSessionId: entry.resumeSessionId ?? undefined,
+        resumeSessionId: resumeSessionId ?? undefined,
         sessionLabel: entry.sessionLabel ?? undefined,
-        providerSessionId: entry.providerSessionId ?? undefined,
+        providerSessionId: entry.providerSessionId ?? resumeSessionId ?? undefined,
         contextMode: "none",
         controlSource: "restore",
       });
@@ -282,6 +285,16 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
   } finally {
     restoreInFlight = false;
   }
+}
+
+async function resolveRestoreResumeSessionId(entry: RestorableTerminal): Promise<string | null> {
+  const savedSessionId = savedResumeSessionId(entry);
+  if (savedSessionId) return savedSessionId;
+  if (entry.kind !== "codex") return null;
+
+  const startedAtMs = Date.parse(entry.createdAt);
+  const minMtimeMs = Number.isFinite(startedAtMs) ? startedAtMs - 10_000 : 0;
+  return newestCodexSessionIdForWorkspace(path.join(os.homedir(), ".codex", "sessions"), entry.workspace, minMtimeMs);
 }
 
 export function clearSavedEmbeddedTerminalRestores(): number {
@@ -534,7 +547,7 @@ export async function spawnEmbeddedTerminal(
     });
 
     emit("embedded-terminal:session", session);
-    maybeDiscoverClaudeSessionId(session.id, cwd, restoreEntry.createdAt);
+    maybeDiscoverProviderSessionId(session.id, cwd, restoreEntry.createdAt);
     return { ...session };
   } catch (error) {
     const failed = { ...session, status: "failed" as const, error: String(error) };
@@ -1001,10 +1014,28 @@ function defaultSessionLabel(kind: EmbeddedTerminalKind, resumeSessionId?: strin
   return resumeSessionId ? resumeSessionId : "New";
 }
 
-function maybeDiscoverClaudeSessionId(terminalId: string, workspace: string, createdAt: string): void {
+function maybeDiscoverProviderSessionId(terminalId: string, workspace: string, createdAt: string): void {
   const entry = terminals.get(terminalId);
-  if (!entry || entry.session.kind !== "claude" || entry.session.providerSessionId) return;
-  void discoverClaudeSessionId(terminalId, workspace, createdAt);
+  if (!entry || entry.session.providerSessionId) return;
+  if (entry.session.kind === "claude") void discoverClaudeSessionId(terminalId, workspace, createdAt);
+  else if (entry.session.kind === "codex") void discoverCodexSessionId(terminalId, workspace, createdAt);
+}
+
+async function discoverCodexSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
+  const startedAtMs = Date.parse(createdAt);
+  const minMtimeMs = Number.isFinite(startedAtMs) ? startedAtMs - 10_000 : Date.now() - 10_000;
+  const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
+
+  for (let attempt = 0; attempt < CODEX_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+    const entry = terminals.get(terminalId);
+    if (!entry || entry.session.kind !== "codex" || entry.session.providerSessionId || entry.session.status !== "running") return;
+    const sessionId = await newestCodexSessionIdForWorkspace(sessionsDir, workspace, minMtimeMs);
+    if (sessionId) {
+      attachProviderSessionId(terminalId, sessionId);
+      return;
+    }
+    await delay(CODEX_SESSION_DISCOVERY_INTERVAL_MS);
+  }
 }
 
 async function discoverClaudeSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
@@ -1065,7 +1096,7 @@ async function claudeSessionIdFromFile(filePath: string, fallback: string): Prom
 
 function attachProviderSessionId(terminalId: string, providerSessionId: string): void {
   const entry = terminals.get(terminalId);
-  if (!entry || entry.session.kind !== "claude") return;
+  if (!entry || (entry.session.kind !== "claude" && entry.session.kind !== "codex")) return;
   entry.session = {
     ...entry.session,
     providerSessionId,

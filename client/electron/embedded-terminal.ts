@@ -26,6 +26,7 @@ import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.j
 import { ptyHost } from "./pty-host-client.js";
 import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
+import { rawInputPreview } from "./terminal-input.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -598,14 +599,15 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
 export async function writeEmbeddedTerminalInputRaw(target: string, data: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminalTarget(target);
   if (!data) throw new Error("Input data cannot be empty.");
-  recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview: data });
+  const preview = rawInputPreview(data);
+  recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview });
   try {
     await ptyHost.write(entry.session.id, data);
   } catch (error) {
-    recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview: data, error: String(error) });
+    recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview, error: String(error) });
     throw error;
   }
-  recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview: data });
+  recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview });
   return { ...entry.session };
 }
 

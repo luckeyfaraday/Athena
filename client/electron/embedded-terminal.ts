@@ -26,6 +26,7 @@ import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.j
 import { ptyHost } from "./pty-host-client.js";
 import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
+import { rawInputPreview } from "./terminal-input.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -608,10 +609,6 @@ export async function writeEmbeddedTerminalInputRaw(target: string, data: string
   }
   recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview });
   return { ...entry.session };
-}
-
-function rawInputPreview(data: string): string {
-  return `<raw PTY input: ${Buffer.byteLength(data, "utf8")} bytes>`;
 }
 
 export async function resizeEmbeddedTerminal(id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> {

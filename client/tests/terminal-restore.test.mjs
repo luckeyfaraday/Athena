@@ -128,6 +128,25 @@ test("codex session discovery ignores other workspaces and old files", async () 
   assert.equal(sessionId, "current-session");
 });
 
+test("codex session discovery does not select nested workspace sessions", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-sessions-"));
+  const workspace = path.join(root, "workspace");
+  const nestedWorkspace = path.join(workspace, "nested");
+  const sessions = path.join(root, "sessions");
+  await fs.mkdir(nestedWorkspace, { recursive: true });
+  await fs.mkdir(sessions, { recursive: true });
+  const rootFile = path.join(sessions, "root.jsonl");
+  const nestedFile = path.join(sessions, "nested.jsonl");
+  await fs.writeFile(rootFile, JSON.stringify({ type: "session_meta", payload: { id: "root-session", cwd: workspace } }));
+  await fs.writeFile(nestedFile, JSON.stringify({ type: "session_meta", payload: { id: "nested-session", cwd: nestedWorkspace } }));
+  await fs.utimes(rootFile, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
+  await fs.utimes(nestedFile, new Date(), new Date());
+
+  const sessionId = await newestCodexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
+
+  assert.equal(sessionId, "root-session");
+});
+
 function currentClaudeEncoding(workspace) {
   return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
 }

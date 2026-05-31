@@ -58,7 +58,7 @@ export async function newestCodexSessionIdForWorkspace(sessionsDir: string, work
       const stat = await fs.promises.stat(filePath);
       if (stat.mtimeMs < minMtimeMs) continue;
       const metadata = await readCodexJsonlMetadata(filePath);
-      if (!metadata.sessionId || !metadata.cwd || !sameOrDescendantPath(metadata.cwd, workspace)) continue;
+      if (!metadata.sessionId || !metadata.cwd || !samePath(metadata.cwd, workspace)) continue;
       candidates.push({ id: metadata.sessionId, mtimeMs: stat.mtimeMs });
     } catch {
       // Codex session discovery is best-effort; a failed file should not block restore.
@@ -146,11 +146,9 @@ function stringProperty(value: Record<string, unknown> | null, key: string): str
   return typeof item === "string" && item.trim() ? item.trim() : null;
 }
 
-function sameOrDescendantPath(candidate: string, root: string): boolean {
+function samePath(candidate: string, root: string): boolean {
   try {
-    const normalizedCandidate = path.resolve(candidate);
-    const normalizedRoot = path.resolve(root);
-    return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+    return path.resolve(candidate) === path.resolve(root);
   } catch {
     return candidate === root;
   }

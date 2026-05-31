@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
@@ -57,18 +58,29 @@ test("workspace restore keeps already live terminals instead of restoring duplic
 });
 
 test("claude project path candidates include current and legacy encodings", () => {
+  const projectsDir = path.join(path.sep, "home", "dev", ".claude", "projects");
+  const project = path.join(path.sep, "home", "dev", "My Project");
+  const dottedProject = path.join(path.sep, "home", "dev", "project.name");
   assert.deepEqual(
-    claudeProjectPathCandidates("/home/dev/.claude/projects", "/home/dev/My Project"),
+    claudeProjectPathCandidates(projectsDir, project),
     [
-      "/home/dev/.claude/projects/-home-dev-My-Project",
-      "/home/dev/.claude/projects/-home-dev-My Project",
+      path.join(projectsDir, currentClaudeEncoding(project)),
+      path.join(projectsDir, legacyClaudeEncoding(project)),
     ],
   );
 
   assert.deepEqual(
-    claudeProjectPathCandidates("/home/dev/.claude/projects", "/home/dev/project.name"),
+    claudeProjectPathCandidates(projectsDir, dottedProject),
     [
-      "/home/dev/.claude/projects/-home-dev-project.name",
+      path.join(projectsDir, currentClaudeEncoding(dottedProject)),
     ],
   );
 });
+
+function currentClaudeEncoding(workspace) {
+  return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
+}
+
+function legacyClaudeEncoding(workspace) {
+  return path.resolve(workspace).replace(/:/g, "").replace(/[\\/]/g, "-");
+}

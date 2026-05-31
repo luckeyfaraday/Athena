@@ -16,9 +16,15 @@ import { quoteShell } from "../dist-electron/platform.js";
 // as '\'' . A dangerous payload must therefore never appear unescaped.
 const INJECTION = "'; rm -rf ~; echo '";
 
-test("terminalLaunch uses bash -lc on non-Windows platforms", () => {
+test("terminalLaunch uses the platform launch shell", () => {
   const launch = terminalLaunch("codex", "/home/dev/project", "/tmp/prompt.md");
-  // On the Linux test runner this is the bash branch.
+  if (process.platform === "win32") {
+    assert.equal(launch.command, "powershell.exe");
+    assert.equal(launch.args[0], "-NoLogo");
+    assert.equal(launch.args[4], "-Command");
+    assert.equal(typeof launch.args[5], "string");
+    return;
+  }
   assert.equal(launch.command, "bash");
   assert.equal(launch.args[0], "-lc");
   assert.equal(typeof launch.args[1], "string");

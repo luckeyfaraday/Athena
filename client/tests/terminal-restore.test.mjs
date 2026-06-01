@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { claudeProjectPathCandidates, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
+import { claudeProjectPathCandidates, newestCodexSessionIdForWorkspace, savedResumeSessionId, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
 
 function entry(id, kind, workspace = "/home/dev/project", extras = {}) {
   return {
@@ -57,6 +59,17 @@ test("workspace restore keeps already live terminals instead of restoring duplic
   assert.deepEqual(plan.retained.map((item) => item.id), ["other-codex"]);
 });
 
+test("restore uses provider session id when resume session id is missing", () => {
+  assert.equal(
+    savedResumeSessionId(entry("codex-provider-only", "codex", "/home/dev/project", { providerSessionId: "codex-session" })),
+    "codex-session",
+  );
+  assert.equal(
+    savedResumeSessionId(entry("codex-resume", "codex", "/home/dev/project", { providerSessionId: "provider-session", resumeSessionId: "resume-session" })),
+    "resume-session",
+  );
+});
+
 test("claude project path candidates include current and legacy encodings", () => {
   const projectsDir = path.join(path.sep, "home", "dev", ".claude", "projects");
   const project = path.join(path.sep, "home", "dev", "My Project");
@@ -75,6 +88,63 @@ test("claude project path candidates include current and legacy encodings", () =
       path.join(projectsDir, currentClaudeEncoding(dottedProject)),
     ],
   );
+});
+
+test("codex session discovery reads native jsonl metadata for the selected workspace", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-sessions-"));
+  const workspace = path.join(root, "workspace");
+  const sessions = path.join(root, "sessions", "2026", "05", "31");
+  await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(sessions, { recursive: true });
+  await fs.writeFile(
+    path.join(sessions, "rollout.jsonl"),
+    [
+      JSON.stringify({ type: "session_meta", payload: { id: "codex-session-1", cwd: workspace } }),
+      JSON.stringify({ type: "turn_context", payload: { cwd: workspace, model: "gpt-5" } }),
+    ].join("\n"),
+  );
+
+  const sessionId = await newestCodexSessionIdForWorkspace(path.join(root, "sessions"), workspace, Date.now() - 5_000);
+
+  assert.equal(sessionId, "codex-session-1");
+});
+
+test("codex session discovery ignores other workspaces and old files", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-sessions-"));
+  const workspace = path.join(root, "workspace");
+  const otherWorkspace = path.join(root, "other");
+  const sessions = path.join(root, "sessions");
+  await fs.mkdir(sessions, { recursive: true });
+  const oldFile = path.join(sessions, "old.jsonl");
+  const otherFile = path.join(sessions, "other.jsonl");
+  const currentFile = path.join(sessions, "current.jsonl");
+  await fs.writeFile(oldFile, JSON.stringify({ type: "session_meta", payload: { id: "old-session", cwd: workspace } }));
+  await fs.utimes(oldFile, new Date(Date.now() - 20_000), new Date(Date.now() - 20_000));
+  await fs.writeFile(otherFile, JSON.stringify({ type: "session_meta", payload: { id: "other-session", cwd: otherWorkspace } }));
+  await fs.writeFile(currentFile, JSON.stringify({ type: "session_meta", payload: { id: "current-session", cwd: workspace } }));
+
+  const sessionId = await newestCodexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
+
+  assert.equal(sessionId, "current-session");
+});
+
+test("codex session discovery does not select nested workspace sessions", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-sessions-"));
+  const workspace = path.join(root, "workspace");
+  const nestedWorkspace = path.join(workspace, "nested");
+  const sessions = path.join(root, "sessions");
+  await fs.mkdir(nestedWorkspace, { recursive: true });
+  await fs.mkdir(sessions, { recursive: true });
+  const rootFile = path.join(sessions, "root.jsonl");
+  const nestedFile = path.join(sessions, "nested.jsonl");
+  await fs.writeFile(rootFile, JSON.stringify({ type: "session_meta", payload: { id: "root-session", cwd: workspace } }));
+  await fs.writeFile(nestedFile, JSON.stringify({ type: "session_meta", payload: { id: "nested-session", cwd: nestedWorkspace } }));
+  await fs.utimes(rootFile, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
+  await fs.utimes(nestedFile, new Date(), new Date());
+
+  const sessionId = await newestCodexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
+
+  assert.equal(sessionId, "root-session");
 });
 
 function currentClaudeEncoding(workspace) {

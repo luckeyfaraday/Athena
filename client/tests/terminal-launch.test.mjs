@@ -39,7 +39,7 @@ test("launchCommand cd's into the workspace and execs a login shell for plain sh
 test("launchCommand for an agent guards on command availability before launching", () => {
   const command = launchCommand("codex", "/home/dev/project", "/tmp/prompt.md");
   assert.match(command, /command -v 'codex'/);
-  assert.match(command, /codex --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
+  assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
 
 test("launchCommand single-quote-escapes a malicious workspace path", () => {
@@ -53,7 +53,7 @@ test("launchResumeCommand wires the provider resume invocation with quoted ids",
   const command = launchResumeCommand("claude", "/home/dev/project", "sess-123");
   assert.match(command, /claude .*--resume 'sess-123'/);
   const codex = launchResumeCommand("codex", "/home/dev/project", "abc-1");
-  assert.match(codex, /codex resume --cd '\/home\/dev\/project' 'abc-1'/);
+  assert.match(codex, /codex -c shell_environment_policy.inherit=all resume --cd '\/home\/dev\/project' 'abc-1'/);
 });
 
 test("launchResumeCommand escapes a malicious session id", () => {
@@ -66,8 +66,8 @@ test("agentConfig codex args inline the prompt via double-quoted command substit
   const codex = agentConfig("codex");
   assert.equal(codex.executable, "codex");
   // Double-quoted $(...) is safe: bash does not re-evaluate the substituted text.
-  assert.equal(codex.args("/ws", "/tmp/p.md", "bash"), `--cd '/ws' -- "$(cat '/tmp/p.md')"`);
-  assert.equal(codex.args("/ws", null, "bash"), `--cd '/ws'`);
+  assert.equal(codex.args("/ws", "/tmp/p.md", "bash"), `-c shell_environment_policy.inherit=all --cd '/ws' -- "$(cat '/tmp/p.md')"`);
+  assert.equal(codex.args("/ws", null, "bash"), `-c shell_environment_policy.inherit=all --cd '/ws'`);
 });
 
 test("agentConfig claude args include the mcp config flag and quote the prompt path", () => {
@@ -92,7 +92,18 @@ test("PowerShell builders pass values through quotePowerShell, not raw interpola
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);
   assert.match(command, /Set-Location -LiteralPath \$workspace/);
   // Codex prompt is splatted as an array element ($prompt), never string-built.
-  assert.match(command, /@\('--cd', \$workspace, '--', \$prompt\)/);
+  assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all', '--cd', \$workspace, '--', \$prompt\)/);
+});
+
+test("PowerShell builder escapes embedded double-quotes in the prompt for the native arg hop", () => {
+  // Windows PowerShell 5.1 does not escape embedded double-quotes when building a native
+  // command line, so npm agent shims (codex.ps1 / claude) that re-forward $args to node would
+  // otherwise shatter a quote-containing prompt into multiple argv tokens (e.g. a stray
+  // "hermes" subcommand). The prompt must be read with embedded `"` pre-escaped as `\"`.
+  for (const kind of ["codex", "claude", "opencode"]) {
+    const command = launchPowerShellCommand(kind, "C:\\ws", "C:\\tmp\\p.md", null);
+    assert.match(command, /\$prompt = \(Get-Content -LiteralPath \$promptPath -Raw\)\.Replace\('"', '\\"'\)/);
+  }
 });
 
 test("PowerShell resume builder quotes the session id", () => {

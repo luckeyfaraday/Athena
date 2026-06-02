@@ -26,7 +26,7 @@ class CodexAdapter:
         self.output_last_message = output_last_message
 
     def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
-        argv = [self.executable, "exec", "--cd", str(run.project_dir)]
+        argv = [self.executable, "-c", "shell_environment_policy.inherit=all", "exec", "--cd", str(run.project_dir)]
         if self.skip_git_repo_check:
             argv.append("--skip-git-repo-check")
         if self.use_json:

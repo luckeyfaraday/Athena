@@ -211,11 +211,13 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
   return {
     label: "Codex",
     executable: "codex",
-    powerShellCommand: "$agentArgs = @('--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
-    powerShellCommandWithoutPrompt: "$agentArgs = @('--cd', $workspace); & $agentCommand @agentArgs",
-    resumePowerShellCommand: "$agentArgs = @('resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
-    args: (cwd, promptPath) => promptPath ? `--cd ${quoteShell(cwd)} -- "$(cat ${quoteShell(promptPath)})"` : `--cd ${quoteShell(cwd)}`,
-    resumeArgs: (cwd, sessionId) => `codex resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
+    powerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all', '--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
+    powerShellCommandWithoutPrompt: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all', '--cd', $workspace); & $agentCommand @agentArgs",
+    resumePowerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all', 'resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
+    args: (cwd, promptPath) => promptPath
+      ? `-c shell_environment_policy.inherit=all --cd ${quoteShell(cwd)} -- "$(cat ${quoteShell(promptPath)})"`
+      : `-c shell_environment_policy.inherit=all --cd ${quoteShell(cwd)}`,
+    resumeArgs: (cwd, sessionId) => `codex -c shell_environment_policy.inherit=all resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };
 }
 

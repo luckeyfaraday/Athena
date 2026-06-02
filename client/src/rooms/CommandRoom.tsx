@@ -108,16 +108,24 @@ export function CommandRoom({
 
   useEffect(() => {
     const sessionIds = new Set(sessions.map((session) => session.id));
+    const visibleSessionIds = new Set(
+      sessions
+        .filter((session) => sameWorkspacePath(session.workspace, workspace))
+        .map((session) => session.id),
+    );
     setCollapsedPaneIds((current) => new Set([...current].filter((id) => sessionIds.has(id))));
-    setMaximizedPaneId((current) => current && sessionIds.has(current) ? current : null);
-  }, [sessions]);
+    setMaximizedPaneId((current) => current && visibleSessionIds.has(current) ? current : null);
+  }, [sessions, workspace]);
 
   const orderedSessions = paneOrder
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
   const visibleSessions = orderedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace));
-  const displayedTerminalSessions = maximizedPaneId
-    ? visibleSessions.filter((session) => session.id === maximizedPaneId)
+  const activeMaximizedPaneId = maximizedPaneId && visibleSessions.some((session) => session.id === maximizedPaneId)
+    ? maximizedPaneId
+    : null;
+  const displayedTerminalSessions = activeMaximizedPaneId
+    ? visibleSessions.filter((session) => session.id === activeMaximizedPaneId)
     : visibleSessions;
   const visibleAgentSessions = agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session)));
   const providerTabs = useMemo(() => {
@@ -320,7 +328,7 @@ export function CommandRoom({
                 dragState?.id === session.id ? "dragging" : "",
                 dragState?.targetId === session.id ? "dropTarget" : "",
                 collapsedPaneIds.has(session.id) ? "collapsed" : "",
-                maximizedPaneId === session.id ? "maximized" : "",
+                activeMaximizedPaneId === session.id ? "maximized" : "",
               ].filter(Boolean).join(" ")}
               aria-hidden={!displayed}
               style={

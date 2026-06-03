@@ -7,6 +7,7 @@ import test from "node:test";
 import { installManagedAgentSkills, managedSkillTargets } from "../dist-electron/agent-skills.js";
 
 const FIXED_NOW = new Date("2026-06-02T12:00:00.000Z");
+const SKILL_NAME = "athena-context-workspace";
 
 test("installManagedAgentSkills installs Athena skill for supported agents", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "athena-skills-"));
@@ -23,6 +24,16 @@ test("installManagedAgentSkills installs Athena skill for supported agents", () 
 
   const manifest = JSON.parse(fs.readFileSync(path.join(home, ".context-workspace", "agent-skills.json"), "utf8"));
   assert.equal(Object.keys(manifest.entries).length, 3);
+});
+
+test("managedSkillTargets uses each agent's native skill directory", () => {
+  const home = path.join(path.sep, "home", "dev");
+
+  assert.deepEqual(managedSkillTargets(home), [
+    { target: "codex", destinationPath: path.join(home, ".codex", "skills", SKILL_NAME) },
+    { target: "claude", destinationPath: path.join(home, ".claude", "skills", SKILL_NAME) },
+    { target: "opencode", destinationPath: path.join(home, ".config", "opencode", "skills", SKILL_NAME) },
+  ]);
 });
 
 test("installManagedAgentSkills updates only previously managed unchanged skills", () => {

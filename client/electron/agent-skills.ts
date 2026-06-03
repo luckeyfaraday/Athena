@@ -85,7 +85,7 @@ export function resolveBundledSkillsRoot(appRoot = path.resolve(__dirname, "..")
 
 export function managedSkillTargets(homeDir: string): { target: AgentSkillTarget; destinationPath: string }[] {
   return [
-    { target: "codex", destinationPath: path.join(homeDir, ".agents", "skills", ATHENA_SKILL_NAME) },
+    { target: "codex", destinationPath: path.join(homeDir, ".codex", "skills", ATHENA_SKILL_NAME) },
     { target: "claude", destinationPath: path.join(homeDir, ".claude", "skills", ATHENA_SKILL_NAME) },
     { target: "opencode", destinationPath: path.join(homeDir, ".config", "opencode", "skills", ATHENA_SKILL_NAME) },
   ];

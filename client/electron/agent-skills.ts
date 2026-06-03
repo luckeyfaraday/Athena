@@ -62,7 +62,7 @@ export function installManagedAgentSkills(options: InstallManagedAgentSkillsOpti
     });
   });
 
-  if (results.some((result) => result.status === "installed" || result.status === "updated" || result.status === "unchanged")) {
+  if (results.some((result) => result.status === "installed" || result.status === "updated")) {
     writeManifest(manifestPath, manifest, now);
   }
 
@@ -116,7 +116,6 @@ function installManagedSkill(input: {
 
     const currentHash = hashDirectory(input.destinationPath);
     if (currentHash === sourceHash) {
-      recordManifestEntry(input, sourceHash, currentHash, entryKey, previous);
       return result(input, "unchanged");
     }
 

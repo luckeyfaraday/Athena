@@ -53,6 +53,22 @@ test("installManagedAgentSkills updates only previously managed unchanged skills
   }
 });
 
+test("installManagedAgentSkills does not rewrite manifest when skills are unchanged", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "athena-skills-unchanged-"));
+  const home = path.join(root, "home");
+  const sourceRoot = path.join(root, "resources", "agent-skills");
+  writeSkill(sourceRoot, "Initial instructions");
+
+  installManagedAgentSkills({ homeDir: home, sourceRoot, now: FIXED_NOW });
+  const manifestPath = path.join(home, ".context-workspace", "agent-skills.json");
+  const manifestBefore = fs.readFileSync(manifestPath, "utf8");
+
+  const results = installManagedAgentSkills({ homeDir: home, sourceRoot, now: new Date("2026-06-02T12:10:00.000Z") });
+
+  assert.deepEqual(results.map((result) => result.status), ["unchanged", "unchanged", "unchanged"]);
+  assert.equal(fs.readFileSync(manifestPath, "utf8"), manifestBefore);
+});
+
 test("installManagedAgentSkills skips user-owned or modified skill directories", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "athena-skills-skip-"));
   const home = path.join(root, "home");

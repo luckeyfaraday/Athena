@@ -172,7 +172,12 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
-    promptPath ? "$prompt = Get-Content -LiteralPath $promptPath -Raw" : "",
+    // Windows PowerShell 5.1 wraps space-containing native args in quotes but does NOT escape
+    // embedded double-quotes, so a multi-line prompt containing `"` (e.g. JSON examples) gets
+    // shattered into multiple argv tokens when agent launchers (codex.ps1 / claude npm shims)
+    // re-forward $args to node. Pre-escaping `"` as `\"` makes CommandLineToArgvW treat them as
+    // literal quotes inside a single argument. See agentConfig powerShellCommand.
+    promptPath ? "$prompt = (Get-Content -LiteralPath $promptPath -Raw).Replace('\"', '\\\"')" : "",
     promptPath ? agent.powerShellCommand : agent.powerShellCommandWithoutPrompt,
   ].join("; ");
 }

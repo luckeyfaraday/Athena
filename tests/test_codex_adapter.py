@@ -18,6 +18,8 @@ def test_codex_adapter_builds_non_interactive_command(tmp_path: Path) -> None:
 
     assert command.argv == [
         "codex",
+        "-c",
+        "shell_environment_policy.inherit=all",
         "exec",
         "--cd",
         str(tmp_path.resolve()),

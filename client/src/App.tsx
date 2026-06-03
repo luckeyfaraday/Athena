@@ -1010,7 +1010,7 @@ export function App() {
             {activeRoom === "command" && (
               <CommandRoom
                 workspace={workspace}
-                sessions={embeddedSessions}
+                sessions={activeEmbeddedSessions}
                 agentSessions={agentSessions}
                 busy={busy}
                 focused={terminalFocus}

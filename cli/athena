@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Convenience wrapper so you can run `./cli/athena ...` without remembering the
+# `python -m cli` form. Resolves the repo root from this script's location.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec python3 -m cli "$@"

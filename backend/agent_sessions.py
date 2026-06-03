@@ -57,15 +57,21 @@ class AgentSession:
 
 
 def list_native_agent_sessions(
-    project_dir: str | Path,
+    project_dir: str | Path | None,
     *,
     home_dir: str | Path | None = None,
     provider: AgentSessionProvider | None = None,
     query: str = "",
     limit: int = 100,
 ) -> list[AgentSession]:
-    """Return historical native agent sessions for a project directory."""
-    workspace = Path(project_dir).expanduser().resolve()
+    """Return historical native agent sessions.
+
+    When ``project_dir`` is a path, only sessions in that workspace are returned.
+    When ``project_dir`` is ``None``, sessions across *all* workspaces are
+    returned (each carries its real ``workspace`` and resume command), which the
+    callers use to aggregate sessions by project.
+    """
+    workspace = Path(project_dir).expanduser().resolve() if project_dir is not None else None
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
     providers = [provider] if provider else ["codex", "opencode", "claude", "hermes"]
 
@@ -126,8 +132,12 @@ def read_agent_session_transcript(
     return _bounded_text(markdown, max_bytes=max_bytes, tail=tail)
 
 
-def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
-    jsonl_metadata = _read_codex_jsonl_metadata(workspace, home)
+def _read_codex_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
+    jsonl_metadata = (
+        _read_codex_jsonl_metadata(workspace, home)
+        if workspace is not None
+        else _read_codex_jsonl_metadata_for_all(home)
+    )
     db_path = home / ".codex" / "state_5.sqlite"
     sessions: list[AgentSession] = []
     seen_ids: set[str] = set()
@@ -145,8 +155,8 @@ def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
             (MAX_PROVIDER_ROWS,),
         )
         for row in rows:
-            session_workspace = _string_value(row[1]) or str(workspace)
-            if not _same_or_descendant_path(session_workspace, workspace):
+            session_workspace = _string_value(row[1]) or (str(workspace) if workspace else "")
+            if workspace is not None and not _same_or_descendant_path(session_workspace, workspace):
                 continue
             session_id = _string_value(row[0])
             if not session_id:
@@ -171,7 +181,7 @@ def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                     status="historical",
                     terminal_id=None,
                     pid=None,
-                    resume_command=f"codex resume --cd {_quote_shell_arg(str(workspace))} {_quote_shell_arg(session_id)}",
+                    resume_command=f"codex resume --cd {_quote_shell_arg(session_workspace or str(workspace or ''))} {_quote_shell_arg(session_id)}",
                     metadata=enriched,
                 )
             )
@@ -180,7 +190,7 @@ def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
     for session_id, metadata in jsonl_metadata.items():
         if session_id in seen_ids:
             continue
-        session_workspace = _metadata_string(metadata, "cwd") or str(workspace)
+        session_workspace = _metadata_string(metadata, "cwd") or (str(workspace) if workspace else "")
         sessions.append(
             AgentSession(
                 id=session_id,
@@ -195,7 +205,7 @@ def _read_codex_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                 status="historical",
                 terminal_id=None,
                 pid=None,
-                resume_command=f"codex resume --cd {_quote_shell_arg(str(workspace))} {_quote_shell_arg(session_id)}",
+                resume_command=f"codex resume --cd {_quote_shell_arg(session_workspace or str(workspace or ''))} {_quote_shell_arg(session_id)}",
                 metadata=metadata,
             )
         )
@@ -402,7 +412,7 @@ def _render_codex_event(entry: dict[str, Any]) -> str | None:
     return None
 
 
-def _read_opencode_sessions(workspace: Path, home: Path) -> list[AgentSession]:
+def _read_opencode_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
     db_path = home / ".local" / "share" / "opencode" / "opencode.db"
     if not db_path.exists():
         return []
@@ -420,8 +430,8 @@ def _read_opencode_sessions(workspace: Path, home: Path) -> list[AgentSession]:
     )
     sessions: list[AgentSession] = []
     for row in rows:
-        session_workspace = _string_value(row[1]) or _string_value(row[7]) or str(workspace)
-        if not _same_or_descendant_path(session_workspace, workspace):
+        session_workspace = _string_value(row[1]) or _string_value(row[7]) or (str(workspace) if workspace else "")
+        if workspace is not None and not _same_or_descendant_path(session_workspace, workspace):
             continue
         session_id = _string_value(row[0])
         if not session_id:
@@ -440,7 +450,7 @@ def _read_opencode_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                 status="historical",
                 terminal_id=None,
                 pid=None,
-                resume_command=f"opencode {_quote_shell_arg(str(workspace))} --session {_quote_shell_arg(session_id)}",
+                resume_command=f"opencode {_quote_shell_arg(session_workspace or str(workspace or ''))} --session {_quote_shell_arg(session_id)}",
             )
         )
     return sessions
@@ -573,12 +583,12 @@ def _read_hermes_transcript(session_id: str, home: Path) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _read_claude_sessions(workspace: Path, home: Path) -> list[AgentSession]:
+def _read_claude_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
     projects_dir = home / ".claude" / "projects"
     if not projects_dir.exists():
         return []
 
-    candidate_dirs = _claude_project_path_candidates(projects_dir, workspace)
+    candidate_dirs = _claude_project_path_candidates(projects_dir, workspace) if workspace is not None else []
 
     seen_dirs: set[Path] = set()
     seen_files: set[Path] = set()
@@ -602,7 +612,7 @@ def _read_claude_sessions(workspace: Path, home: Path) -> list[AgentSession]:
     return sessions
 
 
-def _read_claude_session_file(file_path: Path, workspace: Path, *, allow_missing_cwd: bool) -> AgentSession | None:
+def _read_claude_session_file(file_path: Path, workspace: Path | None, *, allow_missing_cwd: bool) -> AgentSession | None:
     try:
         stat = file_path.stat()
         lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()[:200]
@@ -634,7 +644,7 @@ def _read_claude_session_file(file_path: Path, workspace: Path, *, allow_missing
             title = _clean_session_title(_message_content(message))
 
     if cwd:
-        if not _same_or_descendant_path(cwd, workspace):
+        if workspace is not None and not _same_or_descendant_path(cwd, workspace):
             return None
     elif not allow_missing_cwd:
         return None
@@ -642,7 +652,7 @@ def _read_claude_session_file(file_path: Path, workspace: Path, *, allow_missing
         id=session_id,
         provider="claude",
         title=title or "Claude Code session",
-        workspace=cwd or str(workspace),
+        workspace=cwd or (str(workspace) if workspace else ""),
         branch=branch,
         model=model,
         agent=None,
@@ -655,7 +665,7 @@ def _read_claude_session_file(file_path: Path, workspace: Path, *, allow_missing
     )
 
 
-def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
+def _read_hermes_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
     hermes_dir = _resolve_hermes_dir(home)
     if hermes_dir is None:
         return []
@@ -681,7 +691,7 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                 continue
             file_metadata = _read_hermes_session_file(sessions_dir / f"session_{session_id}.json")
             manifest_entry = manifest.get(session_id, {})
-            if not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
+            if workspace is not None and not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
                 continue
             created_at = _from_epoch(row[3])
             updated_at = _from_epoch(row[4]) if row[4] else file_metadata.get("updated_at") or manifest_entry.get("updated_at") or created_at
@@ -689,7 +699,7 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                 id=session_id,
                 provider="hermes",
                 title=_clean_session_title(_nullable_string(row[6]) or file_metadata.get("title") or manifest_entry.get("title")) or "Hermes session",
-                workspace=str(workspace),
+                workspace=file_metadata.get("workspace") or (str(workspace) if workspace else ""),
                 branch=None,
                 model=_nullable_string(row[2]) or file_metadata.get("model"),
                 agent=_hermes_agent_label(_nullable_string(row[1]), manifest_entry, file_metadata),
@@ -713,7 +723,7 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
             if not file_metadata:
                 continue
             manifest_entry = manifest.get(session_id, {})
-            if not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
+            if workspace is not None and not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
                 continue
             try:
                 stat = file_path.stat()
@@ -723,7 +733,7 @@ def _read_hermes_sessions(workspace: Path, home: Path) -> list[AgentSession]:
                 id=session_id,
                 provider="hermes",
                 title=_clean_session_title(file_metadata.get("title") or manifest_entry.get("title")) or "Hermes session",
-                workspace=str(workspace),
+                workspace=file_metadata.get("workspace") or (str(workspace) if workspace else ""),
                 branch=None,
                 model=file_metadata.get("model"),
                 agent=_hermes_agent_label(file_metadata.get("platform"), manifest_entry, file_metadata),

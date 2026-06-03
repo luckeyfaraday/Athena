@@ -45,9 +45,11 @@ class AthenaTUI:
         self.sel = [0, 0]          # selected row per tab
         self.top = [0, 0]          # scroll offset per tab
         self.filter = ""
-        self.status = "Welcome to Athena. Press n to launch, Enter to resume, ? for help."
+        self.status = "Welcome to Athena. Sessions are grouped by project — Enter to open one, ? for help."
         self.summary: dict[str, Any] = {}
-        self.sessions: list[dict[str, Any]] = []
+        self.sessions: list[dict[str, Any]] = []     # sessions across all projects
+        self.projects: list[dict[str, Any]] = []     # grouped by workspace
+        self.drill: str | None = None                # workspace we've drilled into
         self.runs: list[dict[str, Any]] = []
 
     # -- data ------------------------------------------------------------- #
@@ -58,10 +60,30 @@ class AthenaTUI:
             "recall": self.backend.get("/hermes/recall/status", project_dir=self.project).get("recall", {}),
         }, {})
         self.sessions = self._safe(
-            lambda: self.backend.get("/agents/sessions", project_dir=self.project, limit=200).get("sessions", []),
+            lambda: self.backend.get("/agents/sessions/all", limit=500).get("sessions", []),
             [],
         )
+        self._build_projects()
         self.runs = self._safe(lambda: self.backend.get("/agents/runs").get("runs", []), [])
+
+    def _build_projects(self) -> None:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for s in self.sessions:
+            groups.setdefault(s.get("workspace") or "(unknown workspace)", []).append(s)
+        projects = [
+            {
+                "workspace": ws,
+                "sessions": items,
+                "count": len(items),
+                "updated_at": max((str(i.get("updated_at", "")) for i in items), default=""),
+                "providers": sorted({str(i.get("provider", "")) for i in items if i.get("provider")}),
+            }
+            for ws, items in groups.items()
+        ]
+        projects.sort(key=lambda p: p["updated_at"], reverse=True)
+        self.projects = projects
+        if self.drill and self.drill not in groups:
+            self.drill = None
 
     @staticmethod
     def _safe(fn, default):  # noqa: ANN001, ANN205
@@ -71,11 +93,16 @@ class AthenaTUI:
             return default
 
     def rows(self) -> list[dict[str, Any]]:
-        items = self.sessions if self.tab == 0 else self.runs
+        if self.tab == 1:
+            items, key = self.runs, "task"
+        elif self.drill is None:
+            items, key = self.projects, "workspace"
+        else:
+            drilled = next((p for p in self.projects if p["workspace"] == self.drill), None)
+            items, key = (drilled["sessions"] if drilled else []), "title"
         if not self.filter:
             return items
         f = self.filter.lower()
-        key = "title" if self.tab == 0 else "task"
         return [it for it in items if f in str(it.get(key, "")).lower()]
 
     # -- drawing ---------------------------------------------------------- #
@@ -109,11 +136,15 @@ class AthenaTUI:
     def _draw_tabs(self, w: int) -> None:
         x = 2
         for i, name in enumerate(TABS):
-            count = len(self.sessions if i == 0 else self.runs)
-            label = f" {name} ({count}) "
+            count = len(self.projects if i == 0 else self.runs)
+            label = f" {name} ({count}) " if i == 0 else f" {name} ({len(self.runs)}) "
             attr = curses.A_REVERSE | curses.A_BOLD if i == self.tab else curses.color_pair(3)
             self.scr.addnstr(4, x, label, w - x - 1, attr)
             x += len(label) + 1
+        if self.tab == 0 and self.drill:
+            crumb = f"  ▸ {self.drill}"
+            self.scr.addnstr(4, x + 1, crumb, w - x - 2, curses.color_pair(1) | curses.A_BOLD)
+            x += len(crumb) + 1
         if self.filter:
             self.scr.addnstr(4, x + 2, f"/{self.filter}", w - x - 3, curses.color_pair(2))
 
@@ -125,11 +156,24 @@ class AthenaTUI:
         if not rows:
             self._line(top_y, 2, "(nothing here — press r to refresh, n to launch)", w, curses.color_pair(3))
             return
+        if self.tab == 1:
+            render = self._run_row
+        elif self.drill is None:
+            render = self._project_row
+        else:
+            render = self._session_row
         for idx in range(self.top[self.tab], min(len(rows), self.top[self.tab] + height)):
             y = top_y + (idx - self.top[self.tab])
-            selected = idx == self.sel[self.tab]
-            attr = curses.A_REVERSE if selected else 0
-            self._line(y, 0, "  " + (self._session_row(rows[idx]) if self.tab == 0 else self._run_row(rows[idx])), w, attr)
+            attr = curses.A_REVERSE if idx == self.sel[self.tab] else 0
+            self._line(y, 0, "  " + render(rows[idx]), w, attr)
+
+    def _project_row(self, p: dict[str, Any]) -> str:
+        ws = str(p.get("workspace", ""))
+        name = ws.rstrip("/").rsplit("/", 1)[-1] or ws
+        here = "►" if ws == self.project else " "
+        provs = ",".join(pr[:2] for pr in p.get("providers", []))[:14]
+        when = str(p.get("updated_at", ""))[:16]
+        return f"{here} {p.get('count', 0):>4}  {when:<17} {provs:<15} {name:<22} {ws}"
 
     def _session_row(self, s: dict[str, Any]) -> str:
         prov = str(s.get("provider", ""))[:8]
@@ -146,7 +190,13 @@ class AthenaTUI:
         return f"{st:<10} {agent:<11} {rid:<21} {task}"
 
     def _draw_footer(self, h: int, w: int) -> None:
-        keys = "↑↓ move · Tab switch · Enter " + ("resume" if self.tab == 0 else "logs") + " · n launch · r refresh · / filter · q quit"
+        if self.tab == 1:
+            action = "Enter logs"
+        elif self.drill is None:
+            action = "Enter open project"
+        else:
+            action = "Enter resume · ←/Esc back"
+        keys = f"↑↓ move · Tab switch · {action} · n launch · r refresh · / filter · q quit"
         self._line(h - 2, 0, "  " + self.status, w, curses.color_pair(2))
         self._line(h - 1, 0, "  " + keys, w, curses.A_DIM)
 
@@ -173,8 +223,12 @@ class AthenaTUI:
             self.scr.clear()
             curses.curs_set(0)
 
+    def _active_project(self) -> str:
+        """The project actions target: the drilled-in one, else the cwd project."""
+        return self.drill if (self.tab == 0 and self.drill) else self.project
+
     def _exec(self, command: str) -> None:
-        self._suspend(lambda: subprocess.call(command, shell=True, cwd=self.project))
+        self._suspend(lambda: subprocess.call(command, shell=True, cwd=self._active_project()))
 
     # -- actions ---------------------------------------------------------- #
     def act(self) -> None:
@@ -182,15 +236,28 @@ class AthenaTUI:
         if not rows:
             return
         item = rows[self.sel[self.tab]]
-        if self.tab == 0:
+        if self.tab == 1:
+            self._follow_run(str(item.get("run_id", "")))
+        elif self.drill is None:
+            self.drill = item["workspace"]            # drill into the project
+            self.filter = ""
+            self.sel[0] = self.top[0] = 0
+        else:
             cmd = item.get("resume_command")
             if not cmd:
                 self.status = "This session has no resume command."
                 return
             self.status = f"Resuming {item.get('provider')} session…"
             self._exec(cmd)
-        else:
-            self._follow_run(str(item.get("run_id", "")))
+
+    def back(self) -> bool:
+        """Pop out of a drilled-in project. Returns False if nothing to pop."""
+        if self.tab == 0 and self.drill is not None:
+            self.drill = None
+            self.filter = ""
+            self.sel[0] = self.top[0] = 0
+            return True
+        return False
 
     def _follow_run(self, run_id: str) -> None:
         def stream() -> None:
@@ -243,7 +310,7 @@ class AthenaTUI:
             try:
                 payload = self.backend.post(
                     "/agents/spawn",
-                    {"agent_type": agent, "project_dir": self.project, "task": result["task"]},
+                    {"agent_type": agent, "project_dir": self._active_project(), "task": result["task"]},
                 )
                 self.refresh()
                 self.tab = 1
@@ -265,12 +332,19 @@ class AthenaTUI:
                 ch = self.scr.getch()
             except KeyboardInterrupt:
                 return
-            if ch in (ord("q"), 27):
+            if ch == ord("q"):
                 return
+            elif ch == 27:  # Esc: leave a drilled project, else quit
+                if not self.back():
+                    return
+            elif ch in (curses.KEY_LEFT, ord("h"), curses.KEY_BACKSPACE, 127, 8):
+                self.back()
             elif ch in (curses.KEY_DOWN, ord("j")):
                 self.sel[self.tab] += 1
             elif ch in (curses.KEY_UP, ord("k")):
                 self.sel[self.tab] = max(0, self.sel[self.tab] - 1)
+            elif ch in (curses.KEY_RIGHT, ord("l")):
+                self.act()
             elif ch in (9, curses.KEY_BTAB):
                 self.tab = (self.tab + 1) % len(TABS)
             elif ch in (ord("1"), ord("2")):
@@ -289,7 +363,7 @@ class AthenaTUI:
                 self.sel[self.tab] = 0
                 self.top[self.tab] = 0
             elif ch == ord("?"):
-                self.status = "Enter=act n=launch r=refresh /=filter Tab=switch q=quit"
+                self.status = "Projects→Enter opens · Enter resumes · ←/Esc back · n launch · r refresh · / filter · q quit"
 
     def _read_filter(self) -> str:
         curses.echo()

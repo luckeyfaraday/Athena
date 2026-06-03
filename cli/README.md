@@ -79,13 +79,32 @@ Athena's Electron PTY layer. It browses the backend and, when you act, it
 |---|---|
 | `↑`/`↓` or `j`/`k` | Move selection |
 | `Tab` / `1` / `2` | Switch Sessions / Runs |
-| `Enter` | Sessions: **resume** the session here · Runs: **follow** logs live |
+| `Enter` / `→` | Projects: **open** · Sessions: **resume** here · Runs: **follow** logs |
+| `←` / `Esc` | Back out of a project (Esc quits at top level) |
 | `n` | **Launch** a new agent (interactive in-terminal, or headless run) |
 | `r` | Refresh · `/` filter · `q` quit |
 
-Resume uses each session's backend-provided `resume_command`
-(`codex resume …`, `claude --resume …`, etc.). Headless launches go through
-`/agents/spawn` (codex adapter) and appear in the Runs tab.
+**The Sessions tab is grouped by project.** It lists every workspace that has
+native sessions (across `codex`/`claude`/`opencode`/`hermes`), most-recent first,
+with your current directory marked `►`. Press `Enter` to open a project and see
+its sessions, then `Enter` to resume one. This is what makes things findable when
+you have sessions scattered across dozens of repos.
+
+Resume uses each session's backend-provided `resume_command` (`codex resume …`,
+`claude --resume …`, etc.), now anchored to the session's *own* workspace.
+`n` launches/spawns into the project you're currently viewing. Headless launches
+go through `/agents/spawn` (codex adapter) and appear in the Runs tab.
+
+> Cross-project listing uses the backend `GET /agents/sessions/all` endpoint
+> added with this change. The running Athena desktop app must be on this build
+> (restart it, or use `athena serve`) for the aggregated view to populate.
+
+The same data is available non-interactively:
+
+```bash
+./cli/athena sessions list --all          # grouped by project
+./cli/athena sessions list --all --json   # structured
+```
 
 ### The "see every single thing" workflow
 

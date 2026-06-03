@@ -255,18 +255,38 @@ def cmd_recall_write(args: argparse.Namespace) -> int:
 
 
 def cmd_sessions_list(args: argparse.Namespace) -> int:
-    payload = _backend(args).get(
-        "/agents/sessions",
-        project_dir=_project_dir(args),
-        provider=args.provider,
-        q=args.query,
-        limit=args.limit,
-    )
+    backend = _backend(args)
+    if args.all:
+        payload = backend.get("/agents/sessions/all", provider=args.provider, q=args.query, limit=args.limit)
+    else:
+        payload = backend.get(
+            "/agents/sessions",
+            project_dir=_project_dir(args),
+            provider=args.provider,
+            q=args.query,
+            limit=args.limit,
+        )
     if args.json:
         _emit(payload, True)
+    elif args.all:
+        _print_sessions_by_project(payload.get("sessions", []))
     else:
         print(payload.get("summary") or "No sessions.")
     return 0
+
+
+def _print_sessions_by_project(sessions: list[dict[str, Any]]) -> None:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for s in sessions:
+        groups.setdefault(s.get("workspace") or "(unknown workspace)", []).append(s)
+    ordered = sorted(groups.items(), key=lambda kv: max((str(s.get("updated_at", "")) for s in kv[1]), default=""), reverse=True)
+    for workspace, items in ordered:
+        print(f"\n{workspace}  ({len(items)})")
+        for s in items[:8]:
+            title = " ".join(str(s.get("title", "")).split())[:60]
+            print(f"  {str(s.get('provider','')):<9} {str(s.get('updated_at',''))[:16]}  {title}")
+        if len(items) > 8:
+            print(f"  … {len(items) - 8} more")
 
 
 def cmd_sessions_transcript(args: argparse.Namespace) -> int:
@@ -483,6 +503,7 @@ def build_parser() -> argparse.ArgumentParser:
     # sessions
     ses = sub.add_parser("sessions", help="Native agent sessions.").add_subparsers(dest="sub", required=True)
     p = leaf(ses, "list", help="List native sessions for the project.")
+    p.add_argument("--all", action="store_true", help="All projects, grouped by workspace.")
     p.add_argument("--provider", default=None, help="codex | claude | opencode | hermes")
     p.add_argument("--query", default="")
     p.add_argument("--limit", type=int, default=100)

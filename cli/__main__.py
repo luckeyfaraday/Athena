@@ -103,6 +103,83 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _safe(fn, default=None):  # noqa: ANN001, ANN202 - best-effort section fetch
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 - one bad section shouldn't sink the snapshot
+        return {"__error__": str(exc), **(default or {})}
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    backend = _backend(args)
+    project = _project_dir(args)
+
+    health = _safe(lambda: backend.get("/health"))
+    hermes = _safe(lambda: backend.get("/hermes/status")).get("hermes", {})
+    recent = _safe(lambda: backend.get("/memory/recent", limit=5)).get("entries", [])
+    recall = _safe(lambda: backend.get("/hermes/recall/status", project_dir=project)).get("recall", {})
+    sessions = _safe(lambda: backend.get("/agents/sessions", project_dir=project, limit=200))
+    runs = _safe(lambda: backend.get("/agents/runs")).get("runs", [])
+
+    from client import get_electron_control_status  # noqa: PLC0415 - reuse MCP discovery
+
+    electron = _safe(get_electron_control_status)
+
+    if args.json:
+        _emit(
+            {
+                "backend_url": backend.base_url,
+                "health": health,
+                "electron_control": electron,
+                "hermes": hermes,
+                "recall": recall,
+                "recent_memory": recent,
+                "sessions": sessions.get("sessions", []),
+                "runs": runs,
+            },
+            True,
+        )
+        return 0
+
+    session_list = sessions.get("sessions", []) if isinstance(sessions, dict) else []
+    print(f"ATHENA SNAPSHOT  ({project})\n")
+
+    ok = isinstance(health, dict) and health.get("status") == "ok"
+    print(f"Backend     {'● up' if ok else '○ down'}  {backend.base_url}")
+    e_running = isinstance(electron, dict) and electron.get("running")
+    print(f"Desktop     {'● running' if e_running else '○ not running'}")
+    if hermes:
+        print(f"Hermes      {'installed' if hermes.get('installed') else 'not installed'}"
+              f"  {hermes.get('version', '')}")
+
+    if recall:
+        age = recall.get("age_seconds")
+        age_str = f"{age / 3600:.1f}h ago" if isinstance(age, (int, float)) else "never"
+        print(f"Recall      {recall.get('status', '?')}  ({recall.get('bytes', 0)} bytes, refreshed {age_str})")
+
+    print(f"\nRuns        {len(runs)} total{_count_by(runs, 'status')}")
+    for run in runs[:5]:
+        print(f"  {str(run.get('status','')):<10} {str(run.get('run_id',''))[:22]}  "
+              f"{' '.join(str(run.get('task','')).split())[:48]}")
+
+    print(f"\nSessions    {len(session_list)} in project{_count_by(session_list, 'provider')}")
+    for s in session_list[:5]:
+        title = " ".join(str(s.get("title") or s.get("task") or "").split())[:50]
+        print(f"  {str(s.get('provider','')):<9} {title}")
+
+    print(f"\nMemory      {len(recent)} recent shown")
+    for entry in recent[:3]:
+        print(f"  • {' '.join(str(entry).split())[:80]}")
+    return 0
+
+
+def _count_by(items: list[dict[str, Any]], key: str) -> str:
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[str(item.get(key, "?"))] = counts.get(str(item.get(key, "?")), 0) + 1
+    return "  " + ", ".join(f"{k}:{v}" for k, v in sorted(counts.items())) if counts else ""
+
+
 def cmd_memory_query(args: argparse.Namespace) -> int:
     _emit(_backend(args).get("/memory/hermes", q=args.text, limit=args.limit), args.json)
     return 0
@@ -357,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     leaf(sub, "health", help="Check backend health.").set_defaults(func=cmd_health)
     leaf(sub, "status", help="Hermes installation + memory status.").set_defaults(func=cmd_status)
+    leaf(sub, "snapshot", help="One-shot overview of everything.").set_defaults(func=cmd_snapshot)
 
     # memory
     mem = sub.add_parser("memory", help="Hermes memory.").add_subparsers(dest="sub", required=True)

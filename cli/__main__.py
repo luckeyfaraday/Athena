@@ -257,7 +257,17 @@ def cmd_recall_write(args: argparse.Namespace) -> int:
 def cmd_sessions_list(args: argparse.Namespace) -> int:
     backend = _backend(args)
     if args.all:
-        payload = backend.get("/agents/sessions/all", provider=args.provider, q=args.query, limit=args.limit)
+        try:
+            payload = backend.get("/agents/sessions/all", provider=args.provider, q=args.query, limit=args.limit)
+        except Exception as exc:  # noqa: BLE001 - older backend without /all
+            if getattr(getattr(exc, "response", None), "status_code", None) != 404:
+                raise
+            print("note: backend lacks cross-project listing; showing this project only.", file=sys.stderr)
+            print("      restart Athena or run `athena serve` for the new build.\n", file=sys.stderr)
+            args.all = False
+            payload = backend.get(
+                "/agents/sessions", project_dir=_project_dir(args), provider=args.provider, q=args.query, limit=args.limit
+            )
     else:
         payload = backend.get(
             "/agents/sessions",

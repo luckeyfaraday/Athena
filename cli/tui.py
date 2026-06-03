@@ -60,12 +60,21 @@ class AthenaTUI:
             "hermes": self.backend.get("/hermes/status").get("hermes", {}),
             "recall": self.backend.get("/hermes/recall/status", project_dir=self.project).get("recall", {}),
         }, {})
-        self.sessions = self._safe(
-            lambda: self.backend.get("/agents/sessions/all", limit=500).get("sessions", []),
-            [],
-        )
+        self.sessions = self._load_sessions()
         self._build_projects()
         self.runs = self._safe(lambda: self.backend.get("/agents/runs").get("runs", []), [])
+
+    def _load_sessions(self) -> list[dict[str, Any]]:
+        """Cross-project listing, falling back to the cwd project on older
+        backends that lack the /agents/sessions/all endpoint."""
+        try:
+            return self.backend.get("/agents/sessions/all", limit=500).get("sessions", [])
+        except Exception:  # noqa: BLE001 - older backend (no /all endpoint)
+            self.status = "Backend lacks cross-project listing — showing this project only. Restart Athena or use `athena serve`."
+            return self._safe(
+                lambda: self.backend.get("/agents/sessions", project_dir=self.project, limit=200).get("sessions", []),
+                [],
+            )
 
     def _build_projects(self) -> None:
         groups: dict[str, list[dict[str, Any]]] = {}

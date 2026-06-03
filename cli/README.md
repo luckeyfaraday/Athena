@@ -58,9 +58,34 @@ Otherwise the CLI auto-discovers a backend already started by Athena via
 | `run start <task>` | Start a headless agent run (`--wait`, `--follow`) |
 | `run list` / `run get <id>` / `run cancel <id>` | Manage runs |
 | `run logs <id> [--follow]` | Read/stream run artifacts live |
+| `snapshot` | One-shot overview of everything (`--json`) |
+| `tui` | Interactive command room (SSH-friendly) |
 | `serve` | Launch the backend headlessly |
 
 Global flags: `--json` (machine output), `--backend-url`, `--project-dir`.
+
+## TUI — the SSH command room
+
+```bash
+./cli/athena tui
+```
+
+A stdlib-`curses` full-screen UI (no third-party deps, runs over any SSH
+session). The key idea: you are already in a terminal, so it needs none of
+Athena's Electron PTY layer. It browses the backend and, when you act, it
+*suspends itself*, execs the real agent binary in your terminal, then resumes.
+
+| Key | Action |
+|---|---|
+| `↑`/`↓` or `j`/`k` | Move selection |
+| `Tab` / `1` / `2` | Switch Sessions / Runs |
+| `Enter` | Sessions: **resume** the session here · Runs: **follow** logs live |
+| `n` | **Launch** a new agent (interactive in-terminal, or headless run) |
+| `r` | Refresh · `/` filter · `q` quit |
+
+Resume uses each session's backend-provided `resume_command`
+(`codex resume …`, `claude --resume …`, etc.). Headless launches go through
+`/agents/spawn` (codex adapter) and appear in the Runs tab.
 
 ### The "see every single thing" workflow
 

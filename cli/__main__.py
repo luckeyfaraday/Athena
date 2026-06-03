@@ -340,6 +340,12 @@ def cmd_run_logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tui(args: argparse.Namespace) -> int:
+    from .tui import run_tui
+
+    return run_tui(backend_url=args.backend_url, project_dir=_project_dir(args))
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from .serve import serve
 
@@ -435,6 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(sub, "health", help="Check backend health.").set_defaults(func=cmd_health)
     leaf(sub, "status", help="Hermes installation + memory status.").set_defaults(func=cmd_status)
     leaf(sub, "snapshot", help="One-shot overview of everything.").set_defaults(func=cmd_snapshot)
+    leaf(sub, "tui", help="Interactive command room (SSH-friendly).").set_defaults(func=cmd_tui)
 
     # memory
     mem = sub.add_parser("memory", help="Hermes memory.").add_subparsers(dest="sub", required=True)

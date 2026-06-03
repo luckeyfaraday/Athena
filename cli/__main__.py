@@ -378,6 +378,12 @@ def cmd_tui(args: argparse.Namespace) -> int:
     return run_tui(backend_url=args.backend_url, project_dir=_project_dir(args))
 
 
+def cmd_install_cli(args: argparse.Namespace) -> int:
+    from .install import install_cli
+
+    return install_cli(bin_dir=args.bin_dir, python=args.python)
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from .serve import serve
 
@@ -474,6 +480,10 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(sub, "status", help="Hermes installation + memory status.").set_defaults(func=cmd_status)
     leaf(sub, "snapshot", help="One-shot overview of everything.").set_defaults(func=cmd_snapshot)
     leaf(sub, "tui", help="Interactive command room (SSH-friendly).").set_defaults(func=cmd_tui)
+    p = leaf(sub, "install-cli", help="Install an `athena` shim on PATH (run from anywhere).")
+    p.add_argument("--bin-dir", default=None, help="Target bin directory (default ~/.local/bin).")
+    p.add_argument("--python", default=None, help="Python executable to embed (default: current).")
+    p.set_defaults(func=cmd_install_cli)
 
     # memory
     mem = sub.add_parser("memory", help="Hermes memory.").add_subparsers(dest="sub", required=True)

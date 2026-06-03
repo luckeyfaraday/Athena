@@ -11,6 +11,7 @@ import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { beginAthenaLaunch, markAthenaCleanExit } from "./launch-state.js";
 import { installManagedAgentSkills } from "./agent-skills.js";
+import { installAthenaCli } from "./athena-cli.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -176,6 +177,16 @@ if (singleInstanceLock) {
       installManagedAgentSkills();
     } catch (error) {
       console.error("Failed to install managed agent skills:", error);
+    }
+    try {
+      const cliResult = installAthenaCli();
+      if (cliResult.status === "installed" || cliResult.status === "updated") {
+        console.log(`Athena CLI shim ${cliResult.status} at ${cliResult.targetPath}`);
+      } else if (cliResult.status === "skipped" || cliResult.status === "error" || cliResult.status === "missing-source") {
+        console.warn(`Athena CLI shim ${cliResult.status}: ${cliResult.message ?? ""}`);
+      }
+    } catch (error) {
+      console.error("Failed to install Athena CLI shim:", error);
     }
     installApplicationMenu();
     registerIpcHandlers(appRoot);

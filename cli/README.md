@@ -26,6 +26,23 @@ python -m cli --help
 ./cli/athena --help
 ```
 
+## Install it on PATH (run from any directory)
+
+```bash
+./cli/athena install-cli
+```
+
+This drops a small `athena` launcher into `~/.local/bin` (override with
+`--bin-dir`). The launcher hard-codes this install's root and Python and
+**preserves your current directory**, so project-scoped commands default to
+wherever you run them — you don't have to be in this folder. If `~/.local/bin`
+isn't on your `PATH`, the command prints how to add it.
+
+**With the desktop app this is automatic:** when Athena starts it installs the
+same shim (see `client/electron/athena-cli.ts`), so `athena` is available in your
+terminal after you install Athena. It never overwrites an `athena` you created
+yourself.
+
 If no backend is running, start one headlessly (this is the one piece of new
 plumbing — normally Electron owns the backend lifecycle):
 
@@ -60,6 +77,7 @@ Otherwise the CLI auto-discovers a backend already started by Athena via
 | `run logs <id> [--follow]` | Read/stream run artifacts live |
 | `snapshot` | One-shot overview of everything (`--json`) |
 | `tui` | Interactive command room (SSH-friendly) |
+| `install-cli` | Install an `athena` shim on PATH (run from anywhere) |
 | `serve` | Launch the backend headlessly |
 
 Global flags: `--json` (machine output), `--backend-url`, `--project-dir`.

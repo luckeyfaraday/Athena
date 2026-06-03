@@ -172,7 +172,11 @@ app.on("second-instance", () => {
 if (singleInstanceLock) {
   app.whenReady().then(async () => {
     beginAthenaLaunch();
-    installManagedAgentSkills();
+    try {
+      installManagedAgentSkills();
+    } catch (error) {
+      console.error("Failed to install managed agent skills:", error);
+    }
     installApplicationMenu();
     registerIpcHandlers(appRoot);
     void startControlServer().catch((error) => {

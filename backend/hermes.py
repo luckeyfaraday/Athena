@@ -59,30 +59,26 @@ class HermesManager:
             return self._cached_status
 
         native_windows = _is_native_windows()
-        wsl_probe = _probe_wsl_hermes() if native_windows else None
         command_path = shutil.which("hermes")
         version = _hermes_version() if command_path else None
         hermes_home = self.hermes_home
-        if wsl_probe is not None:
-            command_path = wsl_probe.command_path
-            version = wsl_probe.version
-            hermes_home = wsl_probe.hermes_home
         config_exists = (hermes_home / "config.yaml").exists()
         memory_path = self._memory_path(hermes_home)
+        # The bundled installer is a Unix bash/curl script. Native Windows now
+        # ships its own Hermes build that users install separately, so the in-app
+        # installer stays Unix-only while detection works on every platform.
         install_supported = not native_windows and shutil.which("bash") is not None and shutil.which("curl") is not None
         installed = command_path is not None and hermes_home.exists()
         setup_required = installed and not config_exists
 
-        if native_windows and wsl_probe is not None:
-            message = "Hermes Agent is installed in WSL2."
-        elif native_windows:
-            message = "Hermes Agent is not supported on native Windows. Install it inside WSL2."
-        elif not installed:
-            message = "Hermes Agent is not installed."
-        elif setup_required:
+        if installed and setup_required:
             message = "Hermes Agent is installed, but setup has not completed."
-        else:
+        elif installed:
             message = "Hermes Agent is installed."
+        elif native_windows:
+            message = "Hermes Agent is not installed. Install the native Windows build and make sure `hermes` is on your PATH."
+        else:
+            message = "Hermes Agent is not installed."
 
         status = HermesStatus(
             installed=installed,
@@ -102,9 +98,9 @@ class HermesManager:
 
     def install(self, *, timeout_seconds: float = 600) -> HermesInstallResult:
         before = self.status()
-        if before.native_windows:
-            raise RuntimeError("Hermes Agent must be installed inside WSL2 on Windows.")
         if not before.install_supported:
+            if before.native_windows:
+                raise RuntimeError("Install the native Windows Hermes build and make sure `hermes` is on your PATH.")
             raise RuntimeError("Hermes Agent install requires bash and curl.")
 
         completed = subprocess.run(
@@ -136,8 +132,6 @@ class HermesManager:
             raise RuntimeError("Hermes Agent is not installed.")
         if status.setup_required:
             raise RuntimeError("Hermes Agent setup has not completed.")
-        if status.command_path and status.command_path.startswith("wsl:"):
-            raise RuntimeError("Direct Hermes ask is not supported from native Windows yet. Run Athena inside WSL or use a visible Hermes terminal.")
 
         prompt = _ask_prompt(question, context)
         completed = subprocess.run(
@@ -214,52 +208,3 @@ def _hermes_version() -> str | None:
 
 def _is_native_windows() -> bool:
     return platform.system().lower() == "windows"
-
-
-@dataclass(frozen=True)
-class WslHermesProbe:
-    command_path: str
-    version: str | None
-    hermes_home: Path
-
-
-def _probe_wsl_hermes() -> WslHermesProbe | None:
-    if shutil.which("wsl.exe") is None:
-        return None
-
-    script = "\n".join(
-        [
-            "command_path=$(command -v hermes) || exit 127",
-            'printf "__HERMES_COMMAND__%s\\n" "$command_path"',
-            'hermes --version 2>&1 | head -n 1 | sed "s/^/__HERMES_VERSION__/"',
-            'printf "__HERMES_HOME__%s\\n" "$(wslpath -w "$HOME/.hermes")"',
-        ]
-    )
-    try:
-        completed = subprocess.run(
-            ["wsl.exe", "-e", "sh", "-lc", script],
-            text=True,
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if completed.returncode != 0:
-        return None
-
-    command_path: str | None = None
-    version: str | None = None
-    hermes_home: Path | None = None
-    for line in completed.stdout.splitlines():
-        if line.startswith("__HERMES_COMMAND__"):
-            command_path = line.removeprefix("__HERMES_COMMAND__").strip()
-        elif line.startswith("__HERMES_VERSION__"):
-            version = line.removeprefix("__HERMES_VERSION__").strip() or None
-        elif line.startswith("__HERMES_HOME__"):
-            home = line.removeprefix("__HERMES_HOME__").strip()
-            hermes_home = Path(home) if home else None
-
-    if command_path is None or hermes_home is None:
-        return None
-    return WslHermesProbe(command_path=f"wsl:{command_path}", version=version, hermes_home=hermes_home)

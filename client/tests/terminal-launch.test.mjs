@@ -112,9 +112,18 @@ test("PowerShell resume builder quotes the session id", () => {
   assert.match(command, /\$sessionId = 'sess''9'/);
 });
 
-test("Hermes PowerShell builder prefers wsl then native hermes", () => {
-  const command = launchHermesPowerShellCommand("C:\\ws", "h-1");
-  assert.match(command, /Get-Command wsl\.exe/);
-  assert.match(command, /hermes --resume \$sessionId/);
-  assert.match(command, /\$sessionId = 'h-1'/);
+test("Hermes PowerShell builder launches native hermes without WSL", () => {
+  const resume = launchHermesPowerShellCommand("C:\\ws", "h-1");
+  // The native Windows Hermes build is invoked directly; no WSL bridge remains.
+  assert.doesNotMatch(resume, /wsl/i);
+  assert.match(resume, /\$workspace = 'C:\\ws'/);
+  assert.match(resume, /Set-Location -LiteralPath \$workspace/);
+  assert.match(resume, /Get-Command hermes -ErrorAction SilentlyContinue/);
+  assert.match(resume, /& hermes --resume \$sessionId/);
+  assert.match(resume, /\$sessionId = 'h-1'/);
+
+  const fresh = launchHermesPowerShellCommand("C:\\ws");
+  assert.doesNotMatch(fresh, /wsl/i);
+  assert.doesNotMatch(fresh, /--resume/);
+  assert.match(fresh, /& hermes$/);
 });

@@ -18,7 +18,6 @@ import {
   isWindows,
   quotePowerShell,
   quoteShell,
-  windowsPathToWslPath,
 } from "./platform.js";
 
 export type AgentConfig = {
@@ -101,22 +100,19 @@ export function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPat
 }
 
 export function launchHermesPowerShellCommand(cwd: string, resumeSessionId?: string): string {
-  const wslCwd = windowsPathToWslPath(cwd) ?? cwd.replace(/\\/g, "/");
-  const hermesCommand = resumeSessionId ? `hermes --resume ${quoteShell(resumeSessionId)}` : "hermes";
-  const wslCommand = `cd ${quoteShell(wslCwd)} && ${hermesCommand}`;
+  // Hermes now ships a native Windows build, so the embedded terminal launches
+  // `hermes` directly from the workspace just like the other agents. The legacy
+  // WSL bridge (`wsl.exe -e sh -lc 'cd ... && hermes'`) is no longer used.
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
-    `$wslCommand = ${quotePowerShell(wslCommand)}`,
+    resumeSessionId ? `$sessionId = ${quotePowerShell(resumeSessionId)}` : "",
     "Set-Location -LiteralPath $workspace",
     resumeSessionId
-      ? `Write-Host ${quotePowerShell(`[Context Workspace] Resuming Hermes session: ${resumeSessionId}`)} -ForegroundColor Cyan`
+      ? "Write-Host \"[Context Workspace] Resuming Hermes session: $sessionId\" -ForegroundColor Cyan"
       : "Write-Host \"[Context Workspace] Hermes ready.\" -ForegroundColor Cyan",
-    "$resolvedWsl = Get-Command wsl.exe -ErrorAction SilentlyContinue",
-    "if ($resolvedWsl) { & wsl.exe -e sh -lc $wslCommand; return }",
     "$resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue",
-    resumeSessionId ? `$sessionId = ${quotePowerShell(resumeSessionId)}` : "",
-    resumeSessionId ? "if ($resolvedHermes) { & hermes --resume $sessionId; return }" : "if ($resolvedHermes) { & hermes; return }",
-    "Write-Host \"wsl.exe is unavailable and native hermes is not on PATH.\" -ForegroundColor Red",
+    "if (-not $resolvedHermes) { Write-Host \"hermes is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    resumeSessionId ? "& hermes --resume $sessionId" : "& hermes",
   ].filter(Boolean).join("; ");
 }
 

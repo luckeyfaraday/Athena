@@ -10,6 +10,7 @@ import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { beginAthenaLaunch, markAthenaCleanExit } from "./launch-state.js";
+import { installManagedAgentSkills } from "./agent-skills.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -171,6 +172,11 @@ app.on("second-instance", () => {
 if (singleInstanceLock) {
   app.whenReady().then(async () => {
     beginAthenaLaunch();
+    try {
+      installManagedAgentSkills();
+    } catch (error) {
+      console.error("Failed to install managed agent skills:", error);
+    }
     installApplicationMenu();
     registerIpcHandlers(appRoot);
     void startControlServer().catch((error) => {

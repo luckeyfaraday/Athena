@@ -18,6 +18,10 @@ extraResources:
     to: scripts
     filter:
       - "**/*"
+  - from: ../agent-skills
+    to: agent-skills
+    filter:
+      - "**/*"
 asar: true
 asarUnpack:
   - node_modules/node-pty/**

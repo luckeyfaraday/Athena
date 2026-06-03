@@ -18,6 +18,7 @@ Keys: ↑/↓ or j/k move · Tab/1/2 switch · Enter act · n new launch
 from __future__ import annotations
 
 import curses
+import os
 import subprocess
 import sys
 import time
@@ -69,7 +70,7 @@ class AthenaTUI:
     def _build_projects(self) -> None:
         groups: dict[str, list[dict[str, Any]]] = {}
         for s in self.sessions:
-            groups.setdefault(s.get("workspace") or "(unknown workspace)", []).append(s)
+            groups.setdefault(_group_key(s), []).append(s)
         projects = [
             {
                 "workspace": ws,
@@ -224,8 +225,14 @@ class AthenaTUI:
             curses.curs_set(0)
 
     def _active_project(self) -> str:
-        """The project actions target: the drilled-in one, else the cwd project."""
-        return self.drill if (self.tab == 0 and self.drill) else self.project
+        """The project actions target: the drilled-in one, else the cwd project.
+
+        A provider-fallback group (e.g. "hermes") is not a real directory, so
+        launches fall back to the cwd project there.
+        """
+        if self.tab == 0 and self.drill and os.path.isabs(self.drill):
+            return self.drill
+        return self.project
 
     def _exec(self, command: str) -> None:
         self._suspend(lambda: subprocess.call(command, shell=True, cwd=self._active_project()))
@@ -378,6 +385,12 @@ class AthenaTUI:
         curses.noecho()
         curses.curs_set(0)
         return text
+
+
+def _group_key(session: dict[str, Any]) -> str:
+    """Group sessions by workspace; sessions without one fall under their
+    provider (e.g. Hermes sessions that carry no workspace -> "hermes")."""
+    return session.get("workspace") or session.get("provider") or "(unknown)"
 
 
 def _short_err(exc: Exception) -> str:

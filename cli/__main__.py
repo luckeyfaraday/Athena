@@ -276,9 +276,11 @@ def cmd_sessions_list(args: argparse.Namespace) -> int:
 
 
 def _print_sessions_by_project(sessions: list[dict[str, Any]]) -> None:
+    from .tui import _group_key
+
     groups: dict[str, list[dict[str, Any]]] = {}
     for s in sessions:
-        groups.setdefault(s.get("workspace") or "(unknown workspace)", []).append(s)
+        groups.setdefault(_group_key(s), []).append(s)
     ordered = sorted(groups.items(), key=lambda kv: max((str(s.get("updated_at", "")) for s in kv[1]), default=""), reverse=True)
     for workspace, items in ordered:
         print(f"\n{workspace}  ({len(items)})")

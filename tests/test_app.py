@@ -394,6 +394,64 @@ def test_agent_sessions_endpoint_rejects_unknown_provider(tmp_path: Path) -> Non
     assert "Unsupported session provider" in response.json()["detail"]
 
 
+def test_all_agent_sessions_endpoint_uses_short_lived_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeSession:
+        def __init__(self, session_id: str) -> None:
+            self.session_id = session_id
+
+        def payload(self) -> dict[str, str]:
+            return {"id": self.session_id}
+
+    def fake_list(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal calls
+        calls += 1
+        return [FakeSession(f"session-{calls}")]
+
+    monkeypatch.setattr(app_module, "list_native_agent_sessions", fake_list)
+    monkeypatch.setattr(app_module, "format_agent_sessions_summary", lambda sessions: f"{len(sessions)} sessions")
+    client = _client(tmp_path)
+
+    first = client.get("/agents/sessions/all")
+    second = client.get("/agents/sessions/all")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert calls == 1
+    assert first.json()["sessions"] == [{"id": "session-1"}]
+    assert first.json()["cache"]["hit"] is False
+    assert second.json()["sessions"] == [{"id": "session-1"}]
+    assert second.json()["cache"]["hit"] is True
+
+
+def test_all_agent_sessions_endpoint_refresh_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    class FakeSession:
+        def __init__(self, session_id: str) -> None:
+            self.session_id = session_id
+
+        def payload(self) -> dict[str, str]:
+            return {"id": self.session_id}
+
+    def fake_list(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal calls
+        calls += 1
+        return [FakeSession(f"session-{calls}")]
+
+    monkeypatch.setattr(app_module, "list_native_agent_sessions", fake_list)
+    monkeypatch.setattr(app_module, "format_agent_sessions_summary", lambda sessions: f"{len(sessions)} sessions")
+    client = _client(tmp_path)
+
+    client.get("/agents/sessions/all")
+    refreshed = client.get("/agents/sessions/all", params={"refresh": "true"})
+
+    assert calls == 2
+    assert refreshed.json()["sessions"] == [{"id": "session-2"}]
+    assert refreshed.json()["cache"]["hit"] is False
+
+
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

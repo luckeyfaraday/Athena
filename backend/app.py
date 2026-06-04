@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -77,6 +78,7 @@ class HermesRecallMarkUsedRequest(BaseModel):
 
 
 RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
+ALL_SESSIONS_CACHE_TTL_SECONDS = float(os.environ.get("CONTEXT_WORKSPACE_SESSIONS_CACHE_TTL", "60"))
 HERMES_REFRESH_COMMAND_ENV = "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD"
 BACKEND_URL_ENV = "CONTEXT_WORKSPACE_BACKEND_URL"
 BACKEND_PORT_ENV = "CONTEXT_WORKSPACE_BACKEND_PORT"
@@ -108,6 +110,7 @@ def create_app(
     app.state.limits = limits or RuntimeLimits()
     app.state.pool = ThreadPoolExecutor(max_workers=4)
     app.state.execute_inline = execute_inline
+    app.state.all_sessions_cache = {}
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -303,17 +306,39 @@ def create_app(
         provider: str | None = Query(default=None),
         q: str = Query(default=""),
         limit: int = Query(default=500, ge=1, le=500),
+        refresh: bool = Query(default=False),
     ) -> dict[str, Any]:
         """List native sessions across every workspace, for project aggregation."""
         try:
             session_provider = _session_provider(provider)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        cache_key = (session_provider or "", q, limit)
+        now = time.monotonic()
+        cached = app.state.all_sessions_cache.get(cache_key)
+        if (
+            not refresh
+            and cached is not None
+            and now - cached["created_monotonic"] < ALL_SESSIONS_CACHE_TTL_SECONDS
+        ):
+            payload = dict(cached["payload"])
+            payload["cache"] = {
+                "hit": True,
+                "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS,
+                "age_seconds": now - cached["created_monotonic"],
+            }
+            return payload
+
         sessions = list_native_agent_sessions(None, provider=session_provider, query=q, limit=limit)
-        return {
+        payload = {
             "project_dir": None,
             "sessions": [session.payload() for session in sessions],
             "summary": format_agent_sessions_summary(sessions),
+        }
+        app.state.all_sessions_cache[cache_key] = {"created_monotonic": now, "payload": payload}
+        return {
+            **payload,
+            "cache": {"hit": False, "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS, "age_seconds": 0.0},
         }
 
     @app.get("/agents/sessions/{provider}/{session_id}/transcript", response_class=PlainTextResponse)

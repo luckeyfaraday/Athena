@@ -61,7 +61,7 @@ def serve(host: str, port: int, reload: bool, write_discovery: bool) -> int:
         return proc.wait()
     finally:
         if written:
-            _clear_discovery(written)
+            _clear_discovery(written, base_url=base_url, pid=proc.pid)
 
 
 def _write_discovery(base_url: str, pid: int) -> Path | None:
@@ -77,13 +77,13 @@ def _write_discovery(base_url: str, pid: int) -> Path | None:
         return None
 
 
-def _clear_discovery(path: Path) -> None:
+def _clear_discovery(path: Path, *, base_url: str, pid: int) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return
     # Only clear the file we wrote, never one a running Electron app owns.
-    if data.get("pid") == os.getpid() or data.get("running") is True:
+    if data.get("baseUrl") == base_url and data.get("pid") == pid:
         data["running"] = False
         try:
             path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

@@ -21,9 +21,11 @@ import curses
 import os
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
+from . import splash
 from ._client import Backend
 
 # Interactive launch commands per agent. cwd is set to the project dir.
@@ -338,10 +340,27 @@ class AthenaTUI:
             self._exec(LAUNCH_COMMANDS[agent])
             self.refresh()
 
+    def _first_refresh_with_splash(self) -> None:
+        """Load the initial data behind the branded splash instead of a black
+        screen. ``refresh()`` runs on a worker thread (it only touches the
+        backend, never curses) while the splash animates on the main thread."""
+        done = threading.Event()
+
+        def _work() -> None:
+            try:
+                self.refresh()
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=_work, daemon=True)
+        worker.start()
+        splash.play(self.scr, done.is_set)
+        done.wait(timeout=10)  # backend pathologically slow: fall through anyway
+
     # -- main loop -------------------------------------------------------- #
     def loop(self) -> None:
         curses.curs_set(0)
-        self.refresh()
+        self._first_refresh_with_splash()
         while True:
             self.draw()
             try:

@@ -298,6 +298,24 @@ def create_app(
             "summary": format_agent_sessions_summary(sessions),
         }
 
+    @app.get("/agents/sessions/all")
+    def list_all_agent_sessions(
+        provider: str | None = Query(default=None),
+        q: str = Query(default=""),
+        limit: int = Query(default=500, ge=1, le=500),
+    ) -> dict[str, Any]:
+        """List native sessions across every workspace, for project aggregation."""
+        try:
+            session_provider = _session_provider(provider)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        sessions = list_native_agent_sessions(None, provider=session_provider, query=q, limit=limit)
+        return {
+            "project_dir": None,
+            "sessions": [session.payload() for session in sessions],
+            "summary": format_agent_sessions_summary(sessions),
+        }
+
     @app.get("/agents/sessions/{provider}/{session_id}/transcript", response_class=PlainTextResponse)
     def get_agent_session_transcript(
         provider: str,

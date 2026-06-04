@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Athena CLI launcher. Works from any directory and through symlinks (e.g. a
+# shim on PATH), and preserves your current working directory so project-scoped
+# commands default to where you actually are — it does NOT cd into the install.
+set -euo pipefail
+
+# Resolve this script's real location, following symlinks.
+source="${BASH_SOURCE[0]}"
+while [ -h "$source" ]; do
+  dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+  source="$(readlink "$source")"
+  [[ $source != /* ]] && source="$dir/$source"
+done
+ATHENA_ROOT="$(cd -P "$(dirname "$source")/.." >/dev/null 2>&1 && pwd)"
+
+exec env PYTHONPATH="$ATHENA_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m cli "$@"

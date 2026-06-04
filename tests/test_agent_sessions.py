@@ -87,6 +87,43 @@ def test_lists_codex_sessions_from_workspace_descendants(tmp_path: Path) -> None
     assert [session.id for session in sessions] == ["child-codex"]
 
 
+def test_lists_codex_sessions_across_all_workspaces(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    sibling_workspace = tmp_path / "project-other"
+    workspace.mkdir()
+    sibling_workspace.mkdir()
+    db_path = home / ".codex" / "state_5.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            create table threads (
+              id text, cwd text, title text, created_at_ms integer,
+              updated_at_ms integer, git_branch text, cli_version text,
+              first_user_message text, model text, agent_role text
+            )
+            """
+        )
+        connection.execute(
+            "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("here-codex", str(workspace), "Here session", 1, 2, None, None, None, None, None),
+        )
+        connection.execute(
+            "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("there-codex", str(sibling_workspace), "There session", 1, 3, None, None, None, None, None),
+        )
+
+    # project_dir=None aggregates across every workspace, and each resume
+    # command is anchored to the session's own workspace, not the query.
+    sessions = list_native_agent_sessions(None, home_dir=home, provider="codex")
+
+    by_id = {session.id: session for session in sessions}
+    assert {"here-codex", "there-codex"} <= set(by_id)
+    assert by_id["there-codex"].workspace == str(sibling_workspace)
+    assert str(sibling_workspace) in (by_id["there-codex"].resume_command or "")
+
+
 def test_lists_codex_sessions_from_jsonl_context(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

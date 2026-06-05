@@ -1,9 +1,9 @@
 import type { RecallStatus } from "./api";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
-import { agentSessionKey, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
+import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
 import { normalizeWorkspaceKey } from "./workspace-utils";
 
-export { agentSessionKey, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
+export { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
 
 export type SessionProviderFilter = AgentSession["provider"] | "all";
 

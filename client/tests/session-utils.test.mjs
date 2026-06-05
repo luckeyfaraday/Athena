@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  appendEmbeddedSessions,
   embeddedSessionKey,
 } from "../src/session-rename-keys.ts";
 
@@ -40,4 +41,27 @@ test("embedded agent rename keys survive restored terminal ids", () => {
   const restored = embeddedSession({ id: "terminal-after-restore", providerSessionId: "codex-run-123" });
 
   assert.equal(embeddedSessionKey(restored), embeddedSessionKey(original));
+});
+
+test("appendEmbeddedSessions appends new sessions without moving existing panes", () => {
+  const first = embeddedSession({ id: "terminal-1", title: "First" });
+  const second = embeddedSession({ id: "terminal-2", title: "Second" });
+  const third = embeddedSession({ id: "terminal-3", title: "Third" });
+
+  assert.deepEqual(
+    appendEmbeddedSessions([first, second], [third]).map((session) => session.id),
+    ["terminal-1", "terminal-2", "terminal-3"],
+  );
+});
+
+test("appendEmbeddedSessions updates existing sessions in place", () => {
+  const first = embeddedSession({ id: "terminal-1", title: "First", pid: 111 });
+  const second = embeddedSession({ id: "terminal-2", title: "Second" });
+  const updatedFirst = embeddedSession({ id: "terminal-1", title: "Renamed", pid: 222 });
+
+  const merged = appendEmbeddedSessions([first, second], [updatedFirst]);
+
+  assert.deepEqual(merged.map((session) => session.id), ["terminal-1", "terminal-2"]);
+  assert.equal(merged[0].title, "Renamed");
+  assert.equal(merged[0].pid, 222);
 });

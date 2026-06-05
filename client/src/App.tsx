@@ -25,6 +25,7 @@ import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAtten
 import {
   applyAgentSessionRenames,
   applyEmbeddedSessionRenames,
+  appendEmbeddedSessions,
   embeddedSessionKey,
   providerLabel,
   readRenamedSessions,
@@ -536,7 +537,7 @@ export function App() {
 
   useEffect(() => {
     const removeSession = desktop.onEmbeddedTerminalSession((session) => {
-      setEmbeddedSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+      setEmbeddedSessions((current) => appendEmbeddedSessions(current, [session]));
     });
     const removeWorkspaceOpen = desktop.onWorkspaceOpen(({ workspace: nextWorkspace, select }) => {
       if (select) {
@@ -743,7 +744,9 @@ export function App() {
           }),
         );
       }
-      setEmbeddedSessions((current) => [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]);
+      setEmbeddedSessions((current) => count > 1
+        ? [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]
+        : appendEmbeddedSessions(current, created));
       if (count > 1) setLayoutResetNonce((value) => value + 1);
     } catch (err) {
       setError(String(err));
@@ -766,7 +769,7 @@ export function App() {
         sessionLabel: session.title,
         providerSessionId: session.id,
       });
-      setEmbeddedSessions((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
       setTerminalFocus(true);
       setActiveRoom("command");
     } catch (err) {

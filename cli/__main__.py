@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from ._client import Backend
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
@@ -81,7 +80,9 @@ def _project_dir(args: argparse.Namespace) -> str:
     return str(Path(args.project_dir).resolve())
 
 
-def _backend(args: argparse.Namespace) -> Backend:
+def _backend(args: argparse.Namespace) -> Any:
+    from ._client import Backend
+
     return Backend(backend_url=args.backend_url)
 
 

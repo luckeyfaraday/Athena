@@ -13,6 +13,10 @@ Tabs:
 
 Keys: ↑/↓ or j/k move · Tab/1/2 switch · Enter act · n new launch
       r refresh · / filter · q quit
+
+"n" (launch) opens in-TUI pickers: choose a workspace (type to filter the list,
+or pick "type a different path…" to spawn into a workspace with no sessions
+yet), then the agent, then interactive/headless. Esc backs out at any step.
 """
 
 from __future__ import annotations
@@ -245,8 +249,8 @@ class AthenaTUI:
             return self.drill
         return self.project
 
-    def _exec(self, command: str) -> None:
-        self._suspend(lambda: subprocess.call(command, shell=True, cwd=self._active_project()))
+    def _exec(self, command: str, cwd: str | None = None) -> None:
+        self._suspend(lambda: subprocess.call(command, shell=True, cwd=cwd or self._active_project()))
 
     # -- actions ---------------------------------------------------------- #
     def act(self) -> None:
@@ -303,41 +307,129 @@ class AthenaTUI:
 
         self._suspend(stream)
 
+    def _launch_targets(self) -> list[dict[str, str]]:
+        """Workspaces offered as quick-picks when launching: the active project
+        first, then every real (absolute-path) workspace we already know about.
+        You can always type a path that isn't in this list."""
+        seen: set[str] = set()
+        targets: list[dict[str, str]] = []
+
+        def add(path: str, label: str) -> None:
+            if path and os.path.isabs(path) and path not in seen:
+                seen.add(path)
+                targets.append({"path": path, "label": label})
+
+        add(self._active_project(), "current")
+        for p in self.projects:
+            add(str(p.get("workspace", "")), f"{p.get('count', 0)} sessions")
+        return targets
+
+    # -- launch flow (in-curses overlays) --------------------------------- #
+    def _overlay_pick(self, title: str, options: list[tuple[str, Any]]) -> Any:
+        """Blocking full-screen picker drawn inside curses. ``options`` is a
+        list of (label, value). Returns the chosen value, or None on Esc.
+
+        Type any printable character to filter the list incrementally — the
+        only sane way to navigate dozens of workspaces."""
+        sel = top = 0
+        filt = ""
+        footer = "↑↓ move · PgUp/PgDn page · type to filter · Enter select · Esc cancel"
+        while True:
+            view = [o for o in options if filt.lower() in o[0].lower()] if filt else options
+            h, w = self.scr.getmaxyx()
+            top_y, height = 2, max(1, h - 4)
+            sel = max(0, min(sel, len(view) - 1)) if view else 0
+            if sel < top:
+                top = sel
+            elif sel >= top + height:
+                top = sel - height + 1
+            self.scr.erase()
+            head = f"  {title}" + (f"      filter: {filt}_" if filt else "")
+            self._line(0, 0, head, w, curses.A_BOLD | curses.color_pair(1))
+            self._line(1, 0, f"  {len(view)}/{len(options)}", w, curses.color_pair(3))
+            if not view:
+                self._line(top_y, 2, "(no matches — Esc to cancel)", w, curses.color_pair(3))
+            for idx in range(top, min(len(view), top + height)):
+                y = top_y + (idx - top)
+                attr = curses.A_REVERSE if idx == sel else 0
+                self._line(y, 0, "  " + view[idx][0], w, attr)
+            self._line(h - 1, 0, "  " + footer, w, curses.A_DIM)
+            self.scr.refresh()
+            ch = self.scr.getch()
+            if ch == 27:  # Esc
+                return None
+            elif ch == curses.KEY_DOWN:
+                sel += 1
+            elif ch == curses.KEY_UP:
+                sel = max(0, sel - 1)
+            elif ch == curses.KEY_NPAGE:
+                sel += height
+            elif ch == curses.KEY_PPAGE:
+                sel = max(0, sel - height)
+            elif ch in (curses.KEY_ENTER, 10, 13):
+                if view:
+                    return view[sel][1]
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                filt, sel, top = filt[:-1], 0, 0
+            elif 32 <= ch < 127:
+                filt, sel, top = filt + chr(ch), 0, 0
+
+    _CUSTOM_PATH = object()  # sentinel for the "type a path" picker entry
+
+    def _pick_workspace(self) -> str | None:
+        options: list[tuple[str, Any]] = [
+            (f"{t['path']}  ({t['label']})", t["path"]) for t in self._launch_targets()
+        ]
+        options.append(("＋ type a different path…", self._CUSTOM_PATH))
+        choice = self._overlay_pick("Spawn into which workspace?", options)
+        if choice is None:
+            return None
+        if choice is self._CUSTOM_PATH:
+            raw = self._read_line("path: ")
+            if not raw:
+                return None
+            chosen = os.path.abspath(os.path.expanduser(raw))
+            if not os.path.isdir(chosen):
+                self.status = f"No such directory: {chosen}"
+                return None
+            return chosen
+        return choice
+
     def launch(self) -> None:
-        def prompt() -> tuple[str, str, str]:
-            print("New agent launch (blank to cancel)\n")
-            agent = (input(f"  agent {tuple(LAUNCH_COMMANDS)} [codex]: ").strip() or "codex").lower()
-            mode = (input("  mode (i)nteractive / (h)eadless [i]: ").strip() or "i").lower()
-            task = input("  task (required for headless): ").strip()
-            return agent, mode, task
-
-        result: dict[str, Any] = {}
-
-        def gather() -> None:
-            result["agent"], result["mode"], result["task"] = prompt()
-
-        self._suspend(gather)
-        agent = result.get("agent", "")
-        if agent not in LAUNCH_COMMANDS:
-            self.status = f"Unknown agent: {agent}"
+        target = self._pick_workspace()
+        if not target:
+            self.status = "Launch cancelled."
             return
-        if result.get("mode") == "h":
-            if not result.get("task"):
+        agent = self._overlay_pick("Which agent?", [(a, a) for a in LAUNCH_COMMANDS])
+        if not agent:
+            self.status = "Launch cancelled."
+            return
+        mode = self._overlay_pick(
+            f"Launch {agent} in {_short_path(target)} — how?",
+            [("interactive — runs in this terminal", "i"), ("headless — background run", "h")],
+        )
+        if not mode:
+            self.status = "Launch cancelled."
+            return
+        where = _short_path(target)
+        if mode == "h":
+            task = self._read_line("task: ")
+            if not task:
                 self.status = "Headless launch needs a task."
                 return
             try:
                 payload = self.backend.post(
                     "/agents/spawn",
-                    {"agent_type": agent, "project_dir": self._active_project(), "task": result["task"]},
+                    {"agent_type": agent, "project_dir": target, "task": task},
                 )
                 self.refresh()
                 self.tab = 1
-                self.status = f"Started headless run {payload.get('run', {}).get('run_id')}."
+                self.status = f"Started headless run {payload.get('run', {}).get('run_id')} in {where}."
             except Exception as exc:  # noqa: BLE001
                 self.status = f"Launch failed: {_short_err(exc)}"
         else:
-            self.status = f"Launching {agent}…"
-            self._exec(LAUNCH_COMMANDS[agent])
+            self.status = f"Launching {agent} in {where}…"
+            self._exec(LAUNCH_COMMANDS[agent], cwd=target)
             self.refresh()
 
     def _first_refresh_with_splash(self) -> None:
@@ -401,13 +493,18 @@ class AthenaTUI:
                 self.status = "Projects→Enter opens · Enter resumes · ←/Esc back · n launch · r refresh · / filter · q quit"
 
     def _read_filter(self) -> str:
+        return self._read_line("filter: ")
+
+    def _read_line(self, label: str) -> str:
+        """Echoed single-line input on the footer row. Returns "" if blank."""
         curses.echo()
         curses.curs_set(1)
         h, w = self.scr.getmaxyx()
-        self._line(h - 2, 0, "  filter: ", w, curses.color_pair(2))
-        self.scr.move(h - 2, 11)
+        self._line(h - 2, 0, "  " + label, w, curses.color_pair(2))
+        x = 2 + len(label)
+        self.scr.move(h - 2, x)
         try:
-            text = self.scr.getstr(h - 2, 11, 60).decode("utf-8", "replace").strip()
+            text = self.scr.getstr(h - 2, x, max(1, w - x - 2)).decode("utf-8", "replace").strip()
         except Exception:  # noqa: BLE001
             text = ""
         curses.noecho()
@@ -419,6 +516,11 @@ def _group_key(session: dict[str, Any]) -> str:
     """Group sessions by workspace; sessions without one fall under their
     provider (e.g. Hermes sessions that carry no workspace -> "hermes")."""
     return session.get("workspace") or session.get("provider") or "(unknown)"
+
+
+def _short_path(path: str) -> str:
+    """Last path segment, for compact status messages."""
+    return path.rstrip("/").rsplit("/", 1)[-1] or path
 
 
 def _short_err(exc: Exception) -> str:

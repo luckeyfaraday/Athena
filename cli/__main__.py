@@ -286,11 +286,9 @@ def cmd_sessions_list(args: argparse.Namespace) -> int:
 
 
 def _print_sessions_by_project(sessions: list[dict[str, Any]]) -> None:
-    from .tui import _group_key
-
     groups: dict[str, list[dict[str, Any]]] = {}
     for s in sessions:
-        groups.setdefault(_group_key(s), []).append(s)
+        groups.setdefault(_session_group_key(s), []).append(s)
     ordered = sorted(groups.items(), key=lambda kv: max((str(s.get("updated_at", "")) for s in kv[1]), default=""), reverse=True)
     for workspace, items in ordered:
         print(f"\n{workspace}  ({len(items)})")
@@ -309,6 +307,10 @@ def cmd_sessions_transcript(args: argparse.Namespace) -> int:
     )
     _emit(text, args.json)
     return 0
+
+
+def _session_group_key(session: dict[str, Any]) -> str:
+    return session.get("workspace") or session.get("provider") or "(unknown)"
 
 
 def cmd_run_start(args: argparse.Namespace) -> int:
@@ -373,7 +375,17 @@ def cmd_run_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_tui(args: argparse.Namespace) -> int:
-    from .tui import run_tui
+    try:
+        from .tui import run_tui
+    except ModuleNotFoundError as exc:
+        if exc.name != "_curses":
+            raise
+        print("error: `athena tui` requires Python curses support, but `_curses` is not installed.", file=sys.stderr)
+        if os.name == "nt":
+            print("hint: install it with `python -m pip install windows-curses`, then re-run `athena install-cli`.", file=sys.stderr)
+        else:
+            print("hint: install your platform's Python curses package and try again.", file=sys.stderr)
+        return 1
 
     return run_tui(backend_url=args.backend_url, project_dir=_project_dir(args))
 

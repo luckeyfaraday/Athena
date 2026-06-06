@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -714,8 +715,7 @@ def _write_recall_cache(
     recall_path = cache_dir / "session-recall.md"
     metadata_path = cache_dir / "last-refresh.json"
     text = markdown.rstrip() + "\n"
-    recall_path.write_text(text, encoding="utf-8")
-    written_bytes = recall_path.stat().st_size
+    written_bytes = len(text.encode("utf-8"))
     metadata = {
         "refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source": source or "athena-session-handoff",
@@ -725,7 +725,8 @@ def _write_recall_cache(
         metadata["source_count"] = source_count
     if source_titles:
         metadata["source_titles"] = [str(title)[:160] for title in source_titles[:20]]
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(recall_path, text)
+    _atomic_write_text(metadata_path, json.dumps(metadata, indent=2) + "\n")
     return _recall_status_payload(project_dir)
 
 
@@ -736,8 +737,30 @@ def _mark_recall_used(project_dir: Path, *, agent: str) -> dict[str, Any]:
     metadata["used_for_launch_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     metadata["last_launch_agent"] = agent
     cache_dir.mkdir(parents=True, exist_ok=True)
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_text(metadata_path, json.dumps(metadata, indent=2) + "\n")
     return _recall_status_payload(project_dir)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_path = Path(handle.name)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

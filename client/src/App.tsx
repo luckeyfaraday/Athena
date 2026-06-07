@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus, type RecallStatus } from "./api";
-import { desktop, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
+import { desktop, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -243,6 +243,7 @@ export function App() {
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
   const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptState | null>(null);
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
+  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [launchState, setLaunchState] = useState<AthenaLaunchState | null>(null);
   const [restoreRequest, setRestoreRequest] = useState<{ workspaceKey: string; nonce: number } | null>(null);
   const backendRefreshInFlight = useRef(false);
@@ -377,6 +378,18 @@ export function App() {
       setPerformanceDiagnostics(null);
     }
   }, []);
+
+  const refreshAgentMessages = useCallback(async () => {
+    if (!workspace) {
+      setAgentMessages([]);
+      return;
+    }
+    try {
+      setAgentMessages(await desktop.listAgentMessages(workspace, 100));
+    } catch {
+      setAgentMessages([]);
+    }
+  }, [workspace]);
 
   const refreshData = useCallback(async () => {
     if (!client || dataRefreshInFlight.current) return;
@@ -553,6 +566,7 @@ export function App() {
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
       const kind = classifyTerminalAttention(payload.data);
       if (kind) markWorkspaceAttention(payload.id, kind);
+      if (activeWorkspaceRef.current) void refreshAgentMessages();
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       markWorkspaceAttention(payload.id, "update");
@@ -580,14 +594,20 @@ export function App() {
         void refreshAgentSessions();
       }
       if (activeRoom === "settings") void refreshPerformanceDiagnostics();
+      if (activeRoom === "swarm") void refreshAgentMessages();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [activeRoom, refreshBackend, refreshData, refreshElectronControl, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics]);
+  }, [activeRoom, refreshBackend, refreshData, refreshElectronControl, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics, refreshAgentMessages]);
 
   useEffect(() => {
     if (activeRoom !== "settings") return;
     void refreshPerformanceDiagnostics();
   }, [activeRoom, refreshPerformanceDiagnostics]);
+
+  useEffect(() => {
+    if (activeRoom !== "swarm") return;
+    void Promise.all([refreshAgentMessages(), refreshPerformanceDiagnostics()]);
+  }, [activeRoom, refreshAgentMessages, refreshPerformanceDiagnostics]);
 
   useEffect(() => {
     if (!terminalFocus) return undefined;
@@ -834,6 +854,17 @@ export function App() {
     setError(null);
   }
 
+  async function sendAgentMessage(to: string, text: string, replyRequested: boolean) {
+    if (!to.trim() || !text.trim()) return;
+    try {
+      await desktop.sendAgentMessage({ to, text, replyRequested });
+      await Promise.all([refreshAgentMessages(), refreshPerformanceDiagnostics()]);
+      setError(null);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   async function deleteMemoryEntry(entry: string) {
     if (!client || busy) return;
     setBusy(true);
@@ -1058,7 +1089,10 @@ export function App() {
                 roles={agentRoles}
                 sessions={activeEmbeddedSessions}
                 agentSessions={agentSessions}
+                agentMessages={agentMessages}
+                terminalControl={performanceDiagnostics?.terminalControl ?? []}
                 onOpenCommand={() => setActiveRoom("command")}
+                onSendAgentMessage={sendAgentMessage}
                 onInspectEmbeddedSession={(session) => {
                   setSelectedSessionKey(embeddedSessionKey(session));
                   setActiveRoom("review");

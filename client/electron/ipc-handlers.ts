@@ -28,9 +28,11 @@ import {
   getPerformanceDiagnostics,
   initEmbeddedTerminals,
   killEmbeddedTerminal,
+  listEmbeddedAgentMessages,
   listEmbeddedTerminals,
   renameEmbeddedTerminal,
   resizeEmbeddedTerminal,
+  sendAgentMessage,
   restoreEmbeddedTerminals,
   spawnEmbeddedTerminal,
   writeEmbeddedTerminal,
@@ -38,7 +40,10 @@ import {
   type EmbeddedTerminalSession,
   type EmbeddedTerminalSpawnOptions,
   type PerformanceDiagnostics,
+  type SendAgentMessageRequest,
+  type SendAgentMessageResult,
 } from "./embedded-terminal.js";
+import type { AgentMessage } from "./agent-messages.js";
 
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
@@ -135,6 +140,8 @@ export function registerIpcHandlers(appRoot: string): void {
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
   handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
+  handle("agentMessages:list", (_event, workspace?: string, limit?: number): AgentMessage[] => listEmbeddedAgentMessages(workspace, limit));
+  handle("agentMessages:send", (_event, request: SendAgentMessageRequest): Promise<SendAgentMessageResult> => sendAgentMessage({ ...request, source: "ui" }));
   handle("performance:diagnostics", (): Promise<PerformanceDiagnostics> => getPerformanceDiagnostics());
   handle(
     "embeddedTerminal:spawn",

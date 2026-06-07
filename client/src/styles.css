@@ -1904,7 +1904,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   text-transform: uppercase;
 }
 .liveAgentBoard,
-.historicalAgentBoard {
+.historicalAgentBoard,
+.agentConversationBoard {
   flex: 1;
   min-height: 0;
   margin: 0 12px 12px;
@@ -1912,6 +1913,80 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 7px;
   overflow: hidden;
   background: #061a15;
+}
+.agentConversationBoard {
+  display: grid;
+  grid-template-rows: auto minmax(160px, 1fr) auto;
+}
+.agentMessageThread {
+  min-height: 0;
+  padding: 8px 12px;
+  overflow: auto;
+}
+.agentMessage {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(226,214,183,.09);
+}
+.agentMessage div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.agentMessage strong {
+  color: var(--text);
+  font-size: 11px;
+}
+.agentMessage span {
+  color: var(--blue);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.agentMessage p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.agentMessage.queued span { color: var(--gold); }
+.agentMessage.failed span { color: var(--red); }
+.agentMessage.output_seen span { color: var(--green); }
+.agentMessageComposer {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto auto;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--line);
+}
+.agentMessageComposer select,
+.agentMessageComposer textarea {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(1, 14, 11, .7);
+  color: var(--text);
+  font: inherit;
+}
+.agentMessageComposer select {
+  height: 34px;
+  padding: 0 8px;
+}
+.agentMessageComposer textarea {
+  grid-column: 1 / -1;
+  min-height: 70px;
+  padding: 8px;
+  resize: vertical;
+}
+.agentMessageComposer label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 .agentSessionBoard {
   min-height: 0;

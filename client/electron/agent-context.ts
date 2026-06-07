@@ -23,6 +23,14 @@ const HERMES_TIP = [
   'Do not run `hermes -z` directly from this terminal for "ask hermes"; use Athena backend/MCP so the request is routed consistently.',
 ].join("\n");
 
+const AGENT_MESSAGE_TIP = [
+  "For Athena agent-to-agent messages:",
+  "  1. Prefer `context_workspace_send_message(to, text, from_terminal_id)` over raw terminal injection.",
+  "  2. Use stable handles from Athena such as `codex#1`, `claude#1`, or `hermes#1` when available.",
+  "  3. Pass `$CONTEXT_WORKSPACE_TERMINAL_ID` as `from_terminal_id` so replies can route back to this pane.",
+  "  4. Use `context_workspace_list_messages` to inspect recent routed messages.",
+].join("\n");
+
 export function buildAgentContextPrompt(input: AgentContextInput): string | null {
   const mode = resolveAgentContextMode(input.mode, input.task, input.contextText);
 
@@ -37,6 +45,8 @@ export function buildAgentContextPrompt(input: AgentContextInput): string | null
       `Agent: ${input.agentLabel}`,
       "",
       HERMES_TIP,
+      "",
+      AGENT_MESSAGE_TIP,
       "",
       "This is launch routing information only, not project context. Wait for the user's next instruction.",
     ].join("\n");
@@ -60,6 +70,8 @@ export function buildAgentContextPrompt(input: AgentContextInput): string | null
     mode === "curated" && curatedContext ? compactContext(curatedContext) : "",
     "",
     HERMES_TIP,
+    "",
+    AGENT_MESSAGE_TIP,
     "",
   ].filter(Boolean).join("\n");
 }

@@ -6,6 +6,16 @@ import { promisify } from "node:util";
 import { BrowserWindow } from "electron";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import {
+  agentHandle,
+  agentHandleMap,
+  agentMessageEnvelope,
+  createAgentMessage,
+  listAgentMessages,
+  markTerminalOutputForMessages,
+  updateAgentMessageStatus,
+  type AgentMessage,
+} from "./agent-messages.js";
+import {
   recentControlEvents,
   recordInputFailed,
   recordInputRequested,
@@ -65,6 +75,22 @@ export type EmbeddedTerminalSpawnOptions = {
   contextMode?: AgentContextMode;
   contextText?: string;
   controlSource?: string;
+};
+
+export type SendAgentMessageRequest = {
+  to: string;
+  text: string;
+  fromTerminalId?: string | null;
+  threadId?: string | null;
+  replyRequested?: boolean;
+  hopCount?: number;
+  source?: string;
+};
+
+export type SendAgentMessageResult = {
+  message: AgentMessage;
+  terminal: EmbeddedTerminalSession | null;
+  queued: boolean;
 };
 
 type ManagedTerminal = {
@@ -157,6 +183,10 @@ export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
     .map((entry) => ({ ...entry.session }));
 }
 
+export function listEmbeddedAgentMessages(workspace?: string | null, limit?: number): AgentMessage[] {
+  return listAgentMessages(workspace, limit);
+}
+
 export function getEmbeddedTerminalBuffer(id: string): string {
   return outputBuffers.get(id) ?? "";
 }
@@ -242,6 +272,14 @@ export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | 
   if (!normalized) return null;
   const direct = terminals.get(normalized)?.session;
   if (direct) return { ...direct };
+  const sessions = listEmbeddedTerminals();
+  const handles = agentHandleMap(sessions);
+  for (const session of sessions) {
+    const handle = handles.get(session.id);
+    if (handle === normalized || (handle === `${normalized}#1` && sessions.filter((item) => item.kind === session.kind).length === 1)) {
+      return { ...session };
+    }
+  }
   for (const entry of terminals.values()) {
     if (entry.session.providerSessionId === normalized) return { ...entry.session };
   }
@@ -588,6 +626,16 @@ export function renameEmbeddedTerminal(id: string, title: string): EmbeddedTermi
 export async function submitEmbeddedTerminalInput(target: string, text: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminalTarget(target);
   if (!text.trim()) throw new Error("Input text cannot be empty.");
+  const message = createAgentMessage({
+    workspace: entry.session.workspace,
+    from: "external",
+    to: agentHandle(entry.session, listEmbeddedTerminals()),
+    toTerminalId: entry.session.id,
+    toKind: entry.session.kind,
+    text,
+    source: "terminal-injection",
+    status: "injecting",
+  });
   recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview: text });
   const writes = terminalInputWritesForKind(entry.session.kind, text);
   try {
@@ -597,10 +645,50 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
     }
   } catch (error) {
     recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview: text, error: String(error) });
+    updateAgentMessageStatus(message.id, "failed", String(error));
     throw error;
   }
   recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview: text });
+  updateAgentMessageStatus(message.id, "written");
   return { ...entry.session };
+}
+
+export async function sendAgentMessage(request: SendAgentMessageRequest): Promise<SendAgentMessageResult> {
+  const target = requireTerminalTarget(request.to);
+  const sessions = listEmbeddedTerminals();
+  const handles = agentHandleMap(sessions);
+  const fromSession = request.fromTerminalId ? findEmbeddedTerminal(request.fromTerminalId) : null;
+  const message = createAgentMessage({
+    workspace: target.session.workspace,
+    from: fromSession ? handles.get(fromSession.id) ?? fromSession.title : request.source ?? "human",
+    fromTerminalId: fromSession?.id ?? request.fromTerminalId ?? null,
+    to: handles.get(target.session.id) ?? target.session.title,
+    toTerminalId: target.session.id,
+    toKind: target.session.kind,
+    text: request.text,
+    threadId: request.threadId,
+    replyRequested: request.replyRequested,
+    hopCount: request.hopCount,
+    source: request.source ?? "athena",
+    status: isTerminalBusy(target.session.id) ? "queued" : "injecting",
+  });
+  if (message.status === "queued") return { message, terminal: { ...target.session }, queued: true };
+
+  const envelope = agentMessageEnvelope(message);
+  recordInputRequested({ terminalId: target.session.id, source: "agent-message", preview: envelope });
+  try {
+    for (const write of terminalInputWritesForKind(target.session.kind, envelope)) {
+      await ptyHost.write(target.session.id, write.data);
+      if (write.delayAfterMs) await delay(write.delayAfterMs);
+    }
+  } catch (error) {
+    recordInputFailed({ terminalId: target.session.id, source: "agent-message", preview: envelope, error: String(error) });
+    const failed = updateAgentMessageStatus(message.id, "failed", String(error)) ?? message;
+    return { message: failed, terminal: { ...target.session }, queued: false };
+  }
+  recordInputWritten({ terminalId: target.session.id, source: "agent-message", preview: envelope });
+  const written = updateAgentMessageStatus(message.id, "written") ?? message;
+  return { message: written, terminal: { ...target.session }, queued: false };
 }
 
 /**
@@ -646,6 +734,7 @@ function installPtyHostListeners(): void {
   ptyHostListenersInstalled = true;
   ptyHost.on("data", ({ id, data }) => {
     recordTerminalOutput(id);
+    markTerminalOutputForMessages(id);
     appendBuffer(id, data);
     notifyTerminalData(id, data);
     queueOutput(id, data);
@@ -915,10 +1004,21 @@ function requireTerminalTarget(target: string): ManagedTerminal {
   const normalized = target.trim();
   const direct = terminals.get(normalized);
   if (direct) return direct;
+  const sessions = listEmbeddedTerminals();
+  const handles = agentHandleMap(sessions);
+  for (const entry of terminals.values()) {
+    const handle = handles.get(entry.session.id);
+    if (handle === normalized || (handle === `${normalized}#1` && sessions.filter((item) => item.kind === entry.session.kind).length === 1)) return entry;
+  }
   for (const entry of terminals.values()) {
     if (entry.session.providerSessionId === normalized) return entry;
   }
   throw new Error(`Embedded terminal target not found: ${target}`);
+}
+
+function isTerminalBusy(terminalId: string): boolean {
+  const state = terminalControlStates().find((item) => item.terminalId === terminalId);
+  return Boolean(state?.attentionReason);
 }
 
 function delay(ms: number): Promise<void> {

@@ -9,7 +9,9 @@ import {
   findEmbeddedTerminal,
   getEmbeddedTerminalBuffer,
   killEmbeddedTerminal,
+  listEmbeddedAgentMessages,
   listEmbeddedTerminals,
+  sendAgentMessage,
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
   writeEmbeddedTerminalInputRaw,
@@ -67,6 +69,21 @@ type WriteTerminalRequest = {
   text?: string;
   input?: string;
   data?: string;
+};
+
+type SendAgentMessageRequest = {
+  to?: string;
+  target?: string;
+  text?: string;
+  input?: string;
+  from_terminal_id?: string;
+  fromTerminalId?: string;
+  thread_id?: string;
+  threadId?: string;
+  reply_requested?: boolean;
+  replyRequested?: boolean;
+  hop_count?: number;
+  hopCount?: number;
 };
 
 type OpenWorkspaceRequest = {
@@ -230,6 +247,18 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       sendJson(response, 200, { terminals: listEmbeddedTerminals() });
       return;
     }
+    if (request.method === "GET" && url.pathname === "/agent-messages") {
+      sendJson(response, 200, {
+        messages: listEmbeddedAgentMessages(url.searchParams.get("workspace") ?? url.searchParams.get("project_dir"), Number(url.searchParams.get("limit") ?? 100)),
+      });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/agent-messages/send") {
+      const payload = parseSendAgentMessageRequest(await readJsonBody(request));
+      const result = await sendAgentMessage(payload);
+      sendJson(response, 200, result);
+      return;
+    }
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/buffer")) {
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/buffer".length));
       const terminal = requireResolvedTerminal(target);
@@ -356,6 +385,24 @@ function parseWriteTerminalRequest(body: unknown): { target: string; text: strin
   const text = stringValue(request.text) ?? stringValue(request.input);
   if (!text) throw new Error("text is required.");
   return { target, text };
+}
+
+function parseSendAgentMessageRequest(body: unknown): Parameters<typeof sendAgentMessage>[0] {
+  if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
+  const request = body as SendAgentMessageRequest;
+  const to = stringValue(request.to) ?? stringValue(request.target);
+  if (!to) throw new Error("to or target is required.");
+  const text = stringValue(request.text) ?? stringValue(request.input);
+  if (!text) throw new Error("text is required.");
+  return {
+    to,
+    text,
+    fromTerminalId: stringValue(request.from_terminal_id) ?? stringValue(request.fromTerminalId),
+    threadId: stringValue(request.thread_id) ?? stringValue(request.threadId),
+    replyRequested: booleanValue(request.reply_requested ?? request.replyRequested),
+    hopCount: numberValue(request.hop_count ?? request.hopCount),
+    source: "electron-control",
+  };
 }
 
 function parseKillTerminalRequest(body: unknown): { target: string } {

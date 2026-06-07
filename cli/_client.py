@@ -25,8 +25,15 @@ for entry in (str(ROOT), str(MCP_SERVER)):
 
 # Imported after the path wiring above so the bare ``from config import Settings``
 # inside client.py resolves to mcp_server/config.py.
-from client import ContextWorkspaceClient  # noqa: E402
+from client import ContextWorkspaceClient, get_backend_status  # noqa: E402
 from config import Settings  # noqa: E402
+
+
+def backend_status(backend_url: str | None = None) -> dict[str, Any]:
+    """Probe-backed backend discovery status (running / stale / not configured),
+    used to fail the TUI with an actionable message instead of a dead port."""
+    settings = Settings(backend_url=backend_url) if backend_url else Settings()
+    return get_backend_status(settings)
 
 
 class Backend:

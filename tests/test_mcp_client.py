@@ -65,6 +65,73 @@ def test_backend_json_non_loopback_is_unchanged_under_wsl(tmp_path: Path, monkey
     assert client.get_backend_url(settings) == "http://192.168.1.10:50379"
 
 
+def test_backend_status_missing_file_is_not_configured(tmp_path: Path) -> None:
+    settings = Settings(backend_url=None, backend_state_path=tmp_path / "absent.json")
+
+    status = client.get_backend_status(settings)
+
+    assert status == {
+        "configured": False,
+        "baseUrl": None,
+        "running": False,
+        "stale": False,
+        "detail": status["detail"],
+    }
+    assert "No backend discovery file" in status["detail"]
+
+
+def test_backend_status_unreachable_url_is_stale(tmp_path: Path, monkeypatch) -> None:
+    state_path = tmp_path / "backend.json"
+    state_path.write_text(json.dumps({"baseUrl": "http://127.0.0.1:50379", "running": True}), encoding="utf-8")
+    monkeypatch.setattr(client, "_running_under_wsl", lambda: False)
+    monkeypatch.setattr(client, "probe_health", lambda url, settings=None: (False, "connection refused"))
+    settings = Settings(backend_url=None, backend_state_path=state_path)
+
+    status = client.get_backend_status(settings)
+
+    assert status["configured"] is True
+    assert status["running"] is False
+    assert status["stale"] is True
+    assert status["baseUrl"] == "http://127.0.0.1:50379"
+
+
+def test_backend_status_healthy_url_is_running(tmp_path: Path, monkeypatch) -> None:
+    state_path = tmp_path / "backend.json"
+    state_path.write_text(json.dumps({"baseUrl": "http://127.0.0.1:50379", "running": True}), encoding="utf-8")
+    monkeypatch.setattr(client, "_running_under_wsl", lambda: False)
+    monkeypatch.setattr(client, "probe_health", lambda url, settings=None: (True, "ok"))
+    settings = Settings(backend_url=None, backend_state_path=state_path)
+
+    status = client.get_backend_status(settings)
+
+    assert status["running"] is True
+    assert status["stale"] is False
+
+
+def test_backend_status_running_false_flag_is_noted(tmp_path: Path, monkeypatch) -> None:
+    state_path = tmp_path / "backend.json"
+    state_path.write_text(json.dumps({"baseUrl": "http://127.0.0.1:50379", "running": False}), encoding="utf-8")
+    monkeypatch.setattr(client, "_running_under_wsl", lambda: False)
+    monkeypatch.setattr(client, "probe_health", lambda url, settings=None: (False, "connection refused"))
+    settings = Settings(backend_url=None, backend_state_path=state_path)
+
+    status = client.get_backend_status(settings)
+
+    assert status["stale"] is True
+    assert "running:false" in status["detail"]
+
+
+def test_backend_status_malformed_json_is_not_configured(tmp_path: Path) -> None:
+    state_path = tmp_path / "backend.json"
+    state_path.write_text("{not valid json", encoding="utf-8")  # half-written during startup
+    settings = Settings(backend_url=None, backend_state_path=state_path)
+
+    status = client.get_backend_status(settings)
+
+    assert status["configured"] is False
+    assert status["running"] is False
+
+
 def test_resolv_conf_nameserver_can_supply_windows_host(tmp_path: Path) -> None:
     resolv = tmp_path / "resolv.conf"
     resolv.write_text("search localdomain\nnameserver 172.25.144.1\n", encoding="utf-8")

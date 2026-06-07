@@ -338,6 +338,7 @@ def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
     assert metadata["source"] == "test-handoff"
     assert metadata["bytes"] == recall_path.stat().st_size
     assert metadata["source_count"] == 2
+    assert not list(metadata_path.parent.glob(".*.tmp"))
 
 
 def test_hermes_recall_mark_used_updates_metadata(tmp_path: Path) -> None:

@@ -41,7 +41,7 @@ test("task mode builds a compact task-only prompt", () => {
   assert.doesNotMatch(prompt, /## Memory/);
 });
 
-test("curated mode includes only Hermes-selected context", () => {
+test("curated mode includes the selected context", () => {
   const prompt = buildAgentContextPrompt({
     mode: "curated",
     workspace: "/repo",
@@ -51,6 +51,20 @@ test("curated mode includes only Hermes-selected context", () => {
   });
 
   assert.match(prompt, /Task: Review auth/);
-  assert.match(prompt, /## Context selected by Hermes/);
+  assert.match(prompt, /## Curated Context/);
   assert.match(prompt, /Relevant prior decision only/);
+});
+
+test("curated mode can launch directly from handoff context without a separate task", () => {
+  const prompt = buildAgentContextPrompt({
+    mode: "curated",
+    workspace: "/repo",
+    agentLabel: "Codex",
+    contextText: "# Athena Session Handoff\n\n- Continue the verified implementation.",
+  });
+
+  assert.match(prompt, /^# Athena Task/);
+  assert.match(prompt, /## Curated Context/);
+  assert.match(prompt, /Athena Session Handoff/);
+  assert.doesNotMatch(prompt, /Task:/);
 });

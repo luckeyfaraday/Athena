@@ -145,6 +145,10 @@ export function ReviewRoom({
   const selectedHandoffSources = handoffSelection.size > 0
     ? handoffSources.filter((source) => handoffSelection.has(source.key))
     : handoffSources.filter((source) => source.key === selectedSessionKey);
+  const selectedHandoffSignature = selectedHandoffSources
+    .map((source) => `${source.key}:${source.status}:${source.workspace}`)
+    .sort()
+    .join("|");
   const canCreateHandoff = selectedHandoffSources.length > 0 && !handoffGenerating;
 
   useEffect(() => {
@@ -160,6 +164,12 @@ export function ReviewRoom({
     if (handoffSources.some((source) => source.provider === handoffProviderTab)) return;
     setHandoffProviderTab("all");
   }, [handoffProviderTab, handoffSources]);
+
+  useEffect(() => {
+    setHandoffPreview(null);
+    setHandoffError(null);
+    setHandoffSavedAt(null);
+  }, [workspace, selectedHandoffSignature]);
 
   function toggleHandoffSource(key: string) {
     setHandoffSelection((current) => {

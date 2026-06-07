@@ -8,7 +8,7 @@ def test_tui_reports_missing_curses_with_install_hint(monkeypatch, capsys) -> No
     real_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: A002, ANN001
-        if name == "cli.tui" and fromlist == ("run_tui",):
+        if (name == "cli.tui" or (name == "tui" and level == 1)) and "run_tui" in fromlist:
             raise ModuleNotFoundError("No module named '_curses'", name="_curses")
         return real_import(name, globals, locals, fromlist, level)
 

@@ -27,6 +27,10 @@ jobs:
             artifact-path: |
               client/release/*.exe
               client/release/*.blockmap
+          - label: macOS DMG
+            os: macos-latest
+            artifact-name: athena-macos-dmg
+            artifact-path: client/release/*.dmg
 
     steps:
       - name: Check out repository
@@ -54,6 +58,8 @@ jobs:
       - name: Build desktop package
         working-directory: client
         run: npm run dist -- --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

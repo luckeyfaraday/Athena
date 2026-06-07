@@ -5,6 +5,7 @@ import {
   appendEmbeddedSessions,
   embeddedSessionKey,
 } from "../src/session-rename-keys.ts";
+import { handoffLaunchOptions } from "../src/handoff-launch.ts";
 
 function embeddedSession(overrides = {}) {
   return {
@@ -64,4 +65,18 @@ test("appendEmbeddedSessions updates existing sessions in place", () => {
   assert.deepEqual(merged.map((session) => session.id), ["terminal-1", "terminal-2"]);
   assert.equal(merged[0].title, "Renamed");
   assert.equal(merged[0].pid, 222);
+});
+
+test("handoff launch options attach the exact preview as curated context", () => {
+  const markdown = "# Athena Session Handoff\n\n- Continue from verified state.";
+
+  assert.deepEqual(handoffLaunchOptions("claude", markdown), {
+    kind: "claude",
+    title: "Claude Handoff",
+    cols: 96,
+    rows: 28,
+    sessionLabel: "From handoff",
+    contextMode: "curated",
+    contextText: markdown,
+  });
 });

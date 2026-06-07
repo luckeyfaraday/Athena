@@ -22,6 +22,7 @@ import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
 import { roomRouteById, type ActiveRoom } from "./routes";
 import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
+import { handoffLaunchOptions } from "./handoff-launch";
 import {
   applyAgentSessionRenames,
   applyEmbeddedSessionRenames,
@@ -888,6 +889,35 @@ export function App() {
     setError(null);
   }
 
+  async function startFreshFromHandoff(
+    kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">,
+    preview: HandoffPreview,
+  ) {
+    if (!client || !workspace) throw new Error("Backend or workspace is not available.");
+    if (!sameWorkspacePath(preview.workspace, workspace)) {
+      throw new Error("This handoff was generated for a different workspace. Create a new preview before launching.");
+    }
+
+    await saveHandoffToRecall(preview.markdown, {
+      sourceCount: preview.sourceCount,
+      sourceTitles: preview.sourceTitles,
+    });
+    const created = await desktop.spawnEmbeddedTerminal(workspace, handoffLaunchOptions(kind, preview.markdown));
+    if (created.status === "failed") {
+      throw new Error(created.error || `Unable to launch ${providerLabel(kind)} from the handoff.`);
+    }
+
+    setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
+    setTerminalFocus(true);
+    setActiveRoom("command");
+    try {
+      const result = await client.markRecallUsed(workspace, kind);
+      setState((current) => ({ ...current, recall: result.recall }));
+    } catch (err) {
+      setError(`Handoff launched, but recall usage could not be recorded: ${String(err)}`);
+    }
+  }
+
   const activeEmbeddedSessions = useMemo(
     () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
     [embeddedSessions, workspace],
@@ -1119,13 +1149,7 @@ export function App() {
                   sourceCount: preview.sourceCount,
                   sourceTitles: preview.sourceTitles,
                 })}
-                onStartFreshFromHandoff={async (kind, preview) => {
-                  await saveHandoffToRecall(preview.markdown, {
-                    sourceCount: preview.sourceCount,
-                    sourceTitles: preview.sourceTitles,
-                  });
-                  await launchEmbedded(kind, 1);
-                }}
+                onStartFreshFromHandoff={startFreshFromHandoff}
               />
             )}
             {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} mark={<AthenaMark />} />}

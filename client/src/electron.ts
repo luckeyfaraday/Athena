@@ -143,6 +143,42 @@ export type TerminalControlState = {
   attentionReason: string | null;
 };
 
+export type AgentMessage = {
+  id: string;
+  threadId: string;
+  at: string;
+  updatedAt: string;
+  workspace: string;
+  from: string;
+  fromTerminalId: string | null;
+  to: string;
+  toTerminalId: string | null;
+  toKind: string | null;
+  text: string;
+  preview: string;
+  status: string;
+  replyRequested: boolean;
+  hopCount: number;
+  source: string;
+  error: string | null;
+};
+
+export type SendAgentMessageRequest = {
+  to: string;
+  text: string;
+  workspace?: string | null;
+  fromTerminalId?: string | null;
+  threadId?: string | null;
+  replyRequested?: boolean;
+  hopCount?: number;
+};
+
+export type SendAgentMessageResult = {
+  message: AgentMessage;
+  terminal: EmbeddedTerminalSession | null;
+  queued: boolean;
+};
+
 export type AthenaLaunchState = {
   pid: number;
   startedAt: string;
@@ -179,6 +215,8 @@ type WorkspaceApi = {
   renameEmbeddedTerminal: (id: string, title: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
+  listAgentMessages: (workspace?: string, limit?: number) => Promise<AgentMessage[]>;
+  sendAgentMessage: (request: SendAgentMessageRequest) => Promise<SendAgentMessageResult>;
   getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
@@ -259,6 +297,29 @@ const browserFallback: WorkspaceApi = {
   },
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
+  async listAgentMessages() { return []; },
+  async sendAgentMessage(request: SendAgentMessageRequest) {
+    const message: AgentMessage = {
+      id: `preview-message-${Date.now()}`,
+      threadId: request.threadId ?? "preview-thread",
+      at: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      workspace: "/preview",
+      from: "human",
+      fromTerminalId: request.fromTerminalId ?? null,
+      to: request.to,
+      toTerminalId: null,
+      toKind: null,
+      text: request.text,
+      preview: request.text.replace(/\s+/g, " ").trim().slice(0, 180),
+      status: "queued",
+      replyRequested: Boolean(request.replyRequested),
+      hopCount: request.hopCount ?? 0,
+      source: "preview",
+      error: null,
+    };
+    return { message, terminal: null, queued: true };
+  },
   async getPerformanceDiagnostics() {
     return {
       activeTerminals: 0,

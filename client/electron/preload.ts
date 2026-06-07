@@ -7,6 +7,42 @@ import type { EmbeddedTerminalKind, EmbeddedTerminalSession, EmbeddedTerminalSpa
 import type { AthenaLaunchState } from "./launch-state.js";
 import type { WorkspacePath } from "./platform.js";
 
+export type AgentMessage = {
+  id: string;
+  threadId: string;
+  at: string;
+  updatedAt: string;
+  workspace: string;
+  from: string;
+  fromTerminalId: string | null;
+  to: string;
+  toTerminalId: string | null;
+  toKind: string | null;
+  text: string;
+  preview: string;
+  status: string;
+  replyRequested: boolean;
+  hopCount: number;
+  source: string;
+  error: string | null;
+};
+
+export type SendAgentMessageRequest = {
+  to: string;
+  text: string;
+  workspace?: string | null;
+  fromTerminalId?: string | null;
+  threadId?: string | null;
+  replyRequested?: boolean;
+  hopCount?: number;
+};
+
+export type SendAgentMessageResult = {
+  message: AgentMessage;
+  terminal: EmbeddedTerminalSession | null;
+  queued: boolean;
+};
+
 export type PerformanceDiagnostics = {
   activeTerminals: number;
   bufferedTerminalChars: number;
@@ -87,6 +123,8 @@ export type WorkspaceApi = {
   renameEmbeddedTerminal: (id: string, title: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
+  listAgentMessages: (workspace?: string, limit?: number) => Promise<AgentMessage[]>;
+  sendAgentMessage: (request: SendAgentMessageRequest) => Promise<SendAgentMessageResult>;
   getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
@@ -159,6 +197,8 @@ const api: WorkspaceApi = {
   renameEmbeddedTerminal: (id, title) => ipcRenderer.invoke("embeddedTerminal:rename", id, title),
   resizeEmbeddedTerminal: (id, cols, rows) => ipcRenderer.invoke("embeddedTerminal:resize", id, cols, rows),
   getEmbeddedTerminalBuffer: (id) => ipcRenderer.invoke("embeddedTerminal:buffer", id),
+  listAgentMessages: (workspace, limit) => ipcRenderer.invoke("agentMessages:list", workspace, limit),
+  sendAgentMessage: (request) => ipcRenderer.invoke("agentMessages:send", request),
   getPerformanceDiagnostics: () => ipcRenderer.invoke("performance:diagnostics"),
   killEmbeddedTerminal: (id) => ipcRenderer.invoke("embeddedTerminal:kill", id),
   listAgentSessions: (workspace) => ipcRenderer.invoke("agentSessions:list", workspace),

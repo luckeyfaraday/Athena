@@ -324,6 +324,49 @@ async def context_workspace_inject_terminal_input(
     )
 
 
+async def context_workspace_send_message(
+    to: str,
+    text: str,
+    project_dir: str | None = None,
+    from_terminal_id: str | None = None,
+    thread_id: str | None = None,
+    reply_requested: bool = True,
+    hop_count: int = 0,
+) -> dict[str, Any]:
+    """Send a structured Athena agent message to a live terminal.
+
+    Prefer this over context_workspace_inject_terminal_input for agent-to-agent
+    communication. Athena records the message in its server-side message store,
+    stamps a structured envelope, resolves stable handles such as codex#1 or
+    claude#1, and queues instead of injecting when the target appears busy.
+    Pass project_dir to scope handles and CONTEXT_WORKSPACE_TERMINAL_ID as
+    from_terminal_id when available.
+    """
+    return await ContextWorkspaceElectronClient().post(
+        "/agent-messages/send",
+        {
+            "to": to,
+            "text": text,
+            "project_dir": project_dir,
+            "from_terminal_id": from_terminal_id,
+            "thread_id": thread_id,
+            "reply_requested": reply_requested,
+            "hop_count": hop_count,
+        },
+    )
+
+
+async def context_workspace_list_messages(
+    project_dir: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """List Athena's recent structured agent messages."""
+    params: dict[str, Any] = {"limit": limit}
+    if project_dir:
+        params["project_dir"] = project_dir
+    return await ContextWorkspaceElectronClient().get("/agent-messages", **params)
+
+
 async def context_workspace_list_runs() -> dict[str, Any]:
     """List Context Workspace agent runs."""
     return await ContextWorkspaceClient().get("/agents/runs")
@@ -454,6 +497,8 @@ def register_tools(mcp: Any) -> None:
         context_workspace_kill_terminal,
         context_workspace_close_workspace,
         context_workspace_inject_terminal_input,
+        context_workspace_send_message,
+        context_workspace_list_messages,
         context_workspace_list_runs,
         context_workspace_get_run,
         context_workspace_cancel_run,

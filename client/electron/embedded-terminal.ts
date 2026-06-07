@@ -6,6 +6,18 @@ import { promisify } from "node:util";
 import { BrowserWindow } from "electron";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import {
+  agentMessageEnvelope,
+  createAgentMessage,
+  expireInFlightAgentMessages,
+  failQueuedAgentMessages,
+  listAgentMessages,
+  markTerminalOutputForMessages,
+  queuedAgentMessagesForTerminal,
+  updateAgentMessageStatus,
+  type AgentMessage,
+} from "./agent-messages.js";
+import { agentHandle, agentHandleMap, resolveAgentTarget } from "./agent-routing.js";
+import {
   recentControlEvents,
   recordInputFailed,
   recordInputRequested,
@@ -27,6 +39,12 @@ import { ptyHost } from "./pty-host-client.js";
 import { claudeProjectPathCandidates, newestCodexSessionIdForWorkspace, savedResumeSessionId, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import { rawInputPreview } from "./terminal-input.js";
+import {
+  clearTerminalActivity,
+  isTerminalActive,
+  recordTerminalInputActivity,
+  recordTerminalOutputActivity,
+} from "./terminal-activity.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -67,6 +85,23 @@ export type EmbeddedTerminalSpawnOptions = {
   controlSource?: string;
 };
 
+export type SendAgentMessageRequest = {
+  to: string;
+  text: string;
+  workspace?: string | null;
+  fromTerminalId?: string | null;
+  threadId?: string | null;
+  replyRequested?: boolean;
+  hopCount?: number;
+  source?: string;
+};
+
+export type SendAgentMessageResult = {
+  message: AgentMessage;
+  terminal: EmbeddedTerminalSession | null;
+  queued: boolean;
+};
+
 type ManagedTerminal = {
   session: EmbeddedTerminalSession;
   restore: RestorableTerminal;
@@ -85,6 +120,7 @@ let ptyHostListenersInstalled = false;
 export function initEmbeddedTerminals(appRoot: string): void {
   _appRoot = appRoot;
   installPtyHostListeners();
+  expireInFlightAgentMessages("Athena restarted before the message could be delivered.");
   quarantinePendingRestoreAttemptsAfterCrash();
   startEventLoopMonitor();
 }
@@ -155,6 +191,10 @@ export function listEmbeddedTerminals(): EmbeddedTerminalSession[] {
   return Array.from(terminals.values())
     .filter((entry) => entry.session.status === "running")
     .map((entry) => ({ ...entry.session }));
+}
+
+export function listEmbeddedAgentMessages(workspace?: string | null, limit?: number): AgentMessage[] {
+  return listAgentMessages(workspace, limit);
 }
 
 export function getEmbeddedTerminalBuffer(id: string): string {
@@ -238,14 +278,11 @@ function notifyTerminalExit(id: string, exitCode: number | null): void {
 }
 
 export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | null {
-  const normalized = target.trim();
-  if (!normalized) return null;
-  const direct = terminals.get(normalized)?.session;
-  if (direct) return { ...direct };
-  for (const entry of terminals.values()) {
-    if (entry.session.providerSessionId === normalized) return { ...entry.session };
+  try {
+    return { ...resolveAgentTarget(target, listEmbeddedTerminals()) };
+  } catch {
+    return null;
   }
-  return null;
 }
 
 export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> {
@@ -570,6 +607,7 @@ function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 
 export async function writeEmbeddedTerminal(id: string, data: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminal(id);
+  recordTerminalInputActivity(id);
   await ptyHost.write(id, data);
   return { ...entry.session };
 }
@@ -588,19 +626,147 @@ export function renameEmbeddedTerminal(id: string, title: string): EmbeddedTermi
 export async function submitEmbeddedTerminalInput(target: string, text: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminalTarget(target);
   if (!text.trim()) throw new Error("Input text cannot be empty.");
+  const message = createAgentMessage({
+    workspace: entry.session.workspace,
+    from: "external",
+    to: agentHandle(entry.session, listEmbeddedTerminals()),
+    toTerminalId: entry.session.id,
+    toKind: entry.session.kind,
+    text,
+    source: "terminal-injection",
+    status: "injecting",
+  });
   recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview: text });
   const writes = terminalInputWritesForKind(entry.session.kind, text);
   try {
+    recordTerminalInputActivity(entry.session.id);
     for (const write of writes) {
       await ptyHost.write(entry.session.id, write.data);
       if (write.delayAfterMs) await delay(write.delayAfterMs);
     }
   } catch (error) {
     recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview: text, error: String(error) });
+    updateAgentMessageStatus(message.id, "failed", String(error));
     throw error;
   }
   recordInputWritten({ terminalId: entry.session.id, source: "electron-control", preview: text });
+  updateAgentMessageStatus(message.id, "written");
   return { ...entry.session };
+}
+
+export async function sendAgentMessage(request: SendAgentMessageRequest): Promise<SendAgentMessageResult> {
+  const sessions = listEmbeddedTerminals();
+  const fromSession = request.fromTerminalId ? findEmbeddedTerminal(request.fromTerminalId) : null;
+  const workspace = request.workspace ?? fromSession?.workspace ?? null;
+  const target = requireTerminalTarget(request.to, workspace);
+  const handles = agentHandleMap(sessions);
+  const message = createAgentMessage({
+    workspace: target.session.workspace,
+    from: fromSession ? handles.get(fromSession.id) ?? fromSession.title : request.source ?? "human",
+    fromTerminalId: fromSession?.id ?? request.fromTerminalId ?? null,
+    to: handles.get(target.session.id) ?? target.session.title,
+    toTerminalId: target.session.id,
+    toKind: target.session.kind,
+    text: request.text,
+    threadId: request.threadId,
+    replyRequested: request.replyRequested,
+    hopCount: request.hopCount,
+    source: request.source ?? "athena",
+    status: isTerminalActive(target.session.id) ? "queued" : "injecting",
+  });
+  if (message.status === "queued") {
+    terminalsWithQueuedMessages.add(target.session.id);
+    scheduleQueueDrain(target.session.id);
+    return { message, terminal: { ...target.session }, queued: true };
+  }
+
+  const delivered = await deliverAgentMessage(target, message, "agent-message");
+  return { message: delivered, terminal: { ...target.session }, queued: false };
+}
+
+/** Inject a single message envelope into a terminal and record the outcome. */
+async function deliverAgentMessage(entry: ManagedTerminal, message: AgentMessage, source: string): Promise<AgentMessage> {
+  const envelope = agentMessageEnvelope(message);
+  const injecting = updateAgentMessageStatus(message.id, "injecting") ?? message;
+  recordInputRequested({ terminalId: entry.session.id, source, preview: envelope });
+  try {
+    recordTerminalInputActivity(entry.session.id);
+    for (const write of terminalInputWritesForKind(entry.session.kind, envelope)) {
+      await ptyHost.write(entry.session.id, write.data);
+      if (write.delayAfterMs) await delay(write.delayAfterMs);
+    }
+  } catch (error) {
+    recordInputFailed({ terminalId: entry.session.id, source, preview: envelope, error: String(error) });
+    return updateAgentMessageStatus(message.id, "failed", String(error)) ?? injecting;
+  }
+  recordInputWritten({ terminalId: entry.session.id, source, preview: envelope });
+  return updateAgentMessageStatus(message.id, "written") ?? injecting;
+}
+
+// Queued messages wait for the target terminal to return to an idle prompt
+// before they are injected, so a message sent to a busy agent is never typed
+// into the middle of its current turn. Delivery is retried on a short debounce
+// after each burst of terminal output (the agent finishing a turn), and exactly
+// one queued message is injected per idle window so they arrive in order without
+// piling up. Messages that never find an idle window are expired so they fail
+// visibly instead of sitting "queued" forever.
+const QUEUE_DRAIN_DEBOUNCE_MS = 1200;
+const QUEUE_MESSAGE_MAX_AGE_MS = 120_000;
+const queueDrainTimers = new Map<string, NodeJS.Timeout>();
+const terminalsWithQueuedMessages = new Set<string>();
+const drainInFlight = new Set<string>();
+
+function scheduleQueueDrain(terminalId: string): void {
+  const existing = queueDrainTimers.get(terminalId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    queueDrainTimers.delete(terminalId);
+    void drainQueuedAgentMessages(terminalId);
+  }, QUEUE_DRAIN_DEBOUNCE_MS);
+  timer.unref?.();
+  queueDrainTimers.set(terminalId, timer);
+}
+
+function clearQueueDrain(terminalId: string): void {
+  const timer = queueDrainTimers.get(terminalId);
+  if (timer) clearTimeout(timer);
+  queueDrainTimers.delete(terminalId);
+  terminalsWithQueuedMessages.delete(terminalId);
+}
+
+async function drainQueuedAgentMessages(terminalId: string): Promise<void> {
+  if (drainInFlight.has(terminalId)) return;
+  drainInFlight.add(terminalId);
+  try {
+    const entry = terminals.get(terminalId);
+    if (!entry || entry.session.status !== "running") {
+      failQueuedAgentMessages(terminalId, "Target terminal is no longer running.");
+      terminalsWithQueuedMessages.delete(terminalId);
+      return;
+    }
+    const now = Date.now();
+    for (const message of queuedAgentMessagesForTerminal(terminalId)) {
+      if (now - Date.parse(message.at) > QUEUE_MESSAGE_MAX_AGE_MS) {
+        updateAgentMessageStatus(message.id, "failed", "Timed out waiting for the target terminal to become idle.");
+      }
+    }
+    const pending = queuedAgentMessagesForTerminal(terminalId);
+    if (pending.length === 0) {
+      terminalsWithQueuedMessages.delete(terminalId);
+      return;
+    }
+    if (isTerminalActive(terminalId)) {
+      scheduleQueueDrain(terminalId);
+      return;
+    }
+    // Injecting the oldest message makes the terminal busy again, so any
+    // remaining messages wait for the next idle window and stay ordered.
+    await deliverAgentMessage(entry, pending[0], "agent-message-queue");
+    if (queuedAgentMessagesForTerminal(terminalId).length > 0) scheduleQueueDrain(terminalId);
+    else terminalsWithQueuedMessages.delete(terminalId);
+  } finally {
+    drainInFlight.delete(terminalId);
+  }
 }
 
 /**
@@ -615,6 +781,7 @@ export async function writeEmbeddedTerminalInputRaw(target: string, data: string
   const preview = rawInputPreview(data);
   recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview });
   try {
+    recordTerminalInputActivity(entry.session.id);
     await ptyHost.write(entry.session.id, data);
   } catch (error) {
     recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview, error: String(error) });
@@ -635,7 +802,10 @@ export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminal
   const entry = requireTerminal(id);
   await ptyHost.kill(id);
   entry.session = { ...entry.session, status: "exited", exitCode: null };
+  failQueuedAgentMessages(id, "Target terminal was stopped before delivery.");
+  clearQueueDrain(id);
   terminals.delete(id);
+  clearTerminalActivity(id);
   removeRestoreEntry(id);
   emit("embedded-terminal:exit", { id, exitCode: null });
   return { ...entry.session };
@@ -646,9 +816,14 @@ function installPtyHostListeners(): void {
   ptyHostListenersInstalled = true;
   ptyHost.on("data", ({ id, data }) => {
     recordTerminalOutput(id);
+    recordTerminalOutputActivity(id);
+    markTerminalOutputForMessages(id);
     appendBuffer(id, data);
     notifyTerminalData(id, data);
     queueOutput(id, data);
+    // Output usually means the agent finished a turn; retry queued delivery
+    // once it settles back to an idle prompt.
+    if (terminalsWithQueuedMessages.has(id)) scheduleQueueDrain(id);
   });
   ptyHost.on("exit", ({ id, exitCode }) => {
     flushOutput(id);
@@ -657,8 +832,11 @@ function installPtyHostListeners(): void {
     if (!entry) return;
     entry.session = { ...entry.session, status: "exited", exitCode };
     recordTerminalExited(id, exitCode);
+    failQueuedAgentMessages(id, "Target terminal exited before delivery.");
+    clearQueueDrain(id);
     emit("embedded-terminal:exit", { id, exitCode });
     terminals.delete(id);
+    clearTerminalActivity(id);
     if (!appQuitting) removeRestoreEntry(id);
   });
   ptyHost.on("error", ({ id, error }) => {
@@ -677,6 +855,8 @@ function installPtyHostListeners(): void {
       source: "pty-host",
       error,
     });
+    failQueuedAgentMessages(id, "Target terminal failed before delivery.");
+    clearQueueDrain(id);
     emit("embedded-terminal:session", entry.session);
   });
   ptyHost.on("crash", ({ ids, error }) => {
@@ -695,9 +875,12 @@ function installPtyHostListeners(): void {
         source: "pty-host",
         error,
       });
+      failQueuedAgentMessages(id, "Target terminal crashed before delivery.");
+      clearQueueDrain(id);
       emit("embedded-terminal:session", entry.session);
       emit("embedded-terminal:exit", { id, exitCode: null });
       terminals.delete(id);
+      clearTerminalActivity(id);
       if (!appQuitting) removeRestoreEntry(id);
     }
   });
@@ -911,14 +1094,9 @@ function requireTerminal(id: string): ManagedTerminal {
   return entry;
 }
 
-function requireTerminalTarget(target: string): ManagedTerminal {
-  const normalized = target.trim();
-  const direct = terminals.get(normalized);
-  if (direct) return direct;
-  for (const entry of terminals.values()) {
-    if (entry.session.providerSessionId === normalized) return entry;
-  }
-  throw new Error(`Embedded terminal target not found: ${target}`);
+function requireTerminalTarget(target: string, workspace?: string | null): ManagedTerminal {
+  const session = resolveAgentTarget(target, listEmbeddedTerminals(), workspace);
+  return requireTerminal(session.id);
 }
 
 function delay(ms: number): Promise<void> {

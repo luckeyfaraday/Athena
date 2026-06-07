@@ -29,7 +29,7 @@ export function SwarmRoom({
   agentMessages: AgentMessage[];
   terminalControl: TerminalControlState[];
   onOpenCommand: () => void;
-  onSendAgentMessage: (to: string, text: string, replyRequested: boolean) => Promise<void>;
+  onSendAgentMessage: (toTerminalId: string, text: string, replyRequested: boolean) => Promise<void>;
   onInspectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onInspectAgentSession: (session: AgentSession) => void;
 }) {
@@ -40,7 +40,7 @@ export function SwarmRoom({
   const liveAgentSessions = sessions.filter((session) => session.kind !== "shell");
   const recentHistoricalSessions = agentSessions.filter((session) => session.status === "historical").slice(0, 6);
   const handles = useMemo(() => agentHandles(liveAgentSessions), [liveAgentSessions]);
-  const selectedTo = selectedTarget || handles[0]?.handle || "";
+  const selectedTo = selectedTarget || handles[0]?.id || "";
   const sortedMessages = [...agentMessages].sort((left, right) => Date.parse(left.at) - Date.parse(right.at)).slice(-50);
 
   async function submitMessage() {
@@ -137,7 +137,7 @@ export function SwarmRoom({
         <div className="agentMessageComposer">
           <select value={selectedTo} onChange={(event) => setSelectedTarget(event.target.value)} disabled={handles.length === 0}>
             {handles.map((item) => (
-              <option key={item.id} value={item.handle}>{item.handle} - {item.title}</option>
+              <option key={item.id} value={item.id}>{item.handle} - {item.title}</option>
             ))}
           </select>
           <label>

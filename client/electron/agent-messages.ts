@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { EmbeddedTerminalKind, EmbeddedTerminalSession } from "./embedded-terminal.js";
+import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
+export { agentHandle, agentHandleMap } from "./agent-routing.js";
 
 export type AgentMessageStatus = "queued" | "injecting" | "written" | "output_seen" | "failed";
 
@@ -43,6 +44,8 @@ export type AgentMessageInput = {
 };
 
 const MAX_AGENT_MESSAGES = 500;
+let messageCache: AgentMessage[] | null = null;
+let writtenMessageTerminals = new Set<string>();
 
 export function agentMessageStorePath(): string {
   return path.join(os.homedir(), ".context-workspace", "agent-messages.json");
@@ -99,6 +102,7 @@ export function updateAgentMessageStatus(id: string, status: AgentMessageStatus,
 }
 
 export function markTerminalOutputForMessages(terminalId: string): void {
+  if (!writtenMessageTerminals.has(terminalId)) return;
   const messages = readAgentMessages();
   let changed = false;
   const next = messages.map((message) => {
@@ -145,18 +149,6 @@ function failAgentMessagesWhere(predicate: (message: AgentMessage) => boolean, e
   if (changed) writeAgentMessages(next);
 }
 
-export function agentHandle(session: EmbeddedTerminalSession, sessions: EmbeddedTerminalSession[]): string {
-  const peers = sessions
-    .filter((item) => item.kind === session.kind && item.kind !== "shell")
-    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id));
-  const index = peers.findIndex((item) => item.id === session.id);
-  return `${session.kind}#${Math.max(0, index) + 1}`;
-}
-
-export function agentHandleMap(sessions: EmbeddedTerminalSession[]): Map<string, string> {
-  return new Map(sessions.map((session) => [session.id, agentHandle(session, sessions)]));
-}
-
 export function agentMessageEnvelope(message: AgentMessage): string {
   const replyLine = message.replyRequested && message.fromTerminalId
     ? `Reply target: ${message.fromTerminalId}\n`
@@ -169,18 +161,31 @@ export function agentMessageEnvelope(message: AgentMessage): string {
 }
 
 function readAgentMessages(): AgentMessage[] {
+  if (messageCache) return [...messageCache];
   try {
     const parsed = JSON.parse(fs.readFileSync(agentMessageStorePath(), "utf8"));
-    return Array.isArray(parsed) ? parsed.filter(isAgentMessage) : [];
+    messageCache = Array.isArray(parsed) ? parsed.filter(isAgentMessage) : [];
   } catch {
-    return [];
+    messageCache = [];
   }
+  writtenMessageTerminals = writtenTargets(messageCache);
+  return [...messageCache];
 }
 
 function writeAgentMessages(messages: AgentMessage[]): void {
+  messageCache = [...messages];
+  writtenMessageTerminals = writtenTargets(messageCache);
   const filePath = agentMessageStorePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), { encoding: "utf8", mode: 0o600 });
+}
+
+function writtenTargets(messages: AgentMessage[]): Set<string> {
+  return new Set(
+    messages
+      .filter((message) => message.status === "written" && message.toTerminalId)
+      .map((message) => message.toTerminalId as string),
+  );
 }
 
 function isAgentMessage(value: unknown): value is AgentMessage {

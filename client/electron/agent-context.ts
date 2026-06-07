@@ -25,7 +25,7 @@ const HERMES_TIP = [
 
 const AGENT_MESSAGE_TIP = [
   "For Athena agent-to-agent messages:",
-  "  1. Prefer `context_workspace_send_message(to, text, from_terminal_id)` over raw terminal injection.",
+  "  1. Prefer `context_workspace_send_message(to=..., text=..., project_dir=..., from_terminal_id=...)` over raw terminal injection.",
   "  2. Use stable handles from Athena such as `codex#1`, `claude#1`, or `hermes#1` when available.",
   "  3. Pass `$CONTEXT_WORKSPACE_TERMINAL_ID` as `from_terminal_id` so replies can route back to this pane.",
   "  4. Use `context_workspace_list_messages` to inspect recent routed messages.",

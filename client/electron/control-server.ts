@@ -76,6 +76,8 @@ type SendAgentMessageRequest = {
   target?: string;
   text?: string;
   input?: string;
+  workspace?: string;
+  project_dir?: string;
   from_terminal_id?: string;
   fromTerminalId?: string;
   thread_id?: string;
@@ -397,6 +399,7 @@ function parseSendAgentMessageRequest(body: unknown): Parameters<typeof sendAgen
   return {
     to,
     text,
+    workspace: stringValue(request.workspace) ?? stringValue(request.project_dir),
     fromTerminalId: stringValue(request.from_terminal_id) ?? stringValue(request.fromTerminalId),
     threadId: stringValue(request.thread_id) ?? stringValue(request.threadId),
     replyRequested: booleanValue(request.reply_requested ?? request.replyRequested),

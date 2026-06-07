@@ -30,6 +30,7 @@ export type AgentMessage = {
 export type SendAgentMessageRequest = {
   to: string;
   text: string;
+  workspace?: string | null;
   fromTerminalId?: string | null;
   threadId?: string | null;
   replyRequested?: boolean;

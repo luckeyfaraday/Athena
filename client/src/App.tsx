@@ -566,7 +566,6 @@ export function App() {
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
       const kind = classifyTerminalAttention(payload.data);
       if (kind) markWorkspaceAttention(payload.id, kind);
-      if (activeWorkspaceRef.current) void refreshAgentMessages();
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       markWorkspaceAttention(payload.id, "update");
@@ -854,10 +853,10 @@ export function App() {
     setError(null);
   }
 
-  async function sendAgentMessage(to: string, text: string, replyRequested: boolean) {
-    if (!to.trim() || !text.trim()) return;
+  async function sendAgentMessage(toTerminalId: string, text: string, replyRequested: boolean) {
+    if (!toTerminalId.trim() || !text.trim()) return;
     try {
-      await desktop.sendAgentMessage({ to, text, replyRequested });
+      await desktop.sendAgentMessage({ to: toTerminalId, text, workspace, replyRequested });
       await Promise.all([refreshAgentMessages(), refreshPerformanceDiagnostics()]);
       setError(null);
     } catch (err) {

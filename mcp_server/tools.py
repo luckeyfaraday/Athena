@@ -327,6 +327,7 @@ async def context_workspace_inject_terminal_input(
 async def context_workspace_send_message(
     to: str,
     text: str,
+    project_dir: str | None = None,
     from_terminal_id: str | None = None,
     thread_id: str | None = None,
     reply_requested: bool = True,
@@ -338,13 +339,15 @@ async def context_workspace_send_message(
     communication. Athena records the message in its server-side message store,
     stamps a structured envelope, resolves stable handles such as codex#1 or
     claude#1, and queues instead of injecting when the target appears busy.
-    Pass your CONTEXT_WORKSPACE_TERMINAL_ID as from_terminal_id when available.
+    Pass project_dir to scope handles and CONTEXT_WORKSPACE_TERMINAL_ID as
+    from_terminal_id when available.
     """
     return await ContextWorkspaceElectronClient().post(
         "/agent-messages/send",
         {
             "to": to,
             "text": text,
+            "project_dir": project_dir,
             "from_terminal_id": from_terminal_id,
             "thread_id": thread_id,
             "reply_requested": reply_requested,

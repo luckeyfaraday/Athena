@@ -30,7 +30,7 @@ import time
 from typing import Any
 
 from . import splash
-from ._client import Backend
+from ._client import Backend, backend_status
 
 # Interactive launch commands per agent. cwd is set to the project dir.
 LAUNCH_COMMANDS = {
@@ -534,14 +534,22 @@ def _short_err(exc: Exception) -> str:
 
 
 def run_tui(backend_url: str | None, project_dir: str) -> int:
-    backend = Backend(backend_url=backend_url)
-    # Fail fast with a readable message instead of a curses crash.
-    try:
-        backend.get("/health")
-    except Exception as exc:  # noqa: BLE001
-        print(f"error: cannot reach backend at {backend.base_url}: {_short_err(exc)}", file=sys.stderr)
-        print("hint: start it with `athena serve` or open Athena.", file=sys.stderr)
+    # Probe discovery before entering curses so a missing or stale backend
+    # surfaces as a readable message rather than a black screen or crash. The
+    # two cases need different fixes, so we tell them apart.
+    status = backend_status(backend_url)
+    if not status["running"]:
+        if status["stale"]:
+            print(f"error: Athena backend discovery is stale — {status['baseUrl']} is not responding.", file=sys.stderr)
+            print(f"detail: {status['detail']}", file=sys.stderr)
+            print("hint: restart Athena (or `athena serve`) to refresh discovery, then retry.", file=sys.stderr)
+        else:
+            print("error: no Athena backend is running.", file=sys.stderr)
+            print(f"detail: {status['detail']}", file=sys.stderr)
+            print("hint: open Athena or run `athena serve`, then retry.", file=sys.stderr)
         return 1
+
+    backend = Backend(backend_url=backend_url)
 
     def _main(stdscr: "curses._CursesWindow") -> None:
         curses.use_default_colors()

@@ -23,6 +23,63 @@ def test_tui_reports_missing_curses_with_install_hint(monkeypatch, capsys) -> No
     assert "python -m pip install windows-curses" in captured.err
 
 
+def test_run_tui_reports_stale_backend_without_entering_curses(monkeypatch, capsys) -> None:
+    from cli import tui
+
+    monkeypatch.setattr(
+        tui,
+        "backend_status",
+        lambda backend_url: {
+            "configured": True,
+            "baseUrl": "http://127.0.0.1:50379",
+            "running": False,
+            "stale": True,
+            "detail": "connection refused",
+        },
+    )
+
+    def fail_wrapper(_main):  # pragma: no cover - must never run
+        raise AssertionError("run_tui must not enter curses when the backend is stale")
+
+    monkeypatch.setattr(tui.curses, "wrapper", fail_wrapper)
+
+    result = tui.run_tui(backend_url=None, project_dir=".")
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "stale" in captured.err
+    assert "http://127.0.0.1:50379" in captured.err
+    assert "athena serve" in captured.err
+
+
+def test_run_tui_reports_missing_backend(monkeypatch, capsys) -> None:
+    from cli import tui
+
+    monkeypatch.setattr(
+        tui,
+        "backend_status",
+        lambda backend_url: {
+            "configured": False,
+            "baseUrl": None,
+            "running": False,
+            "stale": False,
+            "detail": "No backend discovery file at /tmp/backend.json.",
+        },
+    )
+    monkeypatch.setattr(
+        tui.curses,
+        "wrapper",
+        lambda _main: (_ for _ in ()).throw(AssertionError("must not enter curses")),
+    )
+
+    result = tui.run_tui(backend_url=None, project_dir=".")
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "no Athena backend is running" in captured.err
+    assert "athena serve" in captured.err
+
+
 def test_sessions_grouping_does_not_import_tui(monkeypatch, capsys) -> None:
     real_import = builtins.__import__
 

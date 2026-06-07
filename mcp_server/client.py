@@ -28,11 +28,53 @@ def get_backend_url(settings: Settings | None = None) -> str:
     return settings.default_backend_url.rstrip("/")
 
 
+def get_backend_status(settings: Settings | None = None) -> dict[str, Any]:
+    """Resolve the backend URL *and probe it*, distinguishing "no backend" from
+    a stale discovery file.
+
+    ``get_backend_url`` trusts ``backend.json`` blindly, which is fine for the
+    hot path but means a client (the TUI especially) will happily dial a dead
+    ephemeral port left behind by a previous Athena run. This mirrors
+    ``get_electron_control_status`` so callers can show an actionable message:
+    start a backend vs. restart Athena to refresh discovery.
+    """
+    settings = settings or Settings()
+    if settings.backend_url:
+        url = settings.backend_url.rstrip("/")
+        healthy, detail = probe_health(url, settings)
+        return {"configured": True, "baseUrl": url, "running": healthy, "stale": not healthy, "detail": detail}
+
+    if not settings.backend_state_path.exists():
+        return {
+            "configured": False,
+            "baseUrl": None,
+            "running": False,
+            "stale": False,
+            "detail": f"No backend discovery file at {settings.backend_state_path}.",
+        }
+
+    try:
+        data = json.loads(settings.backend_state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        # A half-written file (Athena mid-startup) reads as not-yet-available.
+        return {"configured": False, "baseUrl": None, "running": False, "stale": False, "detail": str(exc)}
+
+    url = data.get("baseUrl")
+    running = data.get("running")
+    if not isinstance(url, str) or not url.strip():
+        return {"configured": False, "baseUrl": None, "running": False, "stale": False, "detail": "Discovery file has no baseUrl."}
+    backend_url = _translate_backend_url_for_wsl(url.rstrip("/"), settings)
+    healthy, detail = probe_health(backend_url, settings)
+    if running is False and not healthy:
+        detail = f"{detail}. Discovery file reports running:false."
+    return {"configured": True, "baseUrl": backend_url, "running": healthy, "stale": not healthy, "detail": detail}
+
+
 def get_electron_control_url(settings: Settings | None = None) -> str:
     settings = settings or Settings()
     if settings.electron_control_url:
         control_url = settings.electron_control_url.rstrip("/")
-        healthy, detail = probe_electron_control_health(control_url, settings)
+        healthy, detail = probe_health(control_url, settings)
         if healthy:
             return control_url
         raise RuntimeError(
@@ -47,7 +89,7 @@ def get_electron_control_url(settings: Settings | None = None) -> str:
         running = data.get("running")
         if isinstance(url, str) and url.strip():
             control_url = _translate_backend_url_for_wsl(url.rstrip("/"), settings)
-            healthy, detail = probe_electron_control_health(control_url, settings)
+            healthy, detail = probe_health(control_url, settings)
             if healthy:
                 return control_url
             discovery_note = " Discovery file reports running:false." if running is False else ""
@@ -86,7 +128,7 @@ def get_electron_control_status(settings: Settings | None = None) -> dict[str, A
     settings = settings or Settings()
     if settings.electron_control_url:
         url = settings.electron_control_url.rstrip("/")
-        healthy, detail = probe_electron_control_health(url, settings)
+        healthy, detail = probe_health(url, settings)
         return {"configured": True, "baseUrl": url, "running": healthy, "stale": not healthy, "detail": detail}
 
     if not settings.electron_control_state_path.exists():
@@ -108,13 +150,13 @@ def get_electron_control_status(settings: Settings | None = None) -> dict[str, A
     if not isinstance(url, str) or not url.strip():
         return {"configured": False, "baseUrl": None, "running": False, "stale": False, "detail": "Discovery file has no baseUrl."}
     control_url = _translate_backend_url_for_wsl(url.rstrip("/"), settings)
-    healthy, detail = probe_electron_control_health(control_url, settings)
+    healthy, detail = probe_health(control_url, settings)
     if running is False and not healthy:
         detail = f"{detail}. Discovery file reports running:false."
     return {"configured": True, "baseUrl": control_url, "running": healthy, "stale": not healthy, "detail": detail}
 
 
-def probe_electron_control_health(base_url: str, settings: Settings | None = None) -> tuple[bool, str]:
+def probe_health(base_url: str, settings: Settings | None = None) -> tuple[bool, str]:
     settings = settings or Settings()
     timeout = min(settings.request_timeout_seconds, 2.0)
     request = Request(f"{base_url.rstrip('/')}/health", method="GET")

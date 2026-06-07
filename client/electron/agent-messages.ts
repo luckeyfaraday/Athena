@@ -113,6 +113,38 @@ export function markTerminalOutputForMessages(terminalId: string): void {
   if (changed) writeAgentMessages(next);
 }
 
+/** Queued messages awaiting delivery to a terminal, oldest first. */
+export function queuedAgentMessagesForTerminal(terminalId: string): AgentMessage[] {
+  return readAgentMessages()
+    .filter((message) => message.toTerminalId === terminalId && message.status === "queued")
+    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at));
+}
+
+/** Fail every still-queued message for a terminal (e.g. it exited before delivery). */
+export function failQueuedAgentMessages(terminalId: string, error: string): void {
+  failAgentMessagesWhere((message) => message.toTerminalId === terminalId && message.status === "queued", error);
+}
+
+/**
+ * Fail any message left mid-delivery by a previous run. Queued/injecting
+ * messages target terminals that no longer exist after a restart, so they can
+ * never be delivered — surface them as failed instead of leaving them pending.
+ */
+export function expireInFlightAgentMessages(error: string): void {
+  failAgentMessagesWhere((message) => message.status === "queued" || message.status === "injecting", error);
+}
+
+function failAgentMessagesWhere(predicate: (message: AgentMessage) => boolean, error: string): void {
+  const messages = readAgentMessages();
+  let changed = false;
+  const next = messages.map((message) => {
+    if (!predicate(message)) return message;
+    changed = true;
+    return { ...message, status: "failed" as const, error, updatedAt: new Date().toISOString() };
+  });
+  if (changed) writeAgentMessages(next);
+}
+
 export function agentHandle(session: EmbeddedTerminalSession, sessions: EmbeddedTerminalSession[]): string {
   const peers = sessions
     .filter((item) => item.kind === session.kind && item.kind !== "shell")

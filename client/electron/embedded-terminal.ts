@@ -10,8 +10,11 @@ import {
   agentHandleMap,
   agentMessageEnvelope,
   createAgentMessage,
+  expireInFlightAgentMessages,
+  failQueuedAgentMessages,
   listAgentMessages,
   markTerminalOutputForMessages,
+  queuedAgentMessagesForTerminal,
   updateAgentMessageStatus,
   type AgentMessage,
 } from "./agent-messages.js";
@@ -111,6 +114,7 @@ let ptyHostListenersInstalled = false;
 export function initEmbeddedTerminals(appRoot: string): void {
   _appRoot = appRoot;
   installPtyHostListeners();
+  expireInFlightAgentMessages("Athena restarted before the message could be delivered.");
   quarantinePendingRestoreAttemptsAfterCrash();
   startEventLoopMonitor();
 }
@@ -672,23 +676,98 @@ export async function sendAgentMessage(request: SendAgentMessageRequest): Promis
     source: request.source ?? "athena",
     status: isTerminalBusy(target.session.id) ? "queued" : "injecting",
   });
-  if (message.status === "queued") return { message, terminal: { ...target.session }, queued: true };
+  if (message.status === "queued") {
+    terminalsWithQueuedMessages.add(target.session.id);
+    scheduleQueueDrain(target.session.id);
+    return { message, terminal: { ...target.session }, queued: true };
+  }
 
+  const delivered = await deliverAgentMessage(target, message, "agent-message");
+  return { message: delivered, terminal: { ...target.session }, queued: false };
+}
+
+/** Inject a single message envelope into a terminal and record the outcome. */
+async function deliverAgentMessage(entry: ManagedTerminal, message: AgentMessage, source: string): Promise<AgentMessage> {
   const envelope = agentMessageEnvelope(message);
-  recordInputRequested({ terminalId: target.session.id, source: "agent-message", preview: envelope });
+  const injecting = updateAgentMessageStatus(message.id, "injecting") ?? message;
+  recordInputRequested({ terminalId: entry.session.id, source, preview: envelope });
   try {
-    for (const write of terminalInputWritesForKind(target.session.kind, envelope)) {
-      await ptyHost.write(target.session.id, write.data);
+    for (const write of terminalInputWritesForKind(entry.session.kind, envelope)) {
+      await ptyHost.write(entry.session.id, write.data);
       if (write.delayAfterMs) await delay(write.delayAfterMs);
     }
   } catch (error) {
-    recordInputFailed({ terminalId: target.session.id, source: "agent-message", preview: envelope, error: String(error) });
-    const failed = updateAgentMessageStatus(message.id, "failed", String(error)) ?? message;
-    return { message: failed, terminal: { ...target.session }, queued: false };
+    recordInputFailed({ terminalId: entry.session.id, source, preview: envelope, error: String(error) });
+    return updateAgentMessageStatus(message.id, "failed", String(error)) ?? injecting;
   }
-  recordInputWritten({ terminalId: target.session.id, source: "agent-message", preview: envelope });
-  const written = updateAgentMessageStatus(message.id, "written") ?? message;
-  return { message: written, terminal: { ...target.session }, queued: false };
+  recordInputWritten({ terminalId: entry.session.id, source, preview: envelope });
+  return updateAgentMessageStatus(message.id, "written") ?? injecting;
+}
+
+// Queued messages wait for the target terminal to return to an idle prompt
+// before they are injected, so a message sent to a busy agent is never typed
+// into the middle of its current turn. Delivery is retried on a short debounce
+// after each burst of terminal output (the agent finishing a turn), and exactly
+// one queued message is injected per idle window so they arrive in order without
+// piling up. Messages that never find an idle window are expired so they fail
+// visibly instead of sitting "queued" forever.
+const QUEUE_DRAIN_DEBOUNCE_MS = 1200;
+const QUEUE_MESSAGE_MAX_AGE_MS = 120_000;
+const queueDrainTimers = new Map<string, NodeJS.Timeout>();
+const terminalsWithQueuedMessages = new Set<string>();
+const drainInFlight = new Set<string>();
+
+function scheduleQueueDrain(terminalId: string): void {
+  const existing = queueDrainTimers.get(terminalId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    queueDrainTimers.delete(terminalId);
+    void drainQueuedAgentMessages(terminalId);
+  }, QUEUE_DRAIN_DEBOUNCE_MS);
+  timer.unref?.();
+  queueDrainTimers.set(terminalId, timer);
+}
+
+function clearQueueDrain(terminalId: string): void {
+  const timer = queueDrainTimers.get(terminalId);
+  if (timer) clearTimeout(timer);
+  queueDrainTimers.delete(terminalId);
+  terminalsWithQueuedMessages.delete(terminalId);
+}
+
+async function drainQueuedAgentMessages(terminalId: string): Promise<void> {
+  if (drainInFlight.has(terminalId)) return;
+  drainInFlight.add(terminalId);
+  try {
+    const entry = terminals.get(terminalId);
+    if (!entry || entry.session.status !== "running") {
+      failQueuedAgentMessages(terminalId, "Target terminal is no longer running.");
+      terminalsWithQueuedMessages.delete(terminalId);
+      return;
+    }
+    const now = Date.now();
+    for (const message of queuedAgentMessagesForTerminal(terminalId)) {
+      if (now - Date.parse(message.at) > QUEUE_MESSAGE_MAX_AGE_MS) {
+        updateAgentMessageStatus(message.id, "failed", "Timed out waiting for the target terminal to become idle.");
+      }
+    }
+    const pending = queuedAgentMessagesForTerminal(terminalId);
+    if (pending.length === 0) {
+      terminalsWithQueuedMessages.delete(terminalId);
+      return;
+    }
+    if (isTerminalBusy(terminalId)) {
+      scheduleQueueDrain(terminalId);
+      return;
+    }
+    // Injecting the oldest message makes the terminal busy again, so any
+    // remaining messages wait for the next idle window and stay ordered.
+    await deliverAgentMessage(entry, pending[0], "agent-message-queue");
+    if (queuedAgentMessagesForTerminal(terminalId).length > 0) scheduleQueueDrain(terminalId);
+    else terminalsWithQueuedMessages.delete(terminalId);
+  } finally {
+    drainInFlight.delete(terminalId);
+  }
 }
 
 /**
@@ -738,6 +817,9 @@ function installPtyHostListeners(): void {
     appendBuffer(id, data);
     notifyTerminalData(id, data);
     queueOutput(id, data);
+    // Output usually means the agent finished a turn; retry queued delivery
+    // once it settles back to an idle prompt.
+    if (terminalsWithQueuedMessages.has(id)) scheduleQueueDrain(id);
   });
   ptyHost.on("exit", ({ id, exitCode }) => {
     flushOutput(id);
@@ -746,6 +828,8 @@ function installPtyHostListeners(): void {
     if (!entry) return;
     entry.session = { ...entry.session, status: "exited", exitCode };
     recordTerminalExited(id, exitCode);
+    failQueuedAgentMessages(id, "Target terminal exited before delivery.");
+    clearQueueDrain(id);
     emit("embedded-terminal:exit", { id, exitCode });
     terminals.delete(id);
     if (!appQuitting) removeRestoreEntry(id);
@@ -784,6 +868,8 @@ function installPtyHostListeners(): void {
         source: "pty-host",
         error,
       });
+      failQueuedAgentMessages(id, "Target terminal crashed before delivery.");
+      clearQueueDrain(id);
       emit("embedded-terminal:session", entry.session);
       emit("embedded-terminal:exit", { id, exitCode: null });
       terminals.delete(id);

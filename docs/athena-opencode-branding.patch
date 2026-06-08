@@ -1,0 +1,189 @@
+diff --git a/packages/opencode/src/session/prompt.ts b/packages/opencode/src/session/prompt.ts
+index 701c632..1ed40e2 100644
+--- a/packages/opencode/src/session/prompt.ts
++++ b/packages/opencode/src/session/prompt.ts
+@@ -15,6 +15,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
+ import { SessionCompaction } from "./compaction"
+ import { SystemPrompt } from "./system"
+ import { Instruction } from "./instruction"
++import { frozenSnapshotSystem } from "./memory/snapshot"
+ import { Plugin } from "../plugin"
+ import MAX_STEPS from "../session/prompt/max-steps.txt"
+ import { ToolRegistry } from "@/tool/registry"
+@@ -1417,6 +1418,14 @@ export const layer = Layer.effect(
+               MessageV2.toModelMessagesEffect(msgs, model),
+             ])
+             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
++            if (process.env.ATHENA_IMMERSIVE_MODE === "1") {
++              const athenaCtx = yield* InstanceState.context
++              system.push(
++                frozenSnapshotSystem(athenaCtx.worktree, sessionID, {
++                  agent: process.env.ATHENA_RUNTIME_BRAND?.trim(),
++                }),
++              )
++            }
+             const format = lastUser.format ?? { type: "text" as const }
+             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+             const result = yield* handle.process({
+diff --git a/packages/tui/src/app.tsx b/packages/tui/src/app.tsx
+index ec1fe4d..078efed 100644
+--- a/packages/tui/src/app.tsx
++++ b/packages/tui/src/app.tsx
+@@ -4,6 +4,7 @@ import { Deferred, Effect } from "effect"
+ import { Global } from "@opencode-ai/core/global"
+ import { Flag } from "@opencode-ai/core/flag/flag"
+ import { InstallationVersion } from "@opencode-ai/core/installation/version"
++import { athenaRuntimeBrand, athenaTerminalPrefix } from "./branding"
+ import { ClipboardProvider, useClipboard } from "./context/clipboard"
+ import { EpilogueProvider } from "./context/epilogue"
+ import * as Selection from "./util/selection"
+@@ -420,24 +421,24 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
+     if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
+ 
+     if (route.data.type === "home") {
+-      renderer.setTerminalTitle("OpenCode")
++      renderer.setTerminalTitle(athenaRuntimeBrand)
+       return
+     }
+ 
+     if (route.data.type === "session") {
+       const session = sync.session.get(route.data.sessionID)
+       if (!session || isDefaultTitle(session.title)) {
+-        renderer.setTerminalTitle("OpenCode")
++        renderer.setTerminalTitle(athenaRuntimeBrand)
+         return
+       }
+ 
+       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
+-      renderer.setTerminalTitle(`OC | ${title}`)
++      renderer.setTerminalTitle(`${athenaTerminalPrefix} | ${title}`)
+       return
+     }
+ 
+     if (route.data.type === "plugin") {
+-      renderer.setTerminalTitle(`OC | ${route.data.id}`)
++      renderer.setTerminalTitle(`${athenaTerminalPrefix} | ${route.data.id}`)
+     }
+   })
+ 
+diff --git a/packages/tui/src/attention.ts b/packages/tui/src/attention.ts
+index b309edc..4751cae 100644
+--- a/packages/tui/src/attention.ts
++++ b/packages/tui/src/attention.ts
+@@ -38,14 +38,14 @@ type TuiAttentionHost = TuiAttention & {
+   dispose(): void
+ }
+ 
+-const DEFAULT_TITLE = "opencode"
++const DEFAULT_TITLE = process.env.ATHENA_RUNTIME_BRAND?.trim() || "ATHENA CODE"
+ const DEFAULT_PACK_ID = "opencode.default"
+ const KV_SOUND_PACK = "attention_sound_pack"
+ const TITLE_LIMIT = 80
+ const MESSAGE_LIMIT = 240
+ const BUILTIN_PACK: RegisteredSoundPack = {
+   id: DEFAULT_PACK_ID,
+-  name: "OpenCode Default",
++  name: "Athena Default",
+   builtin: true,
+   sounds: {
+     default: defaultSoundPath,
+diff --git a/packages/tui/src/branding.ts b/packages/tui/src/branding.ts
+new file mode 100644
+index 0000000..632197e
+--- /dev/null
++++ b/packages/tui/src/branding.ts
+@@ -0,0 +1,11 @@
++export type AthenaRuntimeBrand = "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE"
++
++export const athenaRuntimeBrand = (process.env.ATHENA_RUNTIME_BRAND?.trim().toUpperCase()
++  || "ATHENA CODE") as AthenaRuntimeBrand
++
++export const athenaImmersive = process.env.ATHENA_IMMERSIVE_MODE === "1"
++
++export const athenaModeLabel = athenaImmersive ? "IMMERSIVE" : "CLEAN"
++
++export const athenaTerminalPrefix =
++  athenaRuntimeBrand === "ATHENA CODEX" ? "ACX" : athenaRuntimeBrand === "ATHENA CLAUDE" ? "ACL" : "AC"
+diff --git a/packages/tui/src/component/prompt/index.tsx b/packages/tui/src/component/prompt/index.tsx
+index 0a9f103..4613af9 100644
+--- a/packages/tui/src/component/prompt/index.tsx
++++ b/packages/tui/src/component/prompt/index.tsx
+@@ -15,6 +15,7 @@ import path from "path"
+ import { fileURLToPath } from "url"
+ import { useLocal } from "../../context/local"
+ import { Flag } from "@opencode-ai/core/flag/flag"
++import { athenaRuntimeBrand } from "../../branding"
+ import { tint, useTheme } from "../../context/theme"
+ import { EmptyBorder, SplitBorder } from "../../ui/border"
+ import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
+@@ -205,7 +206,7 @@ export function Prompt(props: PromptProps) {
+   const workspace = usePromptWorkspace(props.sessionID)
+   const move = usePromptMove({ projectID: project.project, sessionID: () => props.sessionID })
+   const [cursorVersion, setCursorVersion] = createSignal(0)
+-  const currentProviderLabel = createMemo(() => local.model.parsed().provider)
++  const currentProviderLabel = createMemo(() => athenaRuntimeBrand)
+   const hasRightContent = createMemo(() => Boolean(props.right))
+ 
+   function promptModelWarning() {
+diff --git a/packages/tui/src/feature-plugins/home/footer.tsx b/packages/tui/src/feature-plugins/home/footer.tsx
+index 41bee5d..28f4fa1 100644
+--- a/packages/tui/src/feature-plugins/home/footer.tsx
++++ b/packages/tui/src/feature-plugins/home/footer.tsx
+@@ -4,6 +4,7 @@ import { createMemo, Match, Show, Switch } from "solid-js"
+ import { abbreviateHome } from "../../runtime"
+ import { useTuiPaths } from "../../context/runtime"
+ import { useHomeSessionDestination } from "../../routes/home/session-destination"
++import { athenaModeLabel, athenaRuntimeBrand } from "../../branding"
+ 
+ const id = "internal:home-footer"
+ 
+@@ -75,6 +76,9 @@ function View(props: { api: TuiPluginApi }) {
+     >
+       <Directory api={props.api} />
+       <Mcp api={props.api} />
++      <text fg={props.api.theme.current.primary}>
++        {athenaRuntimeBrand} · {athenaModeLabel}
++      </text>
+       <box flexGrow={1} />
+       <Version api={props.api} />
+     </box>
+diff --git a/packages/tui/src/logo.ts b/packages/tui/src/logo.ts
+index a58a8cf..c3903b2 100644
+--- a/packages/tui/src/logo.ts
++++ b/packages/tui/src/logo.ts
+@@ -1,6 +1,6 @@
+ export const logo = {
+-  left: ["                   ", "█▀▀█ █▀▀█ █▀▀█ █▀▀▄", "█__█ █__█ █^^^ █__█", "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀"],
+-  right: ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"],
++  left: ["               ", "█▀▀█ ▀▀█▀▀ █  █", "█▄▄█   █   █▀▀█", "▀  ▀   ▀   ▀  ▀"],
++  right: ["              ", "█▀▀▀ █▄  █ █▀▀█", "█▀▀▀ █ ▀▄█ █▄▄█", "▀▀▀▀ ▀  ▀▀ ▀  ▀"],
+ }
+ 
+ export const go = {
+diff --git a/packages/tui/src/routes/session/permission.tsx b/packages/tui/src/routes/session/permission.tsx
+index c787a84..7962e78 100644
+--- a/packages/tui/src/routes/session/permission.tsx
++++ b/packages/tui/src/routes/session/permission.tsx
+@@ -141,11 +141,11 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
+           body={
+             <Switch>
+               <Match when={props.request.always.length === 1 && props.request.always[0] === "*"}>
+-                <TextBody title={"This will allow " + props.request.permission + " until OpenCode is restarted."} />
++                <TextBody title={"This will allow " + props.request.permission + " until Athena is restarted."} />
+               </Match>
+               <Match when={true}>
+                 <box paddingLeft={1} gap={1}>
+-                  <text fg={theme.textMuted}>This will allow the following patterns until OpenCode is restarted</text>
++                  <text fg={theme.textMuted}>This will allow the following patterns until Athena is restarted</text>
+                   <box>
+                     <For each={props.request.always}>
+                       {(pattern) => (
+@@ -485,7 +485,7 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
+           <text fg={theme.text}>Reject permission</text>
+         </box>
+         <box paddingLeft={1}>
+-          <text fg={theme.textMuted}>Tell OpenCode what to do differently</text>
++          <text fg={theme.textMuted}>Tell Athena what to do differently</text>
+         </box>
+       </box>
+       <box

@@ -1,16 +1,17 @@
 diff --git a/packages/opencode/src/session/prompt.ts b/packages/opencode/src/session/prompt.ts
-index 701c632..1ed40e2 100644
+index 701c632..055eaf2 100644
 --- a/packages/opencode/src/session/prompt.ts
 +++ b/packages/opencode/src/session/prompt.ts
-@@ -15,6 +15,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
+@@ -15,6 +15,8 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
  import { SessionCompaction } from "./compaction"
  import { SystemPrompt } from "./system"
  import { Instruction } from "./instruction"
 +import { frozenSnapshotSystem } from "./memory/snapshot"
++import { recallSystemEntry } from "./memory/recall"
  import { Plugin } from "../plugin"
  import MAX_STEPS from "../session/prompt/max-steps.txt"
  import { ToolRegistry } from "@/tool/registry"
-@@ -1417,6 +1418,14 @@ export const layer = Layer.effect(
+@@ -1417,6 +1419,19 @@ export const layer = Layer.effect(
                MessageV2.toModelMessagesEffect(msgs, model),
              ])
              const system = [...env, ...instructions, ...(skills ? [skills] : [])]
@@ -21,6 +22,11 @@ index 701c632..1ed40e2 100644
 +                  agent: process.env.ATHENA_RUNTIME_BRAND?.trim(),
 +                }),
 +              )
++              const athenaQuery = (msgs.findLast((m) => m.info.role === "user")?.parts ?? [])
++                .flatMap((part) => (part.type === "text" ? [part.text] : []))
++                .join("\n")
++              const athenaRecall = recallSystemEntry(athenaCtx.worktree, athenaQuery)
++              if (athenaRecall) system.push(athenaRecall)
 +            }
              const format = lastUser.format ?? { type: "text" as const }
              if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)

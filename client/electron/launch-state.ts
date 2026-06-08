@@ -56,6 +56,19 @@ export function isTerminalRestorePaused(): boolean {
   return Boolean(currentState?.terminalRestorePaused ?? readAthenaLaunchState()?.terminalRestorePaused);
 }
 
+export function pauseTerminalRestore(): AthenaLaunchState {
+  const previous = currentState ?? readAthenaLaunchState();
+  currentState = {
+    pid: previous?.pid ?? process.pid,
+    startedAt: previous?.startedAt ?? new Date().toISOString(),
+    cleanExit: previous?.cleanExit ?? false,
+    terminalRestorePaused: true,
+    previousCrashAt: previous?.previousCrashAt ?? null,
+  };
+  writeAthenaLaunchState(currentState);
+  return currentState;
+}
+
 export function clearTerminalRestorePause(): AthenaLaunchState {
   const previous = currentState ?? readAthenaLaunchState();
   currentState = {

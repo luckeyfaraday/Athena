@@ -473,6 +473,11 @@ python scripts/hermes-refresh-recall.py
 
 You can override it with `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`. The default script writes a short project-local recall cache and uses native Codex/OpenCode/Claude session discovery as fallback context, which keeps recall refresh working even when Hermes in WSL cannot reach the Windows backend loopback URL.
 
+If the same projects live under different usernames on different machines (for
+example `C:\Users\alanq\...` on Windows and `/home/alan/...` on Linux), set
+`CONTEXT_WORKSPACE_HOME_ALIASES` to the extra usernames (comma-separated, e.g.
+`alan,alanq`) so project-scoped memory matching recognizes both home paths.
+
 Recommended recall workflow:
 
 1. Hermes runs its own `session_search`.

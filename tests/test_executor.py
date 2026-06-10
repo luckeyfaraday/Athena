@@ -77,3 +77,34 @@ def test_executor_marks_nonzero_exit_failed(tmp_path: Path) -> None:
     assert result.returncode == 7
     assert registry.get(run.run_id).status == RunStatus.FAILED
 
+
+
+def test_executor_marks_run_failed_when_binary_is_missing(tmp_path: Path) -> None:
+    registry = RunRegistry()
+    run = registry.create_run(
+        agent_type="codex",
+        project_dir=tmp_path,
+        task="Run missing binary.",
+        run_id="run_missing1",
+    )
+
+    class MissingBinaryAdapter:
+        agent_type = "codex"
+
+        def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
+            return AdapterCommand(
+                argv=[str(tmp_path / "no-such-binary")],
+                cwd=run.project_dir,
+                stdin="",
+            )
+
+        def summarize_result(self, run: Run, artifacts: RunArtifacts) -> str:
+            return ""
+
+    result = RunExecutor(registry=registry).execute(run, MissingBinaryAdapter())
+
+    assert result.run.status == RunStatus.FAILED
+    assert result.returncode == -3
+    assert "Failed to start" in (result.run.error or "")
+    assert "Failed to start" in result.artifacts.stderr.read_text(encoding="utf-8")
+    assert registry.get(run.run_id).status == RunStatus.FAILED

@@ -99,6 +99,9 @@ class ContextTurnRecordRequest(BaseModel):
 
 RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
 ALL_SESSIONS_CACHE_TTL_SECONDS = float(os.environ.get("CONTEXT_WORKSPACE_SESSIONS_CACHE_TTL", "60"))
+# The cache key includes the caller-supplied search query, so without a cap a
+# client issuing many distinct queries would grow this dict without bound.
+ALL_SESSIONS_CACHE_MAX_ENTRIES = 32
 HERMES_REFRESH_COMMAND_ENV = "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD"
 BACKEND_URL_ENV = "CONTEXT_WORKSPACE_BACKEND_URL"
 BACKEND_PORT_ENV = "CONTEXT_WORKSPACE_BACKEND_PORT"
@@ -307,10 +310,7 @@ def create_app(
         limit: int = Query(default=10, ge=1, le=1000),
     ) -> str:
         try:
-            response = app.state.memory.format_query_response(q, limit=limit)
-            if q.strip():
-                app.state.memory.log_query(agent_id, q)
-            return response
+            return app.state.memory.format_query_response(q, limit=limit)
         except OSError as exc:
             raise _memory_unavailable_exception(exc) from exc
 
@@ -413,6 +413,12 @@ def create_app(
             "summary": format_agent_sessions_summary(sessions),
         }
         app.state.all_sessions_cache[cache_key] = {"created_monotonic": now, "payload": payload}
+        if len(app.state.all_sessions_cache) > ALL_SESSIONS_CACHE_MAX_ENTRIES:
+            oldest_key = min(
+                app.state.all_sessions_cache,
+                key=lambda key: app.state.all_sessions_cache[key]["created_monotonic"],
+            )
+            del app.state.all_sessions_cache[oldest_key]
         return {
             **payload,
             "cache": {"hit": False, "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS, "age_seconds": 0.0},
@@ -536,12 +542,23 @@ def _execute_and_record(
     memory_excerpt: str,
     timeout_seconds: float | None,
 ) -> ExecutionResult:
-    result = executor.execute(
-        run,
-        adapter,
-        memory_excerpt=memory_excerpt,
-        timeout_seconds=timeout_seconds,
-    )
+    try:
+        result = executor.execute(
+            run,
+            adapter,
+            memory_excerpt=memory_excerpt,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        # Last-resort backstop: this runs on the thread pool, where the
+        # submitted Future is never inspected, so an escaping exception would
+        # vanish and leave the run active forever.
+        failed = executor.registry.fail(run.run_id, str(exc))
+        _try_append_memory(
+            memory,
+            f"[{failed.agent_id}] failed task: {failed.task} | Error: {exc}",
+        )
+        raise
     _try_append_memory(
         memory,
         f"[{result.run.agent_id}] completed task: {result.run.task} | "

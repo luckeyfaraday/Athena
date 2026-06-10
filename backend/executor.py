@@ -54,15 +54,30 @@ class RunExecutor:
         self.registry.update_status(run.run_id, RunStatus.RUNNING)
 
         try:
-            process = subprocess.Popen(
-                command.argv,
-                cwd=command.cwd,
-                env={**os.environ, **command.env},
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                process = subprocess.Popen(
+                    command.argv,
+                    cwd=command.cwd,
+                    env={**os.environ, **command.env},
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except OSError as exc:
+                # The agent binary is missing or not executable. Without this
+                # the exception would escape into the executor thread pool and
+                # leave the run stuck in RUNNING forever (and counted against
+                # runtime limits).
+                error = f"Failed to start {run.agent_type} process: {exc}"
+                artifacts.stderr.write_text(error + "\n", encoding="utf-8")
+                failed = self.registry.fail(run.run_id, error)
+                return ExecutionResult(
+                    run=failed,
+                    artifacts=artifacts,
+                    returncode=-3,
+                    summary=f"{run.agent_id} failed to start: {exc}",
+                )
             with self._process_lock:
                 self._processes[run.run_id] = process
             if self.registry.cancel_requested(run.run_id):

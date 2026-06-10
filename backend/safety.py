@@ -33,6 +33,19 @@ _DANGEROUS_ROOTS = {
 }
 
 
+def _windows_dangerous_roots() -> set[Path]:
+    if os.name != "nt":
+        return set()
+    roots: set[Path] = set()
+    for env_name in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            roots.add(Path(value))
+    system_drive = os.environ.get("SystemDrive", "C:").strip() or "C:"
+    roots.add(Path(f"{system_drive}\\"))
+    return roots
+
+
 def validate_run_id(run_id: str) -> str:
     if not RUN_ID_RE.fullmatch(run_id):
         raise SafetyError(f"Invalid run_id: {run_id!r}")
@@ -54,8 +67,12 @@ def resolve_project_dir(project_dir: str | Path) -> Path:
     if not resolved.is_dir():
         raise SafetyError(f"Project directory is not a directory: {resolved}")
 
-    if resolved in _DANGEROUS_ROOTS:
+    if resolved in _DANGEROUS_ROOTS or resolved in _windows_dangerous_roots():
         raise SafetyError(f"Refusing to write into protected directory: {resolved}")
+
+    # A filesystem/drive root is never a sane project directory on any platform.
+    if resolved == Path(resolved.anchor):
+        raise SafetyError(f"Refusing to use a filesystem root as a project directory: {resolved}")
 
     home = Path.home().resolve()
     if resolved == home:

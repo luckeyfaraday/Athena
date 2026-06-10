@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,11 @@ MAX_MEMORY_CHARS = 2_000
 MAX_RECALL_CHARS = 3_000
 MAX_CURATED_CONTEXT_CHARS = 3_000
 MAX_RUNTIME_HISTORY_CHARS = 3_000
+# Both the turn log and the bundle directories are per-launch artifacts, so
+# they are pruned on write to keep `.context-workspace/context/` bounded.
+MAX_TURNS_FILE_BYTES = 262_144
+MAX_TURNS_KEPT_ON_TRIM = 100
+MAX_RETAINED_BUNDLES = 20
 _BUNDLE_ID_RE = re.compile(r"^ctx_[a-f0-9]{24}$")
 _PROJECT_INSTRUCTION_NAMES = (".hermes.md", "HERMES.md", "AGENTS.md", "CLAUDE.md", ".cursorrules")
 
@@ -79,6 +85,7 @@ class ContextBundleStore:
         turns_path.parent.mkdir(parents=True, exist_ok=True)
         with turns_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=True) + "\n")
+        _trim_turns_file(turns_path)
         return payload
 
     def create(
@@ -163,6 +170,7 @@ class ContextBundleStore:
         bundle_dir.mkdir(parents=True, exist_ok=False)
         bundle_path.write_text(json.dumps(bundle.payload(), indent=2) + "\n", encoding="utf-8")
         context_path.write_text(render_context_markdown(bundle), encoding="utf-8")
+        _prune_old_bundles(bundle_dir.parent, keep=MAX_RETAINED_BUNDLES)
         return bundle
 
     def read(self, project_dir: Path, bundle_id: str) -> ContextBundle:
@@ -175,7 +183,7 @@ class ContextBundleStore:
         payload = json.loads(bundle_path.read_text(encoding="utf-8"))
         if payload.get("workspace") != str(workspace) or payload.get("bundle_id") != bundle_id:
             raise ValueError("Context bundle workspace or id does not match the request.")
-        sources = [ContextSource(**source) for source in payload.get("sources", [])]
+        sources = [_context_source_from_payload(source) for source in payload.get("sources", [])]
         return ContextBundle(
             schema_version=payload["schema_version"],
             bundle_id=payload["bundle_id"],
@@ -284,6 +292,45 @@ def _runtime_history_source(workspace: Path) -> ContextSource | None:
         truncated=truncated,
         metadata={"turns_considered": min(12, len(raw.splitlines()))},
     )
+
+
+def _context_source_from_payload(source: Any) -> ContextSource:
+    """Build a ContextSource from stored JSON, tolerating unknown or missing keys."""
+    if not isinstance(source, dict):
+        raise ValueError("Context bundle source entries must be objects.")
+    return ContextSource(
+        kind=str(source.get("kind", "")),
+        path=source.get("path") if isinstance(source.get("path"), str) else None,
+        content=str(source.get("content", "")),
+        sha256=source.get("sha256") if isinstance(source.get("sha256"), str) else None,
+        truncated=bool(source.get("truncated", False)),
+        metadata=source.get("metadata") if isinstance(source.get("metadata"), dict) else {},
+    )
+
+
+def _trim_turns_file(path: Path) -> None:
+    try:
+        if path.stat().st_size <= MAX_TURNS_FILE_BYTES:
+            return
+        lines = path.read_text(encoding="utf-8").splitlines()[-MAX_TURNS_KEPT_ON_TRIM:]
+        while len(lines) > 1 and sum(len(line.encode("utf-8")) + 1 for line in lines) > MAX_TURNS_FILE_BYTES:
+            lines.pop(0)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _prune_old_bundles(context_dir: Path, *, keep: int) -> None:
+    try:
+        bundles = sorted(
+            (entry for entry in context_dir.iterdir() if entry.is_dir() and _BUNDLE_ID_RE.fullmatch(entry.name)),
+            key=lambda entry: entry.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return
+    for stale in bundles[keep:]:
+        shutil.rmtree(stale, ignore_errors=True)
 
 
 def _bounded(value: str, max_chars: int) -> tuple[str, bool]:

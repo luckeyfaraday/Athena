@@ -15,3 +15,10 @@ client/release/
 video/
 hyperframes-video/
 reports/
+
+# Local agent config and worktrees.
+.claude/
+
+# Personal memory files.
+HUMAN_MEMORY.md*
+

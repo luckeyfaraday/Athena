@@ -10,7 +10,7 @@
   <a href="https://github.com/luckeyfaraday/Athena">
     <img alt="GitHub repo" src="https://img.shields.io/badge/GitHub-Athena-0f1c16?logo=github" />
   </a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.6-d9c48a" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.7-d9c48a" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20WSL-2e5a46" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-Electron%20%2B%20React-68c4ff?logo=electron" />
   <img alt="Backend" src="https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi" />

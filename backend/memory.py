@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,10 +145,6 @@ class HermesMemoryStore:
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [entry for _, _, entry in scored[: max(1, min(limit, 100))]]
 
-    def log_query(self, agent_id: str | None, query: str) -> None:
-        actor = agent_id.strip() if agent_id else "agent"
-        self.append(f"[{actor}] asked Hermes memory about: {query.strip()}")
-
 
 def parse_memory_entries(text: str) -> list[str]:
     entries = []
@@ -223,8 +220,11 @@ def _home_prefix_candidates(normalized_path: str, home_prefix: str) -> list[str]
     if windows_home_match:
         windows_user = windows_home_match.group(1).lower()
         candidates.append(f"/home/{windows_user}")
-        if windows_user.endswith("q") and len(windows_user) > 1:
-            candidates.append(f"/home/{windows_user[:-1]}")
+
+    # Cross-machine setups where the Windows and Linux usernames differ can
+    # list the extra usernames explicitly instead of relying on heuristics.
+    for alias in _configured_home_aliases():
+        candidates.append(f"/home/{alias}")
 
     seen: set[str] = set()
     unique = []
@@ -234,6 +234,11 @@ def _home_prefix_candidates(normalized_path: str, home_prefix: str) -> list[str]
             seen.add(normalized)
             unique.append(normalized)
     return unique
+
+
+def _configured_home_aliases() -> list[str]:
+    raw = os.environ.get("CONTEXT_WORKSPACE_HOME_ALIASES", "")
+    return [alias.strip().lower() for alias in raw.split(",") if alias.strip()]
 
 
 def _read_text(path: Path) -> str:

@@ -208,7 +208,11 @@ class HermesMemoryStore:
 | `format_query_response(query, limit)` | Returns `"Project context from Hermes memory:\n\n- <entry>..."` |
 | `format_project_context(project_dir, limit)` | Searches entries for project-related context using path needles |
 | `search_project(project_dir, limit)` | Weighted matching against path variants (full path=100, home-relative=95, partial=60) |
-| `log_query(agent_id, query)` | Appends `[actor] asked Hermes memory about: ...` |
+
+Memory queries are read-only: `GET /memory/hermes` does not append query-log
+entries. When the Windows and Linux usernames differ across machines, set
+`CONTEXT_WORKSPACE_HOME_ALIASES` (comma-separated usernames) so
+`search_project()` also matches `/home/<alias>/...` path variants.
 
 **Pathneedle rule (CRITICAL):** Memory entries for context-workspace **must** contain the literal local filesystem path `/home/you/projects/context-workspace/` for `search_project()` needle matching to work. The GitHub repo name `luckeyfaraday/Athena` alone does NOT generate matching needles.
 

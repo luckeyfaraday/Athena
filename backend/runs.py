@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -51,6 +52,10 @@ class RunRegistry:
         self._agent_counts: dict[str, int] = {}
         self._cancel_requested: set[str] = set()
         self._max_retained_runs = max(1, max_retained_runs)
+        # The registry is mutated from FastAPI worker threads and the executor
+        # thread pool concurrently, so every read-modify-write must hold this
+        # lock (RLock because update flows call back into get()).
+        self._lock = threading.RLock()
 
     def create_run(
         self,
@@ -61,29 +66,31 @@ class RunRegistry:
         run_id: str | None = None,
     ) -> Run:
         normalized_agent_type = _normalize_agent_type(agent_type)
-        self._agent_counts[normalized_agent_type] = (
-            self._agent_counts.get(normalized_agent_type, 0) + 1
-        )
-        agent_id = validate_agent_id(
-            f"{normalized_agent_type}-{self._agent_counts[normalized_agent_type]}"
-        )
-        allocated_run_id = validate_run_id(run_id or f"run_{uuid4().hex}")
-        if allocated_run_id in self._runs:
-            raise ValueError(f"Run already exists: {allocated_run_id}")
+        resolved_project_dir = resolve_project_dir(project_dir)
+        with self._lock:
+            self._agent_counts[normalized_agent_type] = (
+                self._agent_counts.get(normalized_agent_type, 0) + 1
+            )
+            agent_id = validate_agent_id(
+                f"{normalized_agent_type}-{self._agent_counts[normalized_agent_type]}"
+            )
+            allocated_run_id = validate_run_id(run_id or f"run_{uuid4().hex}")
+            if allocated_run_id in self._runs:
+                raise ValueError(f"Run already exists: {allocated_run_id}")
 
-        now = datetime.now(timezone.utc)
-        run = Run(
-            run_id=allocated_run_id,
-            agent_id=agent_id,
-            agent_type=normalized_agent_type,
-            project_dir=resolve_project_dir(project_dir),
-            task=task,
-            created_at=now,
-            updated_at=now,
-        )
-        self._runs[run.run_id] = run
-        self._evict_terminal_runs()
-        return run
+            now = datetime.now(timezone.utc)
+            run = Run(
+                run_id=allocated_run_id,
+                agent_id=agent_id,
+                agent_type=normalized_agent_type,
+                project_dir=resolved_project_dir,
+                task=task,
+                created_at=now,
+                updated_at=now,
+            )
+            self._runs[run.run_id] = run
+            self._evict_terminal_runs()
+            return run
 
     def _evict_terminal_runs(self) -> None:
         """Drop oldest terminal runs once the registry exceeds its cap."""
@@ -101,63 +108,69 @@ class RunRegistry:
                 overflow -= 1
 
     def get(self, run_id: str) -> Run:
-        return self._runs[validate_run_id(run_id)]
+        with self._lock:
+            return self._runs[validate_run_id(run_id)]
 
     def update_status(self, run_id: str, status: RunStatus) -> Run:
-        current = self.get(run_id)
-        now = datetime.now(timezone.utc)
-        started_at = current.started_at
-        completed_at = current.completed_at
-        if status == RunStatus.RUNNING and started_at is None:
-            started_at = now
-        if status in _TERMINAL_STATUSES and completed_at is None:
-            completed_at = now
-        updated = Run(
-            run_id=current.run_id,
-            agent_id=current.agent_id,
-            agent_type=current.agent_type,
-            project_dir=current.project_dir,
-            task=current.task,
-            status=status,
-            created_at=current.created_at,
-            updated_at=now,
-            started_at=started_at,
-            completed_at=completed_at,
-            error=current.error,
-        )
-        self._runs[run_id] = updated
-        return updated
+        with self._lock:
+            current = self.get(run_id)
+            now = datetime.now(timezone.utc)
+            started_at = current.started_at
+            completed_at = current.completed_at
+            if status == RunStatus.RUNNING and started_at is None:
+                started_at = now
+            if status in _TERMINAL_STATUSES and completed_at is None:
+                completed_at = now
+            updated = Run(
+                run_id=current.run_id,
+                agent_id=current.agent_id,
+                agent_type=current.agent_type,
+                project_dir=current.project_dir,
+                task=current.task,
+                status=status,
+                created_at=current.created_at,
+                updated_at=now,
+                started_at=started_at,
+                completed_at=completed_at,
+                error=current.error,
+            )
+            self._runs[run_id] = updated
+            return updated
 
     def fail(self, run_id: str, error: str) -> Run:
-        failed = self.update_status(run_id, RunStatus.FAILED)
-        updated = Run(
-            run_id=failed.run_id,
-            agent_id=failed.agent_id,
-            agent_type=failed.agent_type,
-            project_dir=failed.project_dir,
-            task=failed.task,
-            status=failed.status,
-            created_at=failed.created_at,
-            updated_at=failed.updated_at,
-            started_at=failed.started_at,
-            completed_at=failed.completed_at,
-            error=error,
-        )
-        self._runs[run_id] = updated
-        return updated
+        with self._lock:
+            failed = self.update_status(run_id, RunStatus.FAILED)
+            updated = Run(
+                run_id=failed.run_id,
+                agent_id=failed.agent_id,
+                agent_type=failed.agent_type,
+                project_dir=failed.project_dir,
+                task=failed.task,
+                status=failed.status,
+                created_at=failed.created_at,
+                updated_at=failed.updated_at,
+                started_at=failed.started_at,
+                completed_at=failed.completed_at,
+                error=error,
+            )
+            self._runs[run_id] = updated
+            return updated
 
     def request_cancel(self, run_id: str) -> Run:
-        run = self.get(run_id)
-        if run.status in _TERMINAL_STATUSES:
-            return run
-        self._cancel_requested.add(run.run_id)
-        return self.update_status(run.run_id, RunStatus.CANCELLED)
+        with self._lock:
+            run = self.get(run_id)
+            if run.status in _TERMINAL_STATUSES:
+                return run
+            self._cancel_requested.add(run.run_id)
+            return self.update_status(run.run_id, RunStatus.CANCELLED)
 
     def cancel_requested(self, run_id: str) -> bool:
-        return validate_run_id(run_id) in self._cancel_requested
+        with self._lock:
+            return validate_run_id(run_id) in self._cancel_requested
 
     def active_runs(self) -> list[Run]:
-        return [run for run in self._runs.values() if run.status in _ACTIVE_STATUSES]
+        with self._lock:
+            return [run for run in self._runs.values() if run.status in _ACTIVE_STATUSES]
 
     def active_count(
         self,
@@ -177,7 +190,8 @@ class RunRegistry:
         return count
 
     def list_runs(self) -> list[Run]:
-        return list(self._runs.values())
+        with self._lock:
+            return list(self._runs.values())
 
 
 _ACTIVE_STATUSES = {RunStatus.PENDING, RunStatus.RUNNING}

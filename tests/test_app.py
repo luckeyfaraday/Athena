@@ -518,6 +518,71 @@ def test_all_agent_sessions_endpoint_refresh_bypasses_cache(tmp_path: Path, monk
     assert refreshed.json()["cache"]["hit"] is False
 
 
+def test_all_agent_sessions_cache_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(app_module, "list_native_agent_sessions", lambda *args, **kwargs: [])
+    monkeypatch.setattr(app_module, "format_agent_sessions_summary", lambda sessions: "0 sessions")
+    client = _client(tmp_path)
+
+    for index in range(app_module.ALL_SESSIONS_CACHE_MAX_ENTRIES + 8):
+        response = client.get("/agents/sessions/all", params={"q": f"query-{index}"})
+        assert response.status_code == 200
+
+    assert len(client.app.state.all_sessions_cache) <= app_module.ALL_SESSIONS_CACHE_MAX_ENTRIES
+
+
+def test_spawn_marks_run_failed_when_agent_binary_is_missing(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    class MissingBinaryAdapter(FakeAdapter):
+        def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
+            return AdapterCommand(
+                argv=[str(tmp_path / "does-not-exist-binary")],
+                cwd=run.project_dir,
+                stdin="",
+            )
+
+    fixture = Path(__file__).parent / "fixtures" / "fake_agent.py"
+    client = _client(tmp_path, adapter=MissingBinaryAdapter(fixture))
+
+    spawned = client.post(
+        "/agents/spawn",
+        json={"agent_type": "codex", "project_dir": str(project), "task": "do work"},
+    )
+    assert spawned.status_code == 202
+    run_id = spawned.json()["run"]["run_id"]
+
+    fetched = client.get(f"/agents/runs/{run_id}")
+    assert fetched.status_code == 200
+    run_payload = fetched.json()["run"]
+    assert run_payload["status"] == RunStatus.FAILED.value
+    assert "Failed to start" in (run_payload["error"] or "")
+
+
+def test_execute_and_record_backstop_fails_run_on_unexpected_error(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    registry = RunRegistry()
+    run = registry.create_run(agent_type="codex", project_dir=project, task="t")
+    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+
+    class ExplodingExecutor:
+        def __init__(self, registry: RunRegistry) -> None:
+            self.registry = registry
+
+        def execute(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            raise RuntimeError("adapter blew up")
+
+    with pytest.raises(RuntimeError, match="adapter blew up"):
+        app_module._execute_and_record(
+            ExplodingExecutor(registry), memory, run, adapter=None, memory_excerpt="", timeout_seconds=None,
+        )
+
+    failed = registry.get(run.run_id)
+    assert failed.status == RunStatus.FAILED
+    assert failed.error == "adapter blew up"
+
+
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -531,7 +596,8 @@ def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     assert "Codex adapter verified." in queried.text
     assert empty.status_code == 200
     assert empty.text == ""
-    assert recent.json()["entries"][-1] == "[agent] asked Hermes memory about: codex"
+    # Reads must not write: querying memory may not append query-log entries.
+    assert recent.json()["entries"] == ["Codex adapter verified."]
 
 
 def test_memory_delete_endpoint_removes_exact_entry(tmp_path: Path) -> None:

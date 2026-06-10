@@ -136,3 +136,15 @@ def test_sanitize_memory_text_redacts_secrets_and_injection_language() -> None:
     assert "ignore previous instructions" not in sanitized.lower()
     assert "[REDACTED]" in sanitized
     assert "[POTENTIAL_INJECTION_REDACTED]" in sanitized
+
+
+def test_project_context_matches_configured_home_alias(
+    tmp_path: Path, monkeypatch: "pytest.MonkeyPatch"
+) -> None:
+    monkeypatch.setenv("CONTEXT_WORKSPACE_HOME_ALIASES", "frieda")
+    store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    store.append("Project /home/frieda/projects/demo: uses the staging database.")
+
+    context = store.format_project_context("C:/Users/fred/projects/demo")
+
+    assert "staging database" in context

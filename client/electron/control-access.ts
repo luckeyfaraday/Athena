@@ -95,7 +95,8 @@ export function validatedWorkspacePath(value: unknown): string {
     return resolved;
   }
 
-  if (PROTECTED_POSIX_ROOTS.has(path.posix.normalize(resolved))) {
+  const normalizedPosix = path.posix.normalize(resolved);
+  if (PROTECTED_POSIX_ROOTS.has(normalizedPosix) || PROTECTED_POSIX_ROOTS.has(path.posix.normalize(normalized))) {
     throw new Error(`Refusing to use protected directory as a project root: ${resolved}`);
   }
   return resolved;

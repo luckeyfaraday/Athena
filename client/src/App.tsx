@@ -241,6 +241,7 @@ export function App() {
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => readUiTheme());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [recallRefreshing, setRecallRefreshing] = useState(false);
+  const [installingHermes, setInstallingHermes] = useState(false);
   const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
   const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptState | null>(null);
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
@@ -737,6 +738,23 @@ export function App() {
     }
   }
 
+  async function installHermes() {
+    if (!client || installingHermes) return;
+    setInstallingHermes(true);
+    setError(null);
+    try {
+      const result = await client.installHermes();
+      setState((current) => ({ ...current, hermes: result.hermes }));
+      if (result.returncode !== 0) {
+        setError(result.stderr.trim() || `Hermes install exited with status ${result.returncode}.`);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setInstallingHermes(false);
+    }
+  }
+
   async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1) {
     if (!workspace || busy) return;
     setBusy(true);
@@ -1163,6 +1181,8 @@ export function App() {
                 adapters={state.adapters}
                 busy={busy}
                 refreshing={recallRefreshing}
+                installingHermes={installingHermes}
+                onInstallHermes={installHermes}
                 interfaceMode={interfaceMode}
                 uiTheme={uiTheme}
                 terminalFocus={terminalFocus}

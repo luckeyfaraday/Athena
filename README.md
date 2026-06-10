@@ -10,7 +10,7 @@
   <a href="https://github.com/luckeyfaraday/Athena">
     <img alt="GitHub repo" src="https://img.shields.io/badge/GitHub-Athena-0f1c16?logo=github" />
   </a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.4-d9c48a" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.6-d9c48a" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20WSL-2e5a46" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-Electron%20%2B%20React-68c4ff?logo=electron" />
   <img alt="Backend" src="https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi" />
@@ -21,6 +21,8 @@
   <a href="#quick-start">Quick Start</a>
   ·
   <a href="#core-features">Features</a>
+  ·
+  <a href="#connecting-hermes">Connecting Hermes</a>
   ·
   <a href="#hermes-mcp-bridge">MCP Bridge</a>
   ·
@@ -101,7 +103,7 @@ Athena is not only a terminal emulator, memory store, or MCP server. It is a loc
 
 - Workspace tabs isolate active projects.
 - Electron starts and monitors the FastAPI backend.
-- Settings shows backend, Hermes, adapter, and recall status.
+- Settings shows backend, Hermes, adapter, and recall status, installs Hermes, and shows the MCP bridge connect helper.
 - Memory Room can inspect project memory and delete exact Hermes memory entries.
 - Review Room focuses on deciding which session output is worth keeping.
 
@@ -328,6 +330,64 @@ GET /memory/hermes?q=<query>
 ```
 
 The response is plain text so CLI agents can consume it easily with tools like `curl`.
+
+## Agent Skills
+
+On every launch, the Athena desktop app installs a bundled **agent skill** named
+`athena-context-workspace` into the local skill directories of the supported
+coding agents:
+
+```text
+~/.codex/skills/athena-context-workspace
+~/.claude/skills/athena-context-workspace
+~/.config/opencode/skills/athena-context-workspace
+```
+
+The skill source lives in `agent-skills/athena-context-workspace/` and is copied
+by `installManagedAgentSkills()` (`client/electron/agent-skills.ts`). Athena
+tracks what it installed in `~/.context-workspace/agent-skills.json`, so updates
+are applied cleanly and directories with your own edits are never overwritten.
+
+This skill teaches Codex, Claude Code, and OpenCode how to behave inside an
+Athena workspace, including how to route **`ask hermes`** requests. There is no
+separate `ask-hermes` skill to install — the Hermes routing rules live inside
+`athena-context-workspace`.
+
+### Asking Hermes
+
+When the user says `ask hermes ...`, the agent routes the question through Athena
+instead of shelling out to the `hermes` binary directly:
+
+1. If the Athena MCP tools are loaded, it calls
+   `context_workspace_ask_hermes(workspace, question)`.
+2. Otherwise, if `CONTEXT_WORKSPACE_BACKEND_URL` is set, it POSTs to
+   `/hermes/ask` with `{ project_dir, question }`.
+
+Both paths reach the local Athena backend, which runs Hermes once with the
+project as context and returns the answer. Routing through the backend keeps
+logging, project scoping, and recall consistent across agents.
+
+## Connecting Hermes
+
+"Connecting Hermes" is two independent steps. The **Settings → Hermes** card in
+the desktop app shows the current state of both and provides actions where it
+can.
+
+1. **Install the Hermes Agent CLI.** When the in-app installer is supported
+   (Linux/WSL with `bash` and `curl`), the Hermes card shows an **Install
+   Hermes** button wired to `POST /hermes/install`. On native Windows, install
+   the native Hermes build separately and make sure `hermes` is on your `PATH`.
+   Athena detects Hermes through `shutil.which("hermes")` plus `~/.hermes`.
+
+2. **Point Hermes at the Athena MCP bridge.** So Hermes can call Athena's
+   `context_workspace_*` tools, add the bridge block to your Hermes config
+   (`~/.hermes/config.yaml`). The Hermes card has a **Connect Hermes to Athena**
+   helper with a copyable snippet; the full setup (paths, tokens, WSL notes) is
+   in [Hermes MCP Bridge](#hermes-mcp-bridge) below.
+
+The coding-agent skills above and the Hermes bridge are complementary: the
+skills let Codex/Claude/OpenCode *ask* Hermes through Athena, while the bridge
+lets Hermes *drive* Athena (spawn terminals, read sessions, write recall).
 
 ## Hermes MCP Bridge
 

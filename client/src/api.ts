@@ -26,6 +26,13 @@ export type HermesStatus = {
   message: string;
 };
 
+export type HermesInstallResult = {
+  returncode: number;
+  stdout: string;
+  stderr: string;
+  hermes: HermesStatus;
+};
+
 export type RecallStatus = {
   project_dir: string;
   exists: boolean;
@@ -105,6 +112,14 @@ export class BackendClient {
   async hermesStatus(): Promise<HermesStatus> {
     const response = await this.json<{ hermes: HermesStatus }>("/hermes/status");
     return response.hermes;
+  }
+
+  async installHermes(timeoutSeconds = 600): Promise<HermesInstallResult> {
+    return this.json("/hermes/install", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true, timeout_seconds: timeoutSeconds }),
+    });
   }
 
   async recallStatus(projectDir: string): Promise<RecallStatus> {

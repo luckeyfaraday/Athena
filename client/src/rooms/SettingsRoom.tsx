@@ -1,10 +1,24 @@
-import { Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
+import { Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
 import type { AthenaLaunchState, PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
 type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
+
+const HERMES_BRIDGE_SNIPPET = `mcp_servers:
+  context_workspace:
+    command: "python"
+    args:
+      - "/path/to/context-workspace/mcp_server/server.py"
+    timeout: 120
+    connect_timeout: 30
+    env:
+      CONTEXT_WORKSPACE_BACKEND_STATE: "~/.context-workspace/backend.json"`;
+
+function copyToClipboard(text: string): Promise<void> {
+  return navigator.clipboard?.writeText(text) ?? Promise.resolve();
+}
 
 export function SettingsRoom({
   workspace,
@@ -15,6 +29,7 @@ export function SettingsRoom({
   adapters,
   busy,
   refreshing,
+  installingHermes,
   interfaceMode,
   uiTheme,
   terminalFocus,
@@ -24,6 +39,7 @@ export function SettingsRoom({
   onRestartBackend,
   onRestartControl,
   onClearTerminalRestorePause,
+  onInstallHermes,
   onRefreshRecall,
   onInterfaceModeChange,
   onThemeChange,
@@ -37,6 +53,7 @@ export function SettingsRoom({
   adapters: Record<string, AdapterStatus>;
   busy: boolean;
   refreshing: boolean;
+  installingHermes: boolean;
   interfaceMode: "terminal" | "chat";
   uiTheme: UiTheme;
   terminalFocus: boolean;
@@ -46,6 +63,7 @@ export function SettingsRoom({
   onRestartBackend: () => Promise<void>;
   onRestartControl: () => Promise<void>;
   onClearTerminalRestorePause: () => Promise<void>;
+  onInstallHermes: () => Promise<void>;
   onRefreshRecall: () => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
@@ -200,7 +218,7 @@ export function SettingsRoom({
             </button>
           </div>
         </article>
-        <article className="settingsSection">
+        <article className="settingsSection wide">
           <div>
             <strong>Hermes</strong>
             <span>
@@ -211,8 +229,35 @@ export function SettingsRoom({
                 hermes?.memory_path ? `Memory: ${hermes.memory_path}` : null,
               ].filter(Boolean).join("\n")}
             </span>
+            <details className="settingsHermesConnect">
+              <summary>Connect Hermes to Athena (MCP bridge)</summary>
+              <p>
+                Lets Hermes call Athena's <code>context_workspace_*</code> tools and answer
+                "ask hermes" requests. Add this block to your Hermes config
+                (<code>~/.hermes/config.yaml</code>), adjust the paths for your install, then
+                restart Hermes. See the README "Hermes MCP Bridge" section for the full setup.
+              </p>
+              <pre>{HERMES_BRIDGE_SNIPPET}</pre>
+              <button
+                className="ghostButton"
+                type="button"
+                onClick={() => void copyToClipboard(HERMES_BRIDGE_SNIPPET)}
+              >
+                <Copy size={14} /> Copy config
+              </button>
+            </details>
           </div>
           <StatusPill tone={hermesStatus.tone}>{hermesStatus.label}</StatusPill>
+          {hermes && !hermes.installed && hermes.install_supported ? (
+            <button
+              className="ghostButton"
+              type="button"
+              onClick={() => void onInstallHermes()}
+              disabled={installingHermes}
+            >
+              <Download size={14} /> {installingHermes ? "Installing" : "Install Hermes"}
+            </button>
+          ) : null}
         </article>
         <article className="settingsSection">
           <div>

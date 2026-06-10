@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, Menu, dialog, shell, type MenuItemConstructorOptions } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,8 @@ import { prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
-import { beginAthenaLaunch, markAthenaCleanExit } from "./launch-state.js";
+import { beginAthenaLaunch, markAthenaCleanExit, pauseTerminalRestore } from "./launch-state.js";
+import { checkDiskSpace, formatBytes, DISK_WARN_BYTES } from "./disk-guard.js";
 import { installManagedAgentSkills } from "./agent-skills.js";
 import { installAthenaCli } from "./athena-cli.js";
 import type { IncomingMessage } from "node:http";
@@ -34,6 +35,41 @@ function enableChromiumLogging(): void {
     app.commandLine.appendSwitch("log-level", "0");
   } catch {
     // Logging setup is best-effort; never block startup over diagnostics.
+  }
+}
+
+// Refuse to launch blindly into a near-full disk: Chromium mmaps its caches and
+// the AppImage squashfs, and a write-back failure on a full volume raises an
+// uncatchable SIGBUS that crash-loops the whole process tree. On critically low
+// space we pause terminal restore (the most mmap/IO-heavy startup work) and warn
+// the user so they can free space before continuing.
+async function runDiskPreflight(): Promise<void> {
+  try {
+    const status = checkDiskSpace({ userDataDir: app.getPath("userData"), tempDir: os.tmpdir() });
+    if (status.level === "ok") return;
+
+    const free = formatBytes(status.freeBytes);
+    if (status.level === "critical") {
+      pauseTerminalRestore();
+      console.error(`Low disk space (${free} free on ${status.path}); pausing terminal restore to avoid SIGBUS.`);
+      await dialog.showMessageBox({
+        type: "warning",
+        title: "Low disk space",
+        message: "Your disk is almost full.",
+        detail:
+          `Only ${free} is free on the volume holding Athena's data (${status.path}).\n\n`
+          + "Athena may crash (SIGBUS) until you free up space. Saved terminals will not be "
+          + `restored this session. Free at least ${formatBytes(DISK_WARN_BYTES)} and restart.`,
+        buttons: ["Continue anyway"],
+        defaultId: 0,
+        noLink: true,
+      });
+    } else {
+      console.warn(`Disk space is low (${free} free on ${status.path}).`);
+    }
+  } catch (error) {
+    // Preflight is a safety net; a probe failure must never block startup.
+    console.warn("Disk preflight check failed:", error);
   }
 }
 
@@ -173,6 +209,7 @@ app.on("second-instance", () => {
 if (singleInstanceLock) {
   app.whenReady().then(async () => {
     beginAthenaLaunch();
+    await runDiskPreflight();
     try {
       installManagedAgentSkills();
     } catch (error) {

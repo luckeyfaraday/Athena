@@ -53,7 +53,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -83,7 +83,6 @@ export type EmbeddedTerminalSpawnOptions = {
   contextMode?: AgentContextMode;
   contextText?: string;
   controlSource?: string;
-  athenaRuntimeBrand?: "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE";
 };
 
 type ImmersiveContextBundle = {
@@ -463,6 +462,7 @@ async function listPsProcesses(): Promise<ProcessInfo[]> {
 
 function classifyAgentProcess(command: string): EmbeddedTerminalKind | null {
   const lower = command.toLowerCase();
+  if (/\bathena-code(\s|$)/.test(lower) || lower.includes("/athena-code ")) return "athena";
   if (/\bclaude(\s|$)/.test(lower) || lower.includes("/claude ")) return "claude";
   if (/\bcodex(\s|$)/.test(lower) || lower.includes("/codex ")) return "codex";
   if (/\bopencode(\s|$)/.test(lower) || lower.includes("/opencode ")) return "opencode";
@@ -520,7 +520,7 @@ export async function spawnEmbeddedTerminal(
         options.contextText,
       )
     : null;
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none" || options.athenaRuntimeBrand
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
     ? null
     : writeAgentContextPrompt(
         cwd,
@@ -534,11 +534,7 @@ export async function spawnEmbeddedTerminal(
   const mcpConfigPath = isAgentKind(kind) && backendUrl && controlUrl
     ? writeMcpConfig(kind, backendUrl, controlUrl)
     : null;
-  const athenaRuntimeBinary = options.athenaRuntimeBrand ? resolveAthenaRuntimeBinary() : null;
-  if (options.athenaRuntimeBrand && !athenaRuntimeBinary) {
-    throw new Error("Athena runtime binary is not bundled for this platform.");
-  }
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath, athenaRuntimeBinary);
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
   const restoreEntry: RestorableTerminal = {
@@ -596,8 +592,6 @@ export async function spawnEmbeddedTerminal(
         ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
         ...(backendUrl ? { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl } : {}),
         ...(controlUrl ? { CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl } : {}),
-        ...(options.athenaRuntimeBrand ? { ATHENA_RUNTIME_BRAND: options.athenaRuntimeBrand } : {}),
-        ...(options.athenaRuntimeBrand && isImmersiveContextMode(contextMode) ? { ATHENA_IMMERSIVE_MODE: "1" } : {}),
       },
     });
 
@@ -1038,7 +1032,7 @@ function isRestorableTerminal(value: unknown): value is RestorableTerminal {
     && typeof item.title === "string"
     && typeof item.createdAt === "string"
     && typeof item.kind === "string"
-    && ["shell", "hermes", "codex", "opencode", "claude"].includes(item.kind)
+    && ["shell", "hermes", "codex", "opencode", "claude", "athena"].includes(item.kind)
     && (item.sessionLabel == null || typeof item.sessionLabel === "string")
     && (item.providerSessionId == null || typeof item.providerSessionId === "string")
     && (item.resumeSessionId == null || typeof item.resumeSessionId === "string");
@@ -1159,16 +1153,6 @@ function resolveMcpServerPath(): string | null {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-function resolveAthenaRuntimeBinary(): string | null {
-  if (!_appRoot) return null;
-  const parent = _appRoot.includes(".asar") ? path.dirname(_appRoot) : path.resolve(_appRoot, "..");
-  const platformDir = process.platform === "linux" && process.arch === "x64" ? "linux-x64" : null;
-  if (!platformDir) return null;
-  const executable = process.platform === "win32" ? "athena-code.exe" : "athena-code";
-  const candidate = path.join(parent, "runtime-bin", platformDir, executable);
-  return fs.existsSync(candidate) ? candidate : null;
-}
-
 function writeMcpConfig(kind: EmbeddedTerminalKind, backendUrl: string, controlUrl: string): string | null {
   const serverPath = resolveMcpServerPath();
   if (!serverPath) return null;
@@ -1265,6 +1249,7 @@ function defaultTitle(kind: EmbeddedTerminalKind): string {
   if (kind === "codex") return "Codex";
   if (kind === "opencode") return "OpenCode";
   if (kind === "claude") return "Claude";
+  if (kind === "athena") return "Athena Code";
   return "Shell";
 }
 
@@ -1387,7 +1372,7 @@ function stringProperty(value: Record<string, unknown> | null, key: string): str
 }
 
 function isAgentKind(kind: EmbeddedTerminalKind): boolean {
-  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes";
+  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes" || kind === "athena";
 }
 
 function emit(channel: string, payload: unknown): void {

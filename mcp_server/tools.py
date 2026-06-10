@@ -567,6 +567,8 @@ def _terminal_kind_for_agent(agent_type: str) -> str:
         "claude": "claude",
         "claude-code": "claude",
         "hermes": "hermes",
+        "athena": "athena",
+        "athena-code": "athena",
     }
     if normalized not in aliases:
         raise ValueError(f"Unsupported agent type: {agent_type}")

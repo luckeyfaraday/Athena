@@ -133,6 +133,7 @@ export function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
   if (kind === "codex") return ["Codex Builder", "Codex Reviewer", "Codex Scout", "Codex Fixer"];
   if (kind === "opencode") return ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"];
   if (kind === "claude") return ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"];
+  if (kind === "athena") return ["Athena Builder", "Athena Reviewer", "Athena Scout", "Athena Fixer"];
   return ["Shell"];
 }
 

@@ -36,7 +36,6 @@ export function terminalLaunch(
   promptPath: string | null,
   resumeSessionId?: string,
   mcpConfigPath?: string | null,
-  executableOverride?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
     if (kind === "hermes" && resumeSessionId) {
@@ -66,7 +65,7 @@ export function terminalLaunch(
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath, executableOverride)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath)] };
 }
 
 export function launchCommand(
@@ -74,7 +73,6 @@ export function launchCommand(
   cwd: string,
   promptPath: string | null,
   mcpConfigPath?: string | null,
-  executableOverride?: string | null,
 ): string {
   if (kind === "hermes") {
     return [
@@ -88,16 +86,13 @@ export function launchCommand(
 
   if (kind !== "shell") {
     const agent = agentConfig(kind);
-    const executable = executableOverride ?? agent.executable;
     return [
       `cd ${quoteShell(cwd)}`,
       promptPath
-        ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(executableOverride ? "Athena runtime" : agent.label)} ${quoteShell(promptPath)}`
-        : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(executableOverride ? "Athena runtime" : agent.label)}`,
-      executableOverride
-        ? `if [ ! -x ${quoteShell(executableOverride)} ]; then printf '\\033[31mAthena runtime binary is not executable: %s\\033[0m\\n' ${quoteShell(executableOverride)}; exec bash -l; fi`
-        : `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${executableOverride ? quoteShell(executableOverride) : agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath)}`.trimEnd(),
+        ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
+        : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
+      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath)}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }
@@ -189,6 +184,19 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
 }
 
 export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
+  if (kind === "athena") {
+    // Athena Code is a standalone opencode fork installed like any other
+    // agent CLI, so it shares opencode's argument shape.
+    return {
+      label: "Athena Code",
+      executable: "athena-code",
+      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = @($workspace); & $agentCommand @agentArgs",
+      resumePowerShellCommand: "$agentArgs = @('--session', $sessionId, $workspace); & $agentCommand @agentArgs",
+      args: (cwd, promptPath) => promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd),
+      resumeArgs: (cwd, sessionId) => `athena-code --session ${quoteShell(sessionId)} ${quoteShell(cwd)}`,
+    };
+  }
   if (kind === "opencode") {
     return {
       label: "OpenCode",

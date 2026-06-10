@@ -753,7 +753,7 @@ export function App() {
       const created: EmbeddedTerminalSession[] = [];
 
       for (const [index, options] of launchOptions.entries()) {
-        if (kind === "opencode" && index > 0) await delay(650);
+        if ((kind === "opencode" || kind === "athena") && index > 0) await delay(650);
         created.push(
           await desktop.spawnEmbeddedTerminal(workspace, {
             kind,
@@ -768,31 +768,6 @@ export function App() {
         ? [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]
         : appendEmbeddedSessions(current, created));
       if (count > 1) setLayoutResetNonce((value) => value + 1);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function launchAthenaTerminal(kind: Exclude<EmbeddedTerminalKind, "shell" | "hermes">) {
-    if (!workspace || busy) return;
-    const title = kind === "opencode" ? "Athena Code" : kind === "codex" ? "Athena Codex" : "Athena Claude";
-    setBusy(true);
-    setError(null);
-    setTerminalFocus(true);
-    setActiveRoom("command");
-    try {
-      const created = await desktop.spawnEmbeddedTerminal(workspace, {
-        kind: "opencode",
-        title,
-        cols: 96,
-        rows: 28,
-        sessionLabel: "Immersive",
-        contextMode: "immersive",
-        athenaRuntimeBrand: kind === "codex" ? "ATHENA CODEX" : kind === "claude" ? "ATHENA CLAUDE" : "ATHENA CODE",
-      });
-      setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
     } catch (err) {
       setError(String(err));
     } finally {
@@ -1106,7 +1081,6 @@ export function App() {
                 interfaceMode={interfaceMode}
                 onFocusChange={setTerminalFocus}
                 onLaunch={launchEmbedded}
-                onLaunchAthena={launchAthenaTerminal}
                 onClose={closeEmbeddedTerminal}
                 onBroadcastPrompt={broadcastPromptToAgents}
                 onResumeSession={resumeAgentSession}

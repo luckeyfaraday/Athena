@@ -49,7 +49,6 @@ export function CommandRoom({
   interfaceMode,
   onFocusChange,
   onLaunch,
-  onLaunchAthena,
   onClose,
   onBroadcastPrompt,
   onResumeSession,
@@ -69,7 +68,6 @@ export function CommandRoom({
   interfaceMode: "terminal" | "chat";
   onFocusChange: (focused: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
-  onLaunchAthena: (kind: Exclude<EmbeddedTerminalKind, "shell" | "hermes">) => Promise<void>;
   onClose: (id: string) => Promise<void>;
   onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
   onResumeSession: (session: AgentSession) => Promise<void>;
@@ -289,7 +287,6 @@ export function CommandRoom({
             menuRef={newMenuRef}
             onOpenChange={setNewMenuOpen}
             onLaunch={onLaunch}
-            onLaunchAthena={onLaunchAthena}
           />
         </div>
       </div>
@@ -503,19 +500,19 @@ function NewLaunchMenu({
   menuRef,
   onOpenChange,
   onLaunch,
-  onLaunchAthena,
 }: {
   open: boolean;
   workspace: string;
   menuRef: RefObject<HTMLDivElement | null>;
   onOpenChange: (open: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
-  onLaunchAthena: (kind: Exclude<EmbeddedTerminalKind, "shell" | "hermes">) => Promise<void>;
 }) {
   const disabled = !workspace;
   const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number }> = [
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
     { label: "Hermes", detail: "Spawn Hermes", icon: <BrainCircuit size={14} />, kind: "hermes", count: 1 },
+    { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <Code2 size={14} />, kind: "athena", count: 1 },
+    { label: "Athena Code Grid", detail: "Spawn four Athena Code panes", icon: <Layers3 size={14} />, kind: "athena", count: 4 },
     { label: "Codex", detail: "Spawn one Codex agent", icon: <Bot size={14} />, kind: "codex", count: 1 },
     { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <Layers3 size={14} />, kind: "codex", count: 4 },
     { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <Bot size={14} />, kind: "opencode", count: 1 },
@@ -523,20 +520,10 @@ function NewLaunchMenu({
     { label: "Claude", detail: "Spawn one Claude agent", icon: <ShieldCheck size={14} />, kind: "claude", count: 1 },
     { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ShieldCheck size={14} />, kind: "claude", count: 4 },
   ];
-  const runtimeActions: Array<{ label: string; detail: string; icon: ReactNode; kind: Exclude<EmbeddedTerminalKind, "shell" | "hermes"> }> = [
-    { label: "Athena Code", detail: "Athena-owned contextual runtime", icon: <Code2 size={14} />, kind: "opencode" },
-    { label: "Athena Codex", detail: "Athena context · Codex identity", icon: <Bot size={14} />, kind: "codex" },
-    { label: "Athena Claude", detail: "Athena context · Claude identity", icon: <ShieldCheck size={14} />, kind: "claude" },
-  ];
 
   function launch(kind: EmbeddedTerminalKind, count: number) {
     onOpenChange(false);
     void onLaunch(kind, count);
-  }
-
-  function launchRuntime(kind: Exclude<EmbeddedTerminalKind, "shell" | "hermes">) {
-    onOpenChange(false);
-    void onLaunchAthena(kind);
   }
 
   return (
@@ -553,16 +540,6 @@ function NewLaunchMenu({
       </button>
       {open && (
         <div className="newMenuPanel" role="menu">
-          <span className="newMenuSection">Athena runtimes</span>
-          {runtimeActions.map((action) => (
-            <button key={action.kind} type="button" role="menuitem" onClick={() => launchRuntime(action.kind)}>
-              <span>{action.icon}</span>
-              <span>
-                <strong>{action.label}</strong>
-                <small>{action.detail}</small>
-              </span>
-            </button>
-          ))}
           <span className="newMenuSection">Native terminals</span>
           {actions.map((action) => (
             <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count)}>

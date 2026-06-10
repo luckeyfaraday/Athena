@@ -56,8 +56,6 @@ type SpawnTerminalRequest = {
   context_mode?: string;
   context?: string;
   context_text?: string;
-  athena_runtime_brand?: string;
-  athenaRuntimeBrand?: string;
   cols?: number;
   rows?: number;
 };
@@ -101,7 +99,7 @@ type CloseWorkspaceRequest = {
   workspace?: string;
 };
 
-const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
+const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude", "athena"]);
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
@@ -349,7 +347,6 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           sessionLabel: payload.sessionLabel,
           contextMode: payload.contextMode,
           contextText: payload.contextText,
-          athenaRuntimeBrand: payload.athenaRuntimeBrand,
           controlSource: "electron-control",
         }).catch((error) => {
           recordControlFailure({
@@ -360,7 +357,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           throw error;
         });
         sessions.push(session);
-        if (payload.kind === "opencode" && index < payload.count - 1) await delay(650);
+        if ((payload.kind === "opencode" || payload.kind === "athena") && index < payload.count - 1) await delay(650);
       }
       sendJson(response, 200, { sessions });
       return;
@@ -429,7 +426,6 @@ function parseSpawnTerminalRequest(body: unknown): {
   sessionLabel?: string;
   contextMode?: "none" | "task" | "curated" | "immersive" | "immersive_curated";
   contextText?: string;
-  athenaRuntimeBrand?: "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE";
   cols?: number;
   rows?: number;
 } {
@@ -455,7 +451,6 @@ function parseSpawnTerminalRequest(body: unknown): {
     sessionLabel: stringValue(request.session_label),
     contextMode: contextModeValue(request.context_mode),
     contextText: stringValue(request.context_text) ?? stringValue(request.context),
-    athenaRuntimeBrand: athenaRuntimeBrandValue(request.athena_runtime_brand ?? request.athenaRuntimeBrand),
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
   };
@@ -508,7 +503,9 @@ function terminalGridTitle(kind: EmbeddedTerminalKind, index: number): string {
       ? ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"]
       : kind === "claude"
         ? ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"]
-        : [];
+        : kind === "athena"
+          ? ["Athena Builder", "Athena Reviewer", "Athena Scout", "Athena Fixer"]
+          : [];
   return titles[index] ?? `${kind}-${index + 1}`;
 }
 
@@ -535,13 +532,6 @@ function booleanValue(value: unknown, defaultValue = false): boolean {
   if (["1", "true", "yes", "on"].includes(text)) return true;
   if (["0", "false", "no", "off"].includes(text)) return false;
   return defaultValue;
-}
-
-function athenaRuntimeBrandValue(value: unknown): "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE" | undefined {
-  if (value == null) return undefined;
-  const brand = String(value).trim().toUpperCase();
-  if (brand === "ATHENA CODE" || brand === "ATHENA CODEX" || brand === "ATHENA CLAUDE") return brand;
-  throw new Error(`Unsupported Athena runtime brand: ${value}`);
 }
 
 function contextModeValue(value: unknown): "none" | "task" | "curated" | "immersive" | "immersive_curated" | undefined {

@@ -305,6 +305,8 @@ The `New` menu can launch:
 
 - Shell
 - Hermes
+- Athena Code
+- Athena Code Grid
 - Codex
 - Codex Grid
 - OpenCode
@@ -452,24 +454,17 @@ Athena owns these app-side tools. Hermes still owns its own config, `session_sea
 - Let Hermes control visible Athena terminals through MCP.
 - Keep project-local recall separate across workspaces.
 
-## Athena-Owned Agent Runtimes
+## Athena Code
 
-The Command Room **New** menu includes three Athena-owned interactive runtimes:
+Athena Code is a standalone opencode fork that lives in its own repository and
+installs its own `athena-code` CLI. Athena treats it exactly like Codex,
+OpenCode, and Claude Code: the Command Room launches it from the **New** menu
+as a regular embedded PTY, it must be on `PATH`, and it participates in the
+same clean/task/curated/immersive context modes as every other agent.
 
-- **Athena Code** uses the OpenCode server and structured event API.
-- **Athena Codex** uses resumable `codex exec --json` sessions.
-- **Athena Claude** uses resumable Claude Code `stream-json` sessions.
-
-These panes use Athena's own terminal-style interface instead of embedding the
-native CLI renderer. They preserve each agent's tools and session persistence
-while giving Athena structured turn, output, status, interrupt, and approval
-events.
-
-Every runtime starts in **Clean** mode unless the user explicitly launches or
-switches it to **Immersive**. Clean turns are sent unchanged. Immersive turns
-create a fresh project-scoped context bundle before submission and tell the
-runtime to load that immutable snapshot. The mode can be changed at any point
-in the session from the pane header.
+Every agent launch starts **Clean** unless an explicit context mode is
+selected. Immersive launches create a fresh immutable project-scoped context
+bundle and hand the agent a bootstrap prompt that points at the bundle file.
 
 ## Troubleshooting
 

@@ -34,10 +34,6 @@ extraResources:
     to: agent-skills
     filter:
       - "**/*"
-  - from: ../runtime-bin
-    to: runtime-bin
-    filter:
-      - "**/*"
 asar: true
 asarUnpack:
   - node_modules/node-pty/**

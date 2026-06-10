@@ -69,6 +69,30 @@ test("installManagedAgentSkills does not rewrite manifest when skills are unchan
   assert.equal(fs.readFileSync(manifestPath, "utf8"), manifestBefore);
 });
 
+test("installManagedAgentSkills adopts manually synced copies that match the bundled skill", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "athena-skills-adopt-"));
+  const home = path.join(root, "home");
+  const sourceRoot = path.join(root, "resources", "agent-skills");
+  writeSkill(sourceRoot, "Initial instructions");
+
+  installManagedAgentSkills({ homeDir: home, sourceRoot, now: FIXED_NOW });
+
+  // The user hand-syncs the upcoming release content into one skill directory.
+  const claudeDestination = managedSkillTargets(home).find((target) => target.target === "claude")?.destinationPath;
+  assert.ok(claudeDestination);
+  fs.writeFileSync(path.join(claudeDestination, "SKILL.md"), skillMarkdown("Synced instructions"), "utf8");
+  writeSkill(sourceRoot, "Synced instructions");
+
+  const adopted = installManagedAgentSkills({ homeDir: home, sourceRoot, now: new Date("2026-06-02T12:05:00.000Z") });
+  assert.deepEqual(adopted.map((result) => result.status), ["updated", "adopted", "updated"]);
+
+  // The adopted copy must keep receiving managed updates afterwards.
+  writeSkill(sourceRoot, "Later instructions");
+  const updated = installManagedAgentSkills({ homeDir: home, sourceRoot, now: new Date("2026-06-02T12:10:00.000Z") });
+  assert.deepEqual(updated.map((result) => result.status), ["updated", "updated", "updated"]);
+  assert.equal(fs.readFileSync(path.join(claudeDestination, "SKILL.md"), "utf8"), skillMarkdown("Later instructions"));
+});
+
 test("installManagedAgentSkills skips user-owned or modified skill directories", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "athena-skills-skip-"));
   const home = path.join(root, "home");

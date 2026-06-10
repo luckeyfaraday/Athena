@@ -6,7 +6,14 @@ import { fileURLToPath } from "node:url";
 
 export type AgentSkillTarget = "codex" | "claude" | "opencode";
 
-export type ManagedSkillInstallStatus = "installed" | "updated" | "unchanged" | "skipped" | "missing-source" | "error";
+export type ManagedSkillInstallStatus =
+  | "installed"
+  | "updated"
+  | "adopted"
+  | "unchanged"
+  | "skipped"
+  | "missing-source"
+  | "error";
 
 export type ManagedSkillInstallResult = {
   target: AgentSkillTarget;
@@ -62,7 +69,7 @@ export function installManagedAgentSkills(options: InstallManagedAgentSkillsOpti
     });
   });
 
-  if (results.some((result) => result.status === "installed" || result.status === "updated")) {
+  if (results.some((result) => result.status === "installed" || result.status === "updated" || result.status === "adopted")) {
     writeManifest(manifestPath, manifest, now);
   }
 
@@ -116,7 +123,13 @@ function installManagedSkill(input: {
 
     const currentHash = hashDirectory(input.destinationPath);
     if (currentHash === sourceHash) {
-      return result(input, "unchanged");
+      if (previous && previous.installedHash === sourceHash) {
+        return result(input, "unchanged");
+      }
+      // A copy that matches the bundled skill but has no (or a stale) manifest
+      // entry was synced outside Athena; record it so it keeps receiving updates.
+      recordManifestEntry(input, sourceHash, sourceHash, entryKey, previous);
+      return result(input, "adopted", "Destination already matches the bundled skill; recorded it as managed.");
     }
 
     if (previous && currentHash === previous.installedHash) {

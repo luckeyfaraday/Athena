@@ -29,10 +29,9 @@ export type NativeTerminalSession = {
   error: string | null;
 };
 
-export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena";
 export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
-export type AgentContextMode = "none" | "task" | "curated";
-
+export type AgentContextMode = "none" | "task" | "curated" | "immersive" | "immersive_curated";
 export type WorkspacePath = {
   nativePath: string;
   wslPath: string | null;
@@ -435,5 +434,6 @@ function fallbackTerminalTitle(kind: EmbeddedTerminalKind): string {
   if (kind === "codex") return "Codex";
   if (kind === "opencode") return "OpenCode";
   if (kind === "claude") return "Claude";
+  if (kind === "athena") return "Athena Code";
   return "Shell";
 }

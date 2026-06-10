@@ -771,7 +771,7 @@ export function App() {
       const created: EmbeddedTerminalSession[] = [];
 
       for (const [index, options] of launchOptions.entries()) {
-        if (kind === "opencode" && index > 0) await delay(650);
+        if ((kind === "opencode" || kind === "athena") && index > 0) await delay(650);
         created.push(
           await desktop.spawnEmbeddedTerminal(workspace, {
             kind,

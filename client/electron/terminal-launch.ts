@@ -68,7 +68,12 @@ export function terminalLaunch(
   return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath)] };
 }
 
-export function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null): string {
+export function launchCommand(
+  kind: EmbeddedTerminalKind,
+  cwd: string,
+  promptPath: string | null,
+  mcpConfigPath?: string | null,
+): string {
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
@@ -179,6 +184,19 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
 }
 
 export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
+  if (kind === "athena") {
+    // Athena Code is a standalone opencode fork installed like any other
+    // agent CLI, so it shares opencode's argument shape.
+    return {
+      label: "Athena Code",
+      executable: "athena-code",
+      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = @($workspace); & $agentCommand @agentArgs",
+      resumePowerShellCommand: "$agentArgs = @('--session', $sessionId, $workspace); & $agentCommand @agentArgs",
+      args: (cwd, promptPath) => promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd),
+      resumeArgs: (cwd, sessionId) => `athena-code --session ${quoteShell(sessionId)} ${quoteShell(cwd)}`,
+    };
+  }
   if (kind === "opencode") {
     return {
       label: "OpenCode",

@@ -53,7 +53,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -83,6 +83,11 @@ export type EmbeddedTerminalSpawnOptions = {
   contextMode?: AgentContextMode;
   contextText?: string;
   controlSource?: string;
+};
+
+type ImmersiveContextBundle = {
+  bundle_id: string;
+  context_path: string;
 };
 
 export type SendAgentMessageRequest = {
@@ -457,6 +462,7 @@ async function listPsProcesses(): Promise<ProcessInfo[]> {
 
 function classifyAgentProcess(command: string): EmbeddedTerminalKind | null {
   const lower = command.toLowerCase();
+  if (/\bathena-code(\s|$)/.test(lower) || lower.includes("/athena-code ")) return "athena";
   if (/\bclaude(\s|$)/.test(lower) || lower.includes("/claude ")) return "claude";
   if (/\bcodex(\s|$)/.test(lower) || lower.includes("/codex ")) return "codex";
   if (/\bopencode(\s|$)/.test(lower) || lower.includes("/opencode ")) return "opencode";
@@ -502,11 +508,29 @@ export async function spawnEmbeddedTerminal(
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
-    ? null
-    : writeAgentContextPrompt(cwd, kind, contextMode, options.title, options.task, options.contextText);
   const backendUrl = getBackendState().baseUrl;
   const controlUrl = getControlState().baseUrl;
+  const immersiveBundle = isImmersiveContextMode(contextMode) && isAgentKind(kind) && !options.resumeSessionId
+    ? await createImmersiveContextBundle(
+        backendUrl,
+        cwd,
+        kind,
+        contextMode,
+        options.task,
+        options.contextText,
+      )
+    : null;
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
+    ? null
+    : writeAgentContextPrompt(
+        cwd,
+        kind,
+        contextMode,
+        options.title,
+        options.task,
+        options.contextText,
+        immersiveBundle,
+      );
   const mcpConfigPath = isAgentKind(kind) && backendUrl && controlUrl
     ? writeMcpConfig(kind, backendUrl, controlUrl)
     : null;
@@ -1008,7 +1032,7 @@ function isRestorableTerminal(value: unknown): value is RestorableTerminal {
     && typeof item.title === "string"
     && typeof item.createdAt === "string"
     && typeof item.kind === "string"
-    && ["shell", "hermes", "codex", "opencode", "claude"].includes(item.kind)
+    && ["shell", "hermes", "codex", "opencode", "claude", "athena"].includes(item.kind)
     && (item.sessionLabel == null || typeof item.sessionLabel === "string")
     && (item.providerSessionId == null || typeof item.providerSessionId === "string")
     && (item.resumeSessionId == null || typeof item.resumeSessionId === "string");
@@ -1162,6 +1186,7 @@ function writeAgentContextPrompt(
   title?: string,
   task?: string,
   contextText?: string,
+  immersiveBundle?: ImmersiveContextBundle | null,
 ): string {
   const directory = tempWorkspaceDirectory();
   const promptPath = path.join(directory, `athena-agent-context-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
@@ -1172,10 +1197,51 @@ function writeAgentContextPrompt(
     title,
     task,
     contextText,
+    bundleId: immersiveBundle?.bundle_id,
+    contextPath: immersiveBundle?.context_path,
   });
   if (!prompt) throw new Error("Agent context prompt cannot be empty.");
   fs.writeFileSync(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
   return promptPath;
+}
+
+function isImmersiveContextMode(mode: AgentContextMode): mode is "immersive" | "immersive_curated" {
+  return mode === "immersive" || mode === "immersive_curated";
+}
+
+async function createImmersiveContextBundle(
+  backendUrl: string | null,
+  workspace: string,
+  kind: EmbeddedTerminalKind,
+  mode: "immersive" | "immersive_curated",
+  task?: string,
+  contextText?: string,
+): Promise<ImmersiveContextBundle> {
+  if (!backendUrl) {
+    throw new Error("Athena immersive mode requires the backend to be available.");
+  }
+  const response = await fetch(`${backendUrl}/context/bundles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_dir: workspace,
+      mode,
+      agent: agentConfig(kind).label,
+      task: task?.trim() ?? "",
+      context: contextText?.trim() ?? "",
+    }),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Athena immersive context creation failed with HTTP ${response.status}.${detail ? ` ${detail}` : ""}`);
+  }
+  const payload = await response.json() as { bundle?: Partial<ImmersiveContextBundle> };
+  const bundleId = payload.bundle?.bundle_id;
+  const contextPath = payload.bundle?.context_path;
+  if (!bundleId || !contextPath) {
+    throw new Error("Athena immersive context creation returned an invalid bundle.");
+  }
+  return { bundle_id: bundleId, context_path: contextPath };
 }
 
 function defaultTitle(kind: EmbeddedTerminalKind): string {
@@ -1183,6 +1249,7 @@ function defaultTitle(kind: EmbeddedTerminalKind): string {
   if (kind === "codex") return "Codex";
   if (kind === "opencode") return "OpenCode";
   if (kind === "claude") return "Claude";
+  if (kind === "athena") return "Athena Code";
   return "Shell";
 }
 
@@ -1305,7 +1372,7 @@ function stringProperty(value: Record<string, unknown> | null, key: string): str
 }
 
 function isAgentKind(kind: EmbeddedTerminalKind): boolean {
-  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes";
+  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes" || kind === "athena";
 }
 
 function emit(channel: string, payload: unknown): void {

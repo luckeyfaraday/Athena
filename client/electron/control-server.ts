@@ -99,7 +99,7 @@ type CloseWorkspaceRequest = {
   workspace?: string;
 };
 
-const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude"]);
+const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude", "athena"]);
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
@@ -357,7 +357,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           throw error;
         });
         sessions.push(session);
-        if (payload.kind === "opencode" && index < payload.count - 1) await delay(650);
+        if ((payload.kind === "opencode" || payload.kind === "athena") && index < payload.count - 1) await delay(650);
       }
       sendJson(response, 200, { sessions });
       return;
@@ -424,7 +424,7 @@ function parseSpawnTerminalRequest(body: unknown): {
   task?: string;
   resumeSessionId?: string;
   sessionLabel?: string;
-  contextMode?: "none" | "task" | "curated";
+  contextMode?: "none" | "task" | "curated" | "immersive" | "immersive_curated";
   contextText?: string;
   cols?: number;
   rows?: number;
@@ -503,7 +503,9 @@ function terminalGridTitle(kind: EmbeddedTerminalKind, index: number): string {
       ? ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"]
       : kind === "claude"
         ? ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"]
-        : [];
+        : kind === "athena"
+          ? ["Athena Builder", "Athena Reviewer", "Athena Scout", "Athena Fixer"]
+          : [];
   return titles[index] ?? `${kind}-${index + 1}`;
 }
 
@@ -532,10 +534,16 @@ function booleanValue(value: unknown, defaultValue = false): boolean {
   return defaultValue;
 }
 
-function contextModeValue(value: unknown): "none" | "task" | "curated" | undefined {
+function contextModeValue(value: unknown): "none" | "task" | "curated" | "immersive" | "immersive_curated" | undefined {
   if (value == null) return undefined;
   const mode = String(value).trim().toLowerCase();
-  if (mode === "none" || mode === "task" || mode === "curated") return mode;
+  if (
+    mode === "none"
+    || mode === "task"
+    || mode === "curated"
+    || mode === "immersive"
+    || mode === "immersive_curated"
+  ) return mode;
   throw new Error(`Unsupported context_mode: ${value}`);
 }
 

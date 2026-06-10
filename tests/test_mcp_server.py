@@ -60,6 +60,15 @@ def test_ask_hermes_tool_schema_requires_project_and_question() -> None:
     assert schema["required"] == ["project_dir", "question"]
 
 
+def test_context_bundle_tool_schemas() -> None:
+    create_schema = server._tool_schema(tools.context_workspace_create_context_bundle)["inputSchema"]
+    read_schema = server._tool_schema(tools.context_workspace_get_context_bundle)["inputSchema"]
+
+    assert create_schema["required"] == ["project_dir", "agent"]
+    assert create_schema["properties"]["mode"] == {"type": "string"}
+    assert read_schema["required"] == ["project_dir", "bundle_id"]
+
+
 def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
     schema = server._tool_schema(tools.context_workspace_spawn_terminal)["inputSchema"]
 

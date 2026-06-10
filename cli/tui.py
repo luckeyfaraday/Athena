@@ -37,6 +37,7 @@ LAUNCH_COMMANDS = {
     "codex": "codex",
     "claude": "claude",
     "opencode": "opencode .",
+    "athena": "athena-code .",
     "hermes": "hermes",
 }
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}

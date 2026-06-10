@@ -2603,3 +2603,11 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     width: 100%;
   }
 }
+.newMenuSection {
+  display: block;
+  padding: 8px 12px 4px;
+  color: var(--muted, #89919d);
+  font-size: 8px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}

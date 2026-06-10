@@ -42,6 +42,12 @@ test("launchCommand for an agent guards on command availability before launching
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
 
+test("launchCommand treats Athena Code as a PATH-installed agent like the others", () => {
+  const command = launchCommand("athena", "/home/dev/project", null);
+  assert.match(command, /command -v 'athena-code'/);
+  assert.match(command, /athena-code '\/home\/dev\/project'/);
+});
+
 test("launchCommand single-quote-escapes a malicious workspace path", () => {
   const command = launchCommand("codex", INJECTION, null);
   // The payload appears only in fully quoteShell-escaped form, so the embedded
@@ -85,6 +91,16 @@ test("agentConfig opencode collapses prompt whitespace and quotes the path", () 
     opencode.args("/ws", "/tmp/p.md", "bash"),
     `--prompt "$(tr '\\r\\n' '  ' < '/tmp/p.md')" '/ws'`,
   );
+});
+
+test("agentConfig athena mirrors opencode's argument shape with the athena-code executable", () => {
+  const athena = agentConfig("athena");
+  assert.equal(athena.executable, "athena-code");
+  assert.equal(
+    athena.args("/ws", "/tmp/p.md", "bash"),
+    `--prompt "$(tr '\\r\\n' '  ' < '/tmp/p.md')" '/ws'`,
+  );
+  assert.equal(athena.resumeArgs("/ws", "s1", "bash"), `athena-code --session 's1' '/ws'`);
 });
 
 test("PowerShell builders pass values through quotePowerShell, not raw interpolation", () => {

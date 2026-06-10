@@ -23,11 +23,11 @@ def test_write_context_creates_deterministic_artifact(tmp_path: Path) -> None:
     )
     text = artifacts.context.read_text(encoding="utf-8")
     assert "Review the adapter design." in text
-    assert "Hermes remembers the adapter plan." in text
-    assert "curl -s" in text
+    assert "Hermes remembers the adapter plan." not in text
+    assert "explicit immersive launch" in text
 
 
-def test_write_context_includes_hermes_session_recall_cache(tmp_path: Path) -> None:
+def test_write_context_does_not_include_hermes_session_recall_cache(tmp_path: Path) -> None:
     recall_dir = tmp_path / ".context-workspace" / "hermes"
     recall_dir.mkdir(parents=True)
     (recall_dir / "session-recall.md").write_text("Prior session found adapter edge cases.\n", encoding="utf-8")
@@ -41,11 +41,11 @@ def test_write_context_includes_hermes_session_recall_cache(tmp_path: Path) -> N
     artifacts = ContextArtifactWriter().write_context(run)
 
     text = artifacts.context.read_text(encoding="utf-8")
-    assert "## Hermes Session Recall Cache" in text
-    assert "Prior session found adapter edge cases." in text
+    assert "Hermes Session Recall Cache" not in text
+    assert "Prior session found adapter edge cases." not in text
 
 
-def test_write_context_uses_empty_states_when_memory_and_recall_are_missing(tmp_path: Path) -> None:
+def test_write_context_states_that_legacy_runs_are_clean(tmp_path: Path) -> None:
     run = RunRegistry().create_run(
         agent_type="codex",
         project_dir=tmp_path,
@@ -56,11 +56,10 @@ def test_write_context_uses_empty_states_when_memory_and_recall_are_missing(tmp_
     artifacts = ContextArtifactWriter().write_context(run)
 
     text = artifacts.context.read_text(encoding="utf-8")
-    assert "No Hermes memory excerpt was provided." in text
-    assert "No Hermes session recall cache was provided." in text
+    assert "no Athena memory, recall, or project context attached" in text
 
 
-def test_write_context_reads_recall_only_from_run_project(tmp_path: Path) -> None:
+def test_write_context_ignores_recall_from_all_projects(tmp_path: Path) -> None:
     workspace_a = tmp_path / "workspace-a"
     workspace_b = tmp_path / "workspace-b"
     recall_a = workspace_a / ".context-workspace" / "hermes"
@@ -79,7 +78,7 @@ def test_write_context_reads_recall_only_from_run_project(tmp_path: Path) -> Non
     artifacts = ContextArtifactWriter().write_context(run)
 
     text = artifacts.context.read_text(encoding="utf-8")
-    assert "WORKSPACE_B_RECALL_SENTINEL" in text
+    assert "WORKSPACE_B_RECALL_SENTINEL" not in text
     assert "WORKSPACE_A_RECALL_SENTINEL" not in text
 
 

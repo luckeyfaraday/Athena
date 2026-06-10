@@ -49,6 +49,38 @@ async def context_workspace_query_project_memory(project_dir: str, limit: int = 
     return await ContextWorkspaceClient().get("/memory/hermes/project", project_dir=project_dir, limit=limit)
 
 
+async def context_workspace_create_context_bundle(
+    project_dir: str,
+    agent: str,
+    mode: str = "immersive",
+    task: str = "",
+    context: str = "",
+) -> dict[str, Any]:
+    """Create an immutable opt-in Athena immersive context bundle.
+
+    mode must be immersive or immersive_curated. Ordinary agent launches do
+    not create or receive context bundles.
+    """
+    return await ContextWorkspaceClient().post(
+        "/context/bundles",
+        {
+            "project_dir": project_dir,
+            "agent": agent,
+            "mode": mode,
+            "task": task,
+            "context": context,
+        },
+    )
+
+
+async def context_workspace_get_context_bundle(project_dir: str, bundle_id: str) -> dict[str, Any]:
+    """Read one immutable Athena context bundle by workspace and bundle id."""
+    return await ContextWorkspaceClient().get(
+        f"/context/bundles/{bundle_id}",
+        project_dir=project_dir,
+    )
+
+
 async def context_workspace_ask_hermes(
     project_dir: str,
     question: str,
@@ -153,11 +185,12 @@ async def context_workspace_spawn_agent(
     This is the high-level tool Hermes should use when the user asks to start
     an agent. It routes through Athena's Electron control server, so the desktop
     app must be running. Visible spawns no longer receive Athena recall/memory
-    automatically. Use context_mode=\"task\" for a compact task-only prompt,
-    context_mode=\"curated\" with context for Hermes-selected background, or
-    context_mode=\"none\" for a clean launch. Set open_workspace=true when the
-    target project is not already open in Athena. Set visible_terminal=false
-    only for the legacy backend run/artifact path.
+    automatically. Use context_mode=\"immersive\" or \"immersive_curated\" only
+    when the user explicitly requests Athena's full context mode. Use
+    context_mode=\"task\" for a compact task-only prompt, \"curated\" for only
+    caller-selected background, or \"none\" for a clean launch. Set
+    open_workspace=true when the target project is not already open in Athena.
+    Set visible_terminal=false only for the legacy backend run/artifact path.
     """
     normalized_agent = _terminal_kind_for_agent(agent_type)
     if visible_terminal:
@@ -202,9 +235,9 @@ async def context_workspace_spawn_terminal(
 ) -> dict[str, Any]:
     """Low-level visible terminal spawner using Athena's Electron control server.
 
-    context_mode accepts: none, task, curated. Manual/clean launches should use
-    none. Hermes-curated launches should use curated and pass context. Set
-    open_workspace=true to add/select the target workspace before spawning.
+    context_mode accepts: none, task, curated, immersive, immersive_curated.
+    Manual/clean launches should use none. Immersive modes are explicit opt-in.
+    Set open_workspace=true to add/select the target workspace before spawning.
     """
     return await ContextWorkspaceElectronClient().post(
         "/terminals/spawn",
@@ -484,6 +517,8 @@ def register_tools(mcp: Any) -> None:
         context_workspace_hermes_status,
         context_workspace_query_memory,
         context_workspace_query_project_memory,
+        context_workspace_create_context_bundle,
+        context_workspace_get_context_bundle,
         context_workspace_store_memory,
         context_workspace_delete_memory,
         context_workspace_recent_memory,
@@ -532,6 +567,8 @@ def _terminal_kind_for_agent(agent_type: str) -> str:
         "claude": "claude",
         "claude-code": "claude",
         "hermes": "hermes",
+        "athena": "athena",
+        "athena-code": "athena",
     }
     if normalized not in aliases:
         raise ValueError(f"Unsupported agent type: {agent_type}")

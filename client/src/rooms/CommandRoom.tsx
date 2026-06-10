@@ -282,7 +282,6 @@ export function CommandRoom({
             <TerminalSquare size={15} /> New Shell
           </button>
           <NewLaunchMenu
-            busy={busy}
             open={newMenuOpen}
             workspace={workspace}
             menuRef={newMenuRef}
@@ -496,24 +495,24 @@ export function CommandRoom({
 }
 
 function NewLaunchMenu({
-  busy,
   open,
   workspace,
   menuRef,
   onOpenChange,
   onLaunch,
 }: {
-  busy: boolean;
   open: boolean;
   workspace: string;
   menuRef: RefObject<HTMLDivElement | null>;
   onOpenChange: (open: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
 }) {
-  const disabled = !workspace || busy;
+  const disabled = !workspace;
   const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number }> = [
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
     { label: "Hermes", detail: "Spawn Hermes", icon: <BrainCircuit size={14} />, kind: "hermes", count: 1 },
+    { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <Code2 size={14} />, kind: "athena", count: 1 },
+    { label: "Athena Code Grid", detail: "Spawn four Athena Code panes", icon: <Layers3 size={14} />, kind: "athena", count: 4 },
     { label: "Codex", detail: "Spawn one Codex agent", icon: <Bot size={14} />, kind: "codex", count: 1 },
     { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <Layers3 size={14} />, kind: "codex", count: 4 },
     { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <Bot size={14} />, kind: "opencode", count: 1 },
@@ -541,6 +540,7 @@ function NewLaunchMenu({
       </button>
       {open && (
         <div className="newMenuPanel" role="menu">
+          <span className="newMenuSection">Native terminals</span>
           {actions.map((action) => (
             <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count)}>
               <span>{action.icon}</span>

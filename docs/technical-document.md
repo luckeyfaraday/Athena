@@ -343,7 +343,7 @@ class ExecutionResult:
 
 **`RunExecutor.execute()` flow (lines 35–114):**
 
-1. `artifacts.write_context(run, memory_excerpt=memory_excerpt)`
+1. `artifacts.write_context(run)` — writes task-only legacy run context
 2. `artifacts.initialize_logs(run)` — touches stdout.log, stderr.log, result.md
 3. Pre-flight cancel check → return CANCELLED if `cancel_requested`
 4. `registry.update_status(run_id, RunStatus.RUNNING)` — sets `started_at`
@@ -419,14 +419,10 @@ Agent: `{agent_id}` ({agent_type})
 ## Current Task
 {task}
 
-## Hermes Memory Excerpt
-{memory_excerpt or "No Hermes memory excerpt was provided."}
-
-## Hermes Session Recall Cache
-{recall_cache or "No Hermes session recall cache was provided."}
-
-## Dynamic Memory Lookup
-`curl -s "http://localhost:8000/memory/hermes?q=<query>"`
+## Athena Context
+This legacy run contains only the explicit task. Athena memory, session recall,
+and project context are not injected automatically. Use an explicit immersive
+launch to create a context bundle.
 ```
 
 ---
@@ -717,7 +713,8 @@ spawn("tmux", ["attach", "-t", sessionName], { detached: true, stdio: "ignore" }
 
 **Prompt injection:**
 ```typescript
-// writeCodexMemoryPrompt() fetches Hermes memory and writes temp .md prompt
+// Legacy writeCodexMemoryPrompt() was removed. Native Codex launches are clean;
+// explicit immersive launches use the shared context-bundle path.
 const promptPath = `.context-workspace/hermes/codex-prompt-${Date.now()}.md`;
 fs.writeFileSync(promptPath, content, { mode: isWindows ? 0o600 : 0o700 });
 // PowerShell: Get-Content -Raw -LiteralPath $promptPath

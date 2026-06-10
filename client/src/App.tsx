@@ -775,6 +775,31 @@ export function App() {
     }
   }
 
+  async function launchAthenaTerminal(kind: Exclude<EmbeddedTerminalKind, "shell" | "hermes">) {
+    if (!workspace || busy) return;
+    const title = kind === "opencode" ? "Athena Code" : kind === "codex" ? "Athena Codex" : "Athena Claude";
+    setBusy(true);
+    setError(null);
+    setTerminalFocus(true);
+    setActiveRoom("command");
+    try {
+      const created = await desktop.spawnEmbeddedTerminal(workspace, {
+        kind: "opencode",
+        title,
+        cols: 96,
+        rows: 28,
+        sessionLabel: "Immersive",
+        contextMode: "immersive",
+        athenaRuntimeBrand: kind === "codex" ? "ATHENA CODEX" : kind === "claude" ? "ATHENA CLAUDE" : "ATHENA CODE",
+      });
+      setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function resumeAgentSession(session: AgentSession) {
     if (!workspace || busy) return;
     setBusy(true);
@@ -1081,6 +1106,7 @@ export function App() {
                 interfaceMode={interfaceMode}
                 onFocusChange={setTerminalFocus}
                 onLaunch={launchEmbedded}
+                onLaunchAthena={launchAthenaTerminal}
                 onClose={closeEmbeddedTerminal}
                 onBroadcastPrompt={broadcastPromptToAgents}
                 onResumeSession={resumeAgentSession}

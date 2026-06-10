@@ -68,3 +68,19 @@ test("curated mode can launch directly from handoff context without a separate t
   assert.match(prompt, /Athena Session Handoff/);
   assert.doesNotMatch(prompt, /Task:/);
 });
+
+test("immersive mode points at an immutable context bundle", () => {
+  const prompt = buildAgentContextPrompt({
+    mode: "immersive",
+    workspace: "/repo",
+    agentLabel: "Codex",
+    task: "Investigate auth",
+    bundleId: "ctx_123",
+    contextPath: "/repo/.context-workspace/context/ctx_123/context.md",
+  });
+
+  assert.match(prompt, /^# Athena Immersive Launch/);
+  assert.match(prompt, /Context bundle: ctx_123/);
+  assert.match(prompt, /Read the context file before making decisions/);
+  assert.doesNotMatch(prompt, /## Curated Context/);
+});

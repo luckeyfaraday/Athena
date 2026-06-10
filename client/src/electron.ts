@@ -31,8 +31,7 @@ export type NativeTerminalSession = {
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude";
 export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
-export type AgentContextMode = "none" | "task" | "curated";
-
+export type AgentContextMode = "none" | "task" | "curated" | "immersive" | "immersive_curated";
 export type WorkspacePath = {
   nativePath: string;
   wslPath: string | null;
@@ -66,6 +65,7 @@ export type EmbeddedTerminalSpawnOptions = {
   providerSessionId?: string;
   contextMode?: AgentContextMode;
   contextText?: string;
+  athenaRuntimeBrand?: "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE";
 };
 
 export type AgentSession = {

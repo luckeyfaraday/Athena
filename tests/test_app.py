@@ -115,6 +115,71 @@ def test_health_endpoint(tmp_path: Path) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_create_and_read_immersive_context_bundle(tmp_path: Path) -> None:
+    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    memory.append(f"Project path: {tmp_path}. Preserve explicit context boundaries.")
+    (tmp_path / "AGENTS.md").write_text("Run focused tests.\n", encoding="utf-8")
+    client = _client(tmp_path, memory=memory)
+
+    created = client.post(
+        "/context/bundles",
+        json={
+            "project_dir": str(tmp_path),
+            "mode": "immersive",
+            "agent": "Codex",
+            "task": "Scaffold immersive context.",
+        },
+    )
+
+    assert created.status_code == 200
+    bundle = created.json()["bundle"]
+    assert bundle["mode"] == "immersive"
+    assert Path(bundle["context_path"]).is_file()
+    fetched = client.get(
+        f"/context/bundles/{bundle['bundle_id']}",
+        params={"project_dir": str(tmp_path)},
+    )
+    assert fetched.status_code == 200
+    assert fetched.json()["bundle"]["bundle_id"] == bundle["bundle_id"]
+
+
+def test_context_bundle_endpoint_rejects_non_immersive_mode(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/context/bundles",
+        json={
+            "project_dir": str(tmp_path),
+            "mode": "task",
+            "agent": "Codex",
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_context_turn_endpoint_records_clean_exchange(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.post(
+        "/context/turns",
+        json={
+            "project_dir": str(tmp_path),
+            "session_id": "runtime-session",
+            "agent": "Athena Codex",
+            "mode": "clean",
+            "user_message": "Do not inject context.",
+            "assistant_message": "Clean turn completed.",
+        },
+    )
+
+    assert response.status_code == 200
+    turn = response.json()["turn"]
+    assert turn["session_id"] == "runtime-session"
+    turns_path = tmp_path / ".context-workspace" / "context" / "turns.jsonl"
+    assert "Clean turn completed." in turns_path.read_text(encoding="utf-8")
+
+
 def test_hermes_status_endpoint(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -498,6 +563,21 @@ def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
     assert missing.text == ""
 
 
+def test_memory_store_with_project_dir_scopes_entry_for_project_recall(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    stored = client.post(
+        "/memory/store",
+        json={"project_dir": str(tmp_path), "text": "Test 202 is ready"},
+    )
+    matched = client.get("/memory/hermes/project", params={"project_dir": str(tmp_path)})
+
+    assert stored.status_code == 200
+    assert stored.json()["entry"] == f"Project {tmp_path}: Test 202 is ready"
+    assert matched.status_code == 200
+    assert "Test 202 is ready" in matched.text
+
+
 def test_memory_endpoints_report_unavailable_memory_clearly(tmp_path: Path) -> None:
     client = _client(tmp_path, memory=FailingMemoryStore())
 
@@ -567,7 +647,7 @@ def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -
     assert "fake final message" in memory_text
 
 
-def test_spawn_context_includes_matching_memory_excerpt(tmp_path: Path) -> None:
+def test_spawn_context_does_not_include_matching_memory_excerpt(tmp_path: Path) -> None:
     client = _client(tmp_path)
     client.post("/memory/store", json={"text": "TEST_MEMORY_SENTINEL_456 belongs in the prompt."})
 
@@ -588,10 +668,11 @@ def test_spawn_context_includes_matching_memory_excerpt(tmp_path: Path) -> None:
         params={"tail": False},
     )
     assert context.status_code == 200
-    assert "TEST_MEMORY_SENTINEL_456 belongs in the prompt." in context.text
+    assert "TEST_MEMORY_SENTINEL_456 belongs in the prompt." not in context.text
+    assert "explicit immersive launch" in context.text
 
 
-def test_spawn_context_uses_empty_memory_state_when_no_memory_matches(tmp_path: Path) -> None:
+def test_spawn_context_ignores_memory_query_without_immersive_mode(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
     response = client.post(
@@ -611,10 +692,10 @@ def test_spawn_context_uses_empty_memory_state_when_no_memory_matches(tmp_path: 
         params={"tail": False},
     )
     assert context.status_code == 200
-    assert "No Hermes memory entries matched query: missing-memory-sentinel" in context.text
+    assert "missing-memory-sentinel" not in context.text
 
 
-def test_spawn_context_records_memory_lookup_failure_without_blocking_launch(tmp_path: Path) -> None:
+def test_spawn_context_does_not_query_unavailable_memory(tmp_path: Path) -> None:
     client = _client(tmp_path, memory=FailingMemoryStore())
 
     response = client.post(
@@ -633,7 +714,8 @@ def test_spawn_context_records_memory_lookup_failure_without_blocking_launch(tmp
         params={"tail": False},
     )
     assert context.status_code == 200
-    assert "Hermes memory lookup failed." in context.text
+    assert "Hermes memory lookup failed." not in context.text
+    assert "explicit immersive launch" in context.text
 
 
 def test_list_runs_endpoint_returns_spawned_runs(tmp_path: Path) -> None:

@@ -56,6 +56,8 @@ type SpawnTerminalRequest = {
   context_mode?: string;
   context?: string;
   context_text?: string;
+  athena_runtime_brand?: string;
+  athenaRuntimeBrand?: string;
   cols?: number;
   rows?: number;
 };
@@ -347,6 +349,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           sessionLabel: payload.sessionLabel,
           contextMode: payload.contextMode,
           contextText: payload.contextText,
+          athenaRuntimeBrand: payload.athenaRuntimeBrand,
           controlSource: "electron-control",
         }).catch((error) => {
           recordControlFailure({
@@ -424,8 +427,9 @@ function parseSpawnTerminalRequest(body: unknown): {
   task?: string;
   resumeSessionId?: string;
   sessionLabel?: string;
-  contextMode?: "none" | "task" | "curated";
+  contextMode?: "none" | "task" | "curated" | "immersive" | "immersive_curated";
   contextText?: string;
+  athenaRuntimeBrand?: "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE";
   cols?: number;
   rows?: number;
 } {
@@ -451,6 +455,7 @@ function parseSpawnTerminalRequest(body: unknown): {
     sessionLabel: stringValue(request.session_label),
     contextMode: contextModeValue(request.context_mode),
     contextText: stringValue(request.context_text) ?? stringValue(request.context),
+    athenaRuntimeBrand: athenaRuntimeBrandValue(request.athena_runtime_brand ?? request.athenaRuntimeBrand),
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
   };
@@ -532,10 +537,23 @@ function booleanValue(value: unknown, defaultValue = false): boolean {
   return defaultValue;
 }
 
-function contextModeValue(value: unknown): "none" | "task" | "curated" | undefined {
+function athenaRuntimeBrandValue(value: unknown): "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE" | undefined {
+  if (value == null) return undefined;
+  const brand = String(value).trim().toUpperCase();
+  if (brand === "ATHENA CODE" || brand === "ATHENA CODEX" || brand === "ATHENA CLAUDE") return brand;
+  throw new Error(`Unsupported Athena runtime brand: ${value}`);
+}
+
+function contextModeValue(value: unknown): "none" | "task" | "curated" | "immersive" | "immersive_curated" | undefined {
   if (value == null) return undefined;
   const mode = String(value).trim().toLowerCase();
-  if (mode === "none" || mode === "task" || mode === "curated") return mode;
+  if (
+    mode === "none"
+    || mode === "task"
+    || mode === "curated"
+    || mode === "immersive"
+    || mode === "immersive_curated"
+  ) return mode;
   throw new Error(`Unsupported context_mode: ${value}`);
 }
 

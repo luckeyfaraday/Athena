@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from .adapters.base import AgentAdapter
 from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
 from .adapters.codex import CodexAdapter
+from .context_bundle import ContextBundleStore
 from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
 from .hermes import HermesManager
@@ -33,6 +34,7 @@ from .safety import resolve_project_dir
 
 class MemoryStoreRequest(BaseModel):
     text: str = Field(min_length=1)
+    project_dir: str | None = None
 
 
 class MemoryDeleteRequest(BaseModel):
@@ -78,6 +80,23 @@ class HermesRecallMarkUsedRequest(BaseModel):
     agent: str = Field(min_length=1, max_length=80)
 
 
+class ContextBundleCreateRequest(BaseModel):
+    project_dir: str
+    mode: str = Field(pattern=r"^immersive(?:_curated)?$")
+    agent: str = Field(min_length=1, max_length=80)
+    task: str = Field(default="", max_length=20000)
+    context: str = Field(default="", max_length=100000)
+
+
+class ContextTurnRecordRequest(BaseModel):
+    project_dir: str
+    session_id: str = Field(min_length=1, max_length=200)
+    agent: str = Field(min_length=1, max_length=80)
+    mode: str = Field(pattern=r"^(?:clean|immersive)$")
+    user_message: str = Field(min_length=1, max_length=100000)
+    assistant_message: str = Field(min_length=1, max_length=200000)
+
+
 RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
 ALL_SESSIONS_CACHE_TTL_SECONDS = float(os.environ.get("CONTEXT_WORKSPACE_SESSIONS_CACHE_TTL", "60"))
 HERMES_REFRESH_COMMAND_ENV = "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD"
@@ -107,6 +126,7 @@ def create_app(
     app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.status().hermes_home)
     app.state.registry = registry or RunRegistry()
     app.state.executor = executor or RunExecutor(registry=app.state.registry)
+    app.state.context_bundles = ContextBundleStore()
     app.state.adapters = adapters or {"codex": CodexAdapter()}
     app.state.limits = limits or RuntimeLimits()
     app.state.pool = ThreadPoolExecutor(max_workers=4)
@@ -116,6 +136,54 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.post("/context/bundles")
+    def create_context_bundle(request: ContextBundleCreateRequest) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(request.project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            memory_excerpt = app.state.memory.format_project_context(project, limit=10)
+        except OSError:
+            memory_excerpt = ""
+        bundle = app.state.context_bundles.create(
+            project,
+            mode=request.mode,
+            agent=request.agent,
+            task=request.task,
+            curated_context=request.context if request.mode == "immersive_curated" else "",
+            memory_excerpt=memory_excerpt,
+            recall_metadata=_recall_status_payload(project),
+        )
+        return {"bundle": bundle.payload()}
+
+    @app.get("/context/bundles/{bundle_id}")
+    def get_context_bundle(bundle_id: str, project_dir: str = Query(min_length=1)) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(project_dir)
+            bundle = app.state.context_bundles.read(project, bundle_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"bundle": bundle.payload()}
+
+    @app.post("/context/turns")
+    def record_context_turn(request: ContextTurnRecordRequest) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(request.project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        turn = app.state.context_bundles.record_turn(
+            project,
+            session_id=request.session_id,
+            agent=request.agent,
+            mode=request.mode,
+            user_message=request.user_message,
+            assistant_message=request.assistant_message,
+        )
+        return {"turn": turn}
 
     @app.get("/hermes/status")
     def hermes_status() -> dict[str, Any]:
@@ -266,7 +334,15 @@ def create_app(
     @app.post("/memory/store")
     def store_memory(request: MemoryStoreRequest) -> dict[str, Any]:
         try:
-            entry = app.state.memory.append(request.text)
+            text = request.text
+            project_dir = request.project_dir.strip() if request.project_dir else ""
+            if project_dir:
+                try:
+                    project = resolve_project_dir(project_dir)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                text = _project_scoped_memory_text(project, text)
+            entry = app.state.memory.append(text)
             return {"stored": True, "entry": entry.text}
         except OSError as exc:
             raise _memory_unavailable_exception(exc) from exc
@@ -387,8 +463,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        memory_query = request.memory_query or request.task
-        memory_excerpt = _memory_excerpt_for_spawn(app.state.memory, memory_query)
+        memory_excerpt = ""
         _try_append_memory(app.state.memory, f"[{run.agent_id}] Task: {run.task} | Status: pending")
         timeout_seconds = request.timeout_seconds
         if timeout_seconds is None:
@@ -482,18 +557,21 @@ def _memory_unavailable_exception(exc: OSError) -> HTTPException:
     )
 
 
-def _memory_excerpt_for_spawn(memory: HermesMemoryStore, query: str) -> str:
-    try:
-        return memory.format_query_response(query, limit=10)
-    except OSError as exc:
-        return f"Hermes memory lookup failed. Check Hermes status and memory path permissions: {exc}"
-
-
 def _try_append_memory(memory: HermesMemoryStore, text: str) -> None:
     try:
         memory.append(text)
     except OSError:
         return
+
+
+def _project_scoped_memory_text(project: Path, text: str) -> str:
+    stripped = text.strip()
+    project_marker = f"Project {project}:"
+    if stripped.startswith(project_marker):
+        return stripped
+    if str(project) in stripped:
+        return stripped
+    return f"{project_marker} {stripped}"
 
 
 def _run_payload(run: Run) -> dict[str, Any]:

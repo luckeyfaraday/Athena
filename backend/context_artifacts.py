@@ -39,7 +39,7 @@ class ContextArtifactWriter:
         artifacts = self.paths_for(run)
         artifacts.run_dir.mkdir(parents=True, exist_ok=True)
         artifacts.context.write_text(
-            _render_context(run, memory_excerpt, dynamic_memory_url),
+            _render_context(run),
             encoding="utf-8",
         )
         return artifacts
@@ -52,9 +52,7 @@ class ContextArtifactWriter:
         return artifacts
 
 
-def _render_context(run: Run, memory_excerpt: str, dynamic_memory_url: str) -> str:
-    memory = memory_excerpt.strip() or "No Hermes memory excerpt was provided."
-    recall = _read_recall_cache(run.project_dir)
+def _render_context(run: Run) -> str:
     return "\n".join(
         [
             f"# Context Workspace Run: {run.run_id}",
@@ -66,26 +64,8 @@ def _render_context(run: Run, memory_excerpt: str, dynamic_memory_url: str) -> s
             "",
             run.task.strip(),
             "",
-            "## Hermes Memory Excerpt",
-            "",
-            memory,
-            "",
-            "## Hermes Session Recall Cache",
-            "",
-            recall or "No Hermes session recall cache was provided.",
-            "",
-            "## Dynamic Memory Lookup",
-            "",
-            "If more context is needed, query Hermes with a focused URL-encoded query:",
-            "",
-            f'`curl -s "{dynamic_memory_url}?q=<query>"`',
+            "This legacy run has no Athena memory, recall, or project context attached.",
+            "Use an explicit immersive launch to create a context bundle.",
             "",
         ]
     )
-
-
-def _read_recall_cache(project_dir: Path) -> str:
-    recall_path = project_dir.resolve() / ".context-workspace" / "hermes" / "session-recall.md"
-    if not recall_path.exists():
-        return ""
-    return recall_path.read_text(encoding="utf-8").strip()

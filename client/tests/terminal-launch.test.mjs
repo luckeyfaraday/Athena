@@ -42,6 +42,13 @@ test("launchCommand for an agent guards on command availability before launching
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
 
+test("launchCommand uses the bundled Athena runtime executable when provided", () => {
+  const command = launchCommand("opencode", "/home/dev/project", null, null, "/opt/athena runtime/athena-code");
+  assert.match(command, /Athena runtime binary is not executable/);
+  assert.match(command, /'\/opt\/athena runtime\/athena-code' '\/home\/dev\/project'/);
+  assert.doesNotMatch(command, /command -v 'opencode'/);
+});
+
 test("launchCommand single-quote-escapes a malicious workspace path", () => {
   const command = launchCommand("codex", INJECTION, null);
   // The payload appears only in fully quoteShell-escaped form, so the embedded

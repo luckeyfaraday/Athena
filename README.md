@@ -266,14 +266,14 @@ For the first public release gate, see
 
 Athena's primary workflow is embedded, interactive agent sessions. The Electron main process launches terminal panes for shell, Hermes, Codex, OpenCode, and Claude. The React UI renders those panes with `xterm.js`.
 
-For agent panes, Athena:
+By default, fresh agent panes start without Athena project context. Athena only
+creates and attaches memory, recall, and project-instruction bundles when an
+explicit immersive context mode is selected. It then:
 
-1. Checks whether project recall is missing or stale.
-2. Runs the configured recall refresh command when available.
-3. Writes a temporary prompt file with workspace details, recall cache path, and recall contents.
-4. Starts the selected CLI in an embedded PTY.
-5. Tracks the pane as a live session and captures a bounded terminal buffer for review.
-6. Marks fresh recall as used when launching an agent.
+1. Creates an immutable workspace-scoped context bundle.
+2. Writes a compact bootstrap prompt that points at the bundle.
+3. Starts the selected CLI in an embedded PTY.
+4. Tracks the pane as a live session and captures a bounded terminal buffer for review.
 
 Athena also discovers native provider sessions already on disk, so previous Codex, OpenCode, Claude Code, and Hermes work can be inspected or resumed from the Sessions tab.
 
@@ -312,7 +312,8 @@ The `New` menu can launch:
 - Claude
 - Claude Grid
 
-Agent panes receive a generated Hermes prompt path through the terminal environment when applicable.
+Agent panes receive a generated Athena prompt path only for task, curated, or
+explicit immersive launches. Clean launches receive no prompt path.
 
 ## Hermes Memory
 
@@ -450,6 +451,25 @@ Athena owns these app-side tools. Hermes still owns its own config, `session_sea
 - Start a new agent with a curated handoff instead of a full noisy transcript.
 - Let Hermes control visible Athena terminals through MCP.
 - Keep project-local recall separate across workspaces.
+
+## Athena-Owned Agent Runtimes
+
+The Command Room **New** menu includes three Athena-owned interactive runtimes:
+
+- **Athena Code** uses the OpenCode server and structured event API.
+- **Athena Codex** uses resumable `codex exec --json` sessions.
+- **Athena Claude** uses resumable Claude Code `stream-json` sessions.
+
+These panes use Athena's own terminal-style interface instead of embedding the
+native CLI renderer. They preserve each agent's tools and session persistence
+while giving Athena structured turn, output, status, interrupt, and approval
+events.
+
+Every runtime starts in **Clean** mode unless the user explicitly launches or
+switches it to **Immersive**. Clean turns are sent unchanged. Immersive turns
+create a fresh project-scoped context bundle before submission and tell the
+runtime to load that immutable snapshot. The mode can be changed at any point
+in the session from the pane header.
 
 ## Troubleshooting
 

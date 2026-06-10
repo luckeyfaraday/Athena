@@ -83,6 +83,12 @@ export type EmbeddedTerminalSpawnOptions = {
   contextMode?: AgentContextMode;
   contextText?: string;
   controlSource?: string;
+  athenaRuntimeBrand?: "ATHENA CODE" | "ATHENA CODEX" | "ATHENA CLAUDE";
+};
+
+type ImmersiveContextBundle = {
+  bundle_id: string;
+  context_path: string;
 };
 
 export type SendAgentMessageRequest = {
@@ -502,15 +508,37 @@ export async function spawnEmbeddedTerminal(
   const kind = options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
-  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
-    ? null
-    : writeAgentContextPrompt(cwd, kind, contextMode, options.title, options.task, options.contextText);
   const backendUrl = getBackendState().baseUrl;
   const controlUrl = getControlState().baseUrl;
+  const immersiveBundle = isImmersiveContextMode(contextMode) && isAgentKind(kind) && !options.resumeSessionId
+    ? await createImmersiveContextBundle(
+        backendUrl,
+        cwd,
+        kind,
+        contextMode,
+        options.task,
+        options.contextText,
+      )
+    : null;
+  const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none" || options.athenaRuntimeBrand
+    ? null
+    : writeAgentContextPrompt(
+        cwd,
+        kind,
+        contextMode,
+        options.title,
+        options.task,
+        options.contextText,
+        immersiveBundle,
+      );
   const mcpConfigPath = isAgentKind(kind) && backendUrl && controlUrl
     ? writeMcpConfig(kind, backendUrl, controlUrl)
     : null;
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath);
+  const athenaRuntimeBinary = options.athenaRuntimeBrand ? resolveAthenaRuntimeBinary() : null;
+  if (options.athenaRuntimeBrand && !athenaRuntimeBinary) {
+    throw new Error("Athena runtime binary is not bundled for this platform.");
+  }
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath, athenaRuntimeBinary);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
   const restoreEntry: RestorableTerminal = {
@@ -568,6 +596,8 @@ export async function spawnEmbeddedTerminal(
         ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
         ...(backendUrl ? { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl } : {}),
         ...(controlUrl ? { CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl } : {}),
+        ...(options.athenaRuntimeBrand ? { ATHENA_RUNTIME_BRAND: options.athenaRuntimeBrand } : {}),
+        ...(options.athenaRuntimeBrand && isImmersiveContextMode(contextMode) ? { ATHENA_IMMERSIVE_MODE: "1" } : {}),
       },
     });
 
@@ -1129,6 +1159,16 @@ function resolveMcpServerPath(): string | null {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
+function resolveAthenaRuntimeBinary(): string | null {
+  if (!_appRoot) return null;
+  const parent = _appRoot.includes(".asar") ? path.dirname(_appRoot) : path.resolve(_appRoot, "..");
+  const platformDir = process.platform === "linux" && process.arch === "x64" ? "linux-x64" : null;
+  if (!platformDir) return null;
+  const executable = process.platform === "win32" ? "athena-code.exe" : "athena-code";
+  const candidate = path.join(parent, "runtime-bin", platformDir, executable);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
 function writeMcpConfig(kind: EmbeddedTerminalKind, backendUrl: string, controlUrl: string): string | null {
   const serverPath = resolveMcpServerPath();
   if (!serverPath) return null;
@@ -1162,6 +1202,7 @@ function writeAgentContextPrompt(
   title?: string,
   task?: string,
   contextText?: string,
+  immersiveBundle?: ImmersiveContextBundle | null,
 ): string {
   const directory = tempWorkspaceDirectory();
   const promptPath = path.join(directory, `athena-agent-context-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
@@ -1172,10 +1213,51 @@ function writeAgentContextPrompt(
     title,
     task,
     contextText,
+    bundleId: immersiveBundle?.bundle_id,
+    contextPath: immersiveBundle?.context_path,
   });
   if (!prompt) throw new Error("Agent context prompt cannot be empty.");
   fs.writeFileSync(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
   return promptPath;
+}
+
+function isImmersiveContextMode(mode: AgentContextMode): mode is "immersive" | "immersive_curated" {
+  return mode === "immersive" || mode === "immersive_curated";
+}
+
+async function createImmersiveContextBundle(
+  backendUrl: string | null,
+  workspace: string,
+  kind: EmbeddedTerminalKind,
+  mode: "immersive" | "immersive_curated",
+  task?: string,
+  contextText?: string,
+): Promise<ImmersiveContextBundle> {
+  if (!backendUrl) {
+    throw new Error("Athena immersive mode requires the backend to be available.");
+  }
+  const response = await fetch(`${backendUrl}/context/bundles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      project_dir: workspace,
+      mode,
+      agent: agentConfig(kind).label,
+      task: task?.trim() ?? "",
+      context: contextText?.trim() ?? "",
+    }),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Athena immersive context creation failed with HTTP ${response.status}.${detail ? ` ${detail}` : ""}`);
+  }
+  const payload = await response.json() as { bundle?: Partial<ImmersiveContextBundle> };
+  const bundleId = payload.bundle?.bundle_id;
+  const contextPath = payload.bundle?.context_path;
+  if (!bundleId || !contextPath) {
+    throw new Error("Athena immersive context creation returned an invalid bundle.");
+  }
+  return { bundle_id: bundleId, context_path: contextPath };
 }
 
 function defaultTitle(kind: EmbeddedTerminalKind): string {

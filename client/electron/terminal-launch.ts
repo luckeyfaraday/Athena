@@ -36,6 +36,7 @@ export function terminalLaunch(
   promptPath: string | null,
   resumeSessionId?: string,
   mcpConfigPath?: string | null,
+  executableOverride?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
     if (kind === "hermes" && resumeSessionId) {
@@ -65,10 +66,16 @@ export function terminalLaunch(
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath, executableOverride)] };
 }
 
-export function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null): string {
+export function launchCommand(
+  kind: EmbeddedTerminalKind,
+  cwd: string,
+  promptPath: string | null,
+  mcpConfigPath?: string | null,
+  executableOverride?: string | null,
+): string {
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
@@ -81,13 +88,16 @@ export function launchCommand(kind: EmbeddedTerminalKind, cwd: string, promptPat
 
   if (kind !== "shell") {
     const agent = agentConfig(kind);
+    const executable = executableOverride ?? agent.executable;
     return [
       `cd ${quoteShell(cwd)}`,
       promptPath
-        ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
-        : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
-      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath)}`.trimEnd(),
+        ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(executableOverride ? "Athena runtime" : agent.label)} ${quoteShell(promptPath)}`
+        : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(executableOverride ? "Athena runtime" : agent.label)}`,
+      executableOverride
+        ? `if [ ! -x ${quoteShell(executableOverride)} ]; then printf '\\033[31mAthena runtime binary is not executable: %s\\033[0m\\n' ${quoteShell(executableOverride)}; exec bash -l; fi`
+        : `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+      `${executableOverride ? quoteShell(executableOverride) : agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath)}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }

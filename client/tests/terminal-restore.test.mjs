@@ -4,7 +4,14 @@ import * as os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { claudeProjectPathCandidates, newestCodexSessionIdForWorkspace, savedResumeSessionId, selectEmbeddedTerminalRestoreEntries } from "../dist-electron/terminal-restore-policy.js";
+import {
+  claudeProjectPathCandidates,
+  codexSessionIdForWorkspace,
+  effectiveCreationMs,
+  savedResumeSessionId,
+  selectDiscoveredSessionId,
+  selectEmbeddedTerminalRestoreEntries,
+} from "../dist-electron/terminal-restore-policy.js";
 
 function entry(id, kind, workspace = "/home/dev/project", extras = {}) {
   return {
@@ -104,7 +111,7 @@ test("codex session discovery reads native jsonl metadata for the selected works
     ].join("\n"),
   );
 
-  const sessionId = await newestCodexSessionIdForWorkspace(path.join(root, "sessions"), workspace, Date.now() - 5_000);
+  const sessionId = await codexSessionIdForWorkspace(path.join(root, "sessions"), workspace, Date.now() - 5_000);
 
   assert.equal(sessionId, "codex-session-1");
 });
@@ -123,7 +130,7 @@ test("codex session discovery ignores other workspaces and old files", async () 
   await fs.writeFile(otherFile, JSON.stringify({ type: "session_meta", payload: { id: "other-session", cwd: otherWorkspace } }));
   await fs.writeFile(currentFile, JSON.stringify({ type: "session_meta", payload: { id: "current-session", cwd: workspace } }));
 
-  const sessionId = await newestCodexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
+  const sessionId = await codexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
 
   assert.equal(sessionId, "current-session");
 });
@@ -142,9 +149,79 @@ test("codex session discovery does not select nested workspace sessions", async 
   await fs.utimes(rootFile, new Date(Date.now() - 1_000), new Date(Date.now() - 1_000));
   await fs.utimes(nestedFile, new Date(), new Date());
 
-  const sessionId = await newestCodexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
+  const sessionId = await codexSessionIdForWorkspace(sessions, workspace, Date.now() - 5_000);
 
   assert.equal(sessionId, "root-session");
+});
+
+test("codex session discovery skips session ids already attached to other live terminals", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-sessions-"));
+  const workspace = path.join(root, "workspace");
+  const sessions = path.join(root, "sessions");
+  await fs.mkdir(sessions, { recursive: true });
+  await fs.writeFile(
+    path.join(sessions, "claimed.jsonl"),
+    JSON.stringify({ type: "session_meta", payload: { id: "claimed-session", cwd: workspace } }),
+  );
+  await fs.writeFile(
+    path.join(sessions, "own.jsonl"),
+    JSON.stringify({ type: "session_meta", payload: { id: "own-session", cwd: workspace } }),
+  );
+
+  const excluded = await codexSessionIdForWorkspace(sessions, workspace, Date.now(), new Set(["claimed-session"]));
+  assert.equal(excluded, "own-session");
+
+  const bothExcluded = await codexSessionIdForWorkspace(sessions, workspace, Date.now(), new Set(["claimed-session", "own-session"]));
+  assert.equal(bothExcluded, null);
+});
+
+// Issue #137: a long-running neighbor pane's session file has a fresh mtime
+// on every turn, but its creation time predates the new pane's spawn. The
+// selector must key off creation time, not recency of modification.
+test("selectDiscoveredSessionId ignores sessions created before the spawn window", () => {
+  const spawnedAtMs = Date.parse("2026-06-10T16:00:00.000Z");
+  const picked = selectDiscoveredSessionId(
+    [
+      { id: "busy-neighbor", createdMs: spawnedAtMs - 60_000 },
+      { id: "own-session", createdMs: spawnedAtMs + 2_000 },
+    ],
+    spawnedAtMs,
+  );
+  assert.equal(picked, "own-session");
+});
+
+test("selectDiscoveredSessionId prefers the session created closest to the spawn", () => {
+  const spawnedAtMs = Date.parse("2026-06-10T16:00:00.000Z");
+  const picked = selectDiscoveredSessionId(
+    [
+      { id: "sibling-spawned-later", createdMs: spawnedAtMs + 9_000 },
+      { id: "own-session", createdMs: spawnedAtMs + 1_000 },
+      { id: "pre-window", createdMs: spawnedAtMs - 11_000 },
+    ],
+    spawnedAtMs,
+  );
+  assert.equal(picked, "own-session");
+});
+
+test("selectDiscoveredSessionId excludes ids bound to other terminals before ranking", () => {
+  const spawnedAtMs = Date.parse("2026-06-10T16:00:00.000Z");
+  const picked = selectDiscoveredSessionId(
+    [
+      { id: "closest-but-claimed", createdMs: spawnedAtMs + 1_000 },
+      { id: "own-session", createdMs: spawnedAtMs + 4_000 },
+    ],
+    spawnedAtMs,
+    new Set(["closest-but-claimed"]),
+  );
+  assert.equal(picked, "own-session");
+});
+
+test("effectiveCreationMs uses birthtime when present and never exceeds mtime", () => {
+  assert.equal(effectiveCreationMs({ birthtimeMs: 1_000, mtimeMs: 5_000 }), 1_000);
+  // Backdated mtime (e.g. utimes in tests or file copies) caps the estimate.
+  assert.equal(effectiveCreationMs({ birthtimeMs: 5_000, mtimeMs: 1_000 }), 1_000);
+  // Filesystems without birthtime report 0; fall back to mtime.
+  assert.equal(effectiveCreationMs({ birthtimeMs: 0, mtimeMs: 5_000 }), 5_000);
 });
 
 function currentClaudeEncoding(workspace) {

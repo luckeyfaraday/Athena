@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { BrowserWindow } from "electron";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
@@ -36,7 +37,17 @@ import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.js";
 import { ptyHost } from "./pty-host-client.js";
-import { claudeProjectPathCandidates, newestCodexSessionIdForWorkspace, savedResumeSessionId, selectEmbeddedTerminalRestoreEntries, type RestorableTerminal } from "./terminal-restore-policy.js";
+import {
+  claudeProjectPathCandidates,
+  codexSessionIdForWorkspace,
+  effectiveCreationMs,
+  savedResumeSessionId,
+  selectDiscoveredSessionId,
+  selectEmbeddedTerminalRestoreEntries,
+  SESSION_DISCOVERY_GRACE_MS,
+  type RestorableTerminal,
+  type SessionFileCandidate,
+} from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
 import { rawInputPreview } from "./terminal-input.js";
 import {
@@ -317,7 +328,9 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
         rows: 28,
         resumeSessionId: resumeSessionId ?? undefined,
         sessionLabel: entry.sessionLabel ?? undefined,
-        providerSessionId: entry.providerSessionId ?? resumeSessionId ?? undefined,
+        // Without a resumable session the spawn starts a fresh provider
+        // session, so a saved provider id would be a stale, wrong binding.
+        providerSessionId: resumeSessionId ? entry.providerSessionId ?? resumeSessionId : undefined,
         contextMode: "none",
         controlSource: "restore",
       });
@@ -331,12 +344,31 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
 
 async function resolveRestoreResumeSessionId(entry: RestorableTerminal): Promise<string | null> {
   const savedSessionId = savedResumeSessionId(entry);
+  if (savedSessionId && entry.kind === "claude") {
+    // A pre-assigned --session-id only becomes resumable once Claude has
+    // written its session file; without one, `claude --resume` would fail and
+    // strand the pane, so restore launches fresh instead.
+    return (await claudeSessionFileExists(entry.workspace, savedSessionId)) ? savedSessionId : null;
+  }
   if (savedSessionId) return savedSessionId;
   if (entry.kind !== "codex") return null;
 
   const startedAtMs = Date.parse(entry.createdAt);
-  const minMtimeMs = Number.isFinite(startedAtMs) ? startedAtMs - 10_000 : 0;
-  return newestCodexSessionIdForWorkspace(path.join(os.homedir(), ".codex", "sessions"), entry.workspace, minMtimeMs);
+  const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : 0;
+  return codexSessionIdForWorkspace(path.join(os.homedir(), ".codex", "sessions"), entry.workspace, spawnedAtMs, attachedProviderSessionIds(entry.id));
+}
+
+async function claudeSessionFileExists(workspace: string, sessionId: string): Promise<boolean> {
+  const projectsDir = path.join(os.homedir(), ".claude", "projects");
+  for (const dir of claudeProjectPathCandidates(projectsDir, workspace)) {
+    try {
+      await fs.promises.access(path.join(dir, `${sessionId}.jsonl`));
+      return true;
+    } catch {
+      // Try the next encoding candidate.
+    }
+  }
+  return false;
 }
 
 export function clearSavedEmbeddedTerminalRestores(): number {
@@ -534,15 +566,22 @@ export async function spawnEmbeddedTerminal(
   const mcpConfigPath = isAgentKind(kind) && backendUrl && controlUrl
     ? writeMcpConfig(kind, backendUrl, controlUrl)
     : null;
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath);
-  const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId);
-  const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? null : null;
+  // Fresh Claude panes get their session id assigned up front (claude
+  // --session-id <uuid>) instead of inferred from session-file mtimes after
+  // launch. Inference mis-attached a neighbor pane's session when two panes
+  // shared a workspace, which routed injected input to the wrong agent (#137).
+  const assignedSessionId = kind === "claude" && !options.resumeSessionId && !options.providerSessionId
+    ? randomUUID()
+    : null;
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath, assignedSessionId);
+  const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId ?? assignedSessionId ?? undefined);
+  const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? assignedSessionId : null;
   const restoreEntry: RestorableTerminal = {
     id,
     title: options.title ?? defaultTitle(kind),
     kind,
     workspace: cwd,
-    sessionLabel: options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId),
+    sessionLabel,
     providerSessionId,
     resumeSessionId: isAgentKind(kind) ? options.resumeSessionId ?? providerSessionId : null,
     createdAt: new Date().toISOString(),
@@ -1268,13 +1307,13 @@ function maybeDiscoverProviderSessionId(terminalId: string, workspace: string, c
 
 async function discoverCodexSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
   const startedAtMs = Date.parse(createdAt);
-  const minMtimeMs = Number.isFinite(startedAtMs) ? startedAtMs - 10_000 : Date.now() - 10_000;
+  const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
   const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
 
   for (let attempt = 0; attempt < CODEX_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
     const entry = terminals.get(terminalId);
     if (!entry || entry.session.kind !== "codex" || entry.session.providerSessionId || entry.session.status !== "running") return;
-    const sessionId = await newestCodexSessionIdForWorkspace(sessionsDir, workspace, minMtimeMs);
+    const sessionId = await codexSessionIdForWorkspace(sessionsDir, workspace, spawnedAtMs, attachedProviderSessionIds(terminalId));
     if (sessionId) {
       attachProviderSessionId(terminalId, sessionId);
       return;
@@ -1283,14 +1322,17 @@ async function discoverCodexSessionId(terminalId: string, workspace: string, cre
   }
 }
 
+// Fallback only: fresh Claude panes are assigned an explicit --session-id at
+// spawn, so this discovery now runs just for terminals that predate that
+// change (restored entries without a saved provider session id).
 async function discoverClaudeSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
   const startedAtMs = Date.parse(createdAt);
-  const minMtimeMs = Number.isFinite(startedAtMs) ? startedAtMs - 10_000 : Date.now() - 10_000;
+  const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
 
   for (let attempt = 0; attempt < CLAUDE_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
     const entry = terminals.get(terminalId);
     if (!entry || entry.session.kind !== "claude" || entry.session.providerSessionId || entry.session.status !== "running") return;
-    const sessionId = await newestClaudeSessionIdForWorkspace(workspace, minMtimeMs);
+    const sessionId = await claudeSessionIdForWorkspace(workspace, spawnedAtMs, attachedProviderSessionIds(terminalId));
     if (sessionId) {
       attachProviderSessionId(terminalId, sessionId);
       return;
@@ -1299,9 +1341,25 @@ async function discoverClaudeSessionId(terminalId: string, workspace: string, cr
   }
 }
 
-async function newestClaudeSessionIdForWorkspace(workspace: string, minMtimeMs: number): Promise<string | null> {
+// Session ids already bound to other live terminals must never be discovered
+// again: a neighbor pane's session claiming a second terminal is exactly the
+// crossed-registry failure from issue #137.
+function attachedProviderSessionIds(excludeTerminalId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const [terminalId, entry] of terminals) {
+    if (terminalId === excludeTerminalId) continue;
+    if (entry.session.providerSessionId) ids.add(entry.session.providerSessionId);
+  }
+  return ids;
+}
+
+async function claudeSessionIdForWorkspace(
+  workspace: string,
+  spawnedAtMs: number,
+  excludeSessionIds?: ReadonlySet<string>,
+): Promise<string | null> {
   const projectsDir = path.join(os.homedir(), ".claude", "projects");
-  const candidates: { id: string; mtimeMs: number }[] = [];
+  const candidates: SessionFileCandidate[] = [];
   for (const dir of claudeProjectPathCandidates(projectsDir, workspace)) {
     let names: string[];
     try {
@@ -1314,15 +1372,16 @@ async function newestClaudeSessionIdForWorkspace(workspace: string, minMtimeMs: 
       const filePath = path.join(dir, name);
       try {
         const stat = await fs.promises.stat(filePath);
-        if (stat.mtimeMs < minMtimeMs) continue;
+        const createdMs = effectiveCreationMs(stat);
+        if (createdMs < spawnedAtMs - SESSION_DISCOVERY_GRACE_MS) continue;
         const id = await claudeSessionIdFromFile(filePath, path.basename(name, ".jsonl"));
-        if (id) candidates.push({ id, mtimeMs: stat.mtimeMs });
+        if (id) candidates.push({ id, createdMs });
       } catch {
         // Claude session discovery is best-effort; restore still falls back to a fresh Claude launch.
       }
     }
   }
-  return candidates.sort((left, right) => right.mtimeMs - left.mtimeMs)[0]?.id ?? null;
+  return selectDiscoveredSessionId(candidates, spawnedAtMs, excludeSessionIds);
 }
 
 async function claudeSessionIdFromFile(filePath: string, fallback: string): Promise<string | null> {
@@ -1342,6 +1401,9 @@ async function claudeSessionIdFromFile(filePath: string, fallback: string): Prom
 function attachProviderSessionId(terminalId: string, providerSessionId: string): void {
   const entry = terminals.get(terminalId);
   if (!entry || (entry.session.kind !== "claude" && entry.session.kind !== "codex")) return;
+  // Two concurrent discoveries can race to the same candidate; only the first
+  // may bind it. The loser keeps polling and picks up its own session file.
+  if (attachedProviderSessionIds(terminalId).has(providerSessionId)) return;
   entry.session = {
     ...entry.session,
     providerSessionId,

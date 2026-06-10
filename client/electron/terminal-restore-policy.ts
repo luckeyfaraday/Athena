@@ -50,21 +50,51 @@ export function claudeProjectPathCandidates(projectsDir: string, workspace: stri
   ]));
 }
 
-export async function newestCodexSessionIdForWorkspace(sessionsDir: string, workspace: string, minMtimeMs: number): Promise<string | null> {
+// Session discovery accepts files created up to this long before the terminal
+// spawned, to absorb clock skew between PTY bookkeeping and file timestamps.
+export const SESSION_DISCOVERY_GRACE_MS = 10_000;
+
+export type SessionFileCandidate = { id: string; createdMs: number };
+
+// A long-running session file is rewritten on every turn, so its mtime is
+// useless for telling "created by this spawn" apart from "busy neighbor pane"
+// (issue #137). Use birthtime when the filesystem provides one; the min()
+// guards against tools that backdate mtime below birthtime.
+export function effectiveCreationMs(stat: fs.Stats): number {
+  return stat.birthtimeMs > 0 ? Math.min(stat.birthtimeMs, stat.mtimeMs) : stat.mtimeMs;
+}
+
+export function selectDiscoveredSessionId(
+  candidates: SessionFileCandidate[],
+  spawnedAtMs: number,
+  excludeSessionIds?: ReadonlySet<string>,
+): string | null {
+  return candidates
+    .filter((candidate) => candidate.createdMs >= spawnedAtMs - SESSION_DISCOVERY_GRACE_MS && !excludeSessionIds?.has(candidate.id))
+    .sort((left, right) => Math.abs(left.createdMs - spawnedAtMs) - Math.abs(right.createdMs - spawnedAtMs))[0]?.id ?? null;
+}
+
+export async function codexSessionIdForWorkspace(
+  sessionsDir: string,
+  workspace: string,
+  spawnedAtMs: number,
+  excludeSessionIds?: ReadonlySet<string>,
+): Promise<string | null> {
   const files = await recentJsonlFiles(sessionsDir, 120);
-  const candidates: { id: string; mtimeMs: number }[] = [];
+  const candidates: SessionFileCandidate[] = [];
   for (const filePath of files) {
     try {
       const stat = await fs.promises.stat(filePath);
-      if (stat.mtimeMs < minMtimeMs) continue;
+      const createdMs = effectiveCreationMs(stat);
+      if (createdMs < spawnedAtMs - SESSION_DISCOVERY_GRACE_MS) continue;
       const metadata = await readCodexJsonlMetadata(filePath);
       if (!metadata.sessionId || !metadata.cwd || !samePath(metadata.cwd, workspace)) continue;
-      candidates.push({ id: metadata.sessionId, mtimeMs: stat.mtimeMs });
+      candidates.push({ id: metadata.sessionId, createdMs });
     } catch {
       // Codex session discovery is best-effort; a failed file should not block restore.
     }
   }
-  return candidates.sort((left, right) => right.mtimeMs - left.mtimeMs)[0]?.id ?? null;
+  return selectDiscoveredSessionId(candidates, spawnedAtMs, excludeSessionIds);
 }
 
 function encodeClaudeProjectPath(workspace: string): string {

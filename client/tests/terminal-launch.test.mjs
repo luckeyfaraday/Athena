@@ -85,6 +85,42 @@ test("agentConfig claude args include the mcp config flag and quote the prompt p
   assert.equal(claude.resumeArgs("/ws", "s1", "bash", "/tmp/mcp.json"), `claude --mcp-config '/tmp/mcp.json' --resume 's1'`);
 });
 
+test("agentConfig claude args pin a pre-assigned session id ahead of the other flags", () => {
+  const claude = agentConfig("claude");
+  assert.equal(
+    claude.args("/ws", "/tmp/p.md", "bash", "/tmp/mcp.json", "11111111-2222-3333-4444-555555555555"),
+    `--session-id '11111111-2222-3333-4444-555555555555' --mcp-config '/tmp/mcp.json' "$(cat '/tmp/p.md')"`,
+  );
+  assert.equal(
+    claude.args("/ws", null, "bash", null, "11111111-2222-3333-4444-555555555555"),
+    `--session-id '11111111-2222-3333-4444-555555555555'`,
+  );
+});
+
+test("launchCommand for claude threads the new session id through fully quoted", () => {
+  const command = launchCommand("claude", "/home/dev/project", null, null, "abc-123");
+  assert.match(command, /claude --session-id 'abc-123'/);
+  // A malicious session id must only ever appear quoteShell-escaped.
+  const hostile = launchCommand("claude", "/home/dev/project", null, null, INJECTION);
+  assert.ok(hostile.includes(`--session-id ${quoteShell(INJECTION)}`));
+});
+
+test("launchCommand without a new session id matches the legacy claude launch", () => {
+  const command = launchCommand("claude", "/home/dev/project", null, "/tmp/mcp.json");
+  assert.doesNotMatch(command, /--session-id/);
+  assert.match(command, /claude --mcp-config '\/tmp\/mcp.json'/);
+});
+
+test("PowerShell builder splats the new claude session id without string interpolation", () => {
+  const command = launchPowerShellCommand("claude", "C:\\ws", null, null, "sess'9");
+  // quotePowerShell doubles single quotes: ' -> ''
+  assert.match(command, /\$newSessionId = 'sess''9'/);
+  assert.match(command, /if \(\$newSessionId\) \{ \$agentArgs \+= @\('--session-id', \$newSessionId\) \}/);
+
+  const withoutId = launchPowerShellCommand("claude", "C:\\ws", null, null);
+  assert.doesNotMatch(withoutId, /\$newSessionId = /);
+});
+
 test("agentConfig opencode collapses prompt whitespace and quotes the path", () => {
   const opencode = agentConfig("opencode");
   assert.equal(

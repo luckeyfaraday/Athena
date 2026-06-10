@@ -26,7 +26,7 @@ export type AgentConfig = {
   powerShellCommand: string;
   powerShellCommandWithoutPrompt: string;
   resumePowerShellCommand: string;
-  args: (cwd: string, promptPath: string | null, shell: "bash", mcpConfigPath?: string | null) => string;
+  args: (cwd: string, promptPath: string | null, shell: "bash", mcpConfigPath?: string | null, newSessionId?: string | null) => string;
   resumeArgs: (cwd: string, sessionId: string, shell: "bash", mcpConfigPath?: string | null) => string;
 };
 
@@ -36,6 +36,7 @@ export function terminalLaunch(
   promptPath: string | null,
   resumeSessionId?: string,
   mcpConfigPath?: string | null,
+  newSessionId?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
     if (kind === "hermes" && resumeSessionId) {
@@ -59,13 +60,13 @@ export function terminalLaunch(
     if (kind !== "shell") {
       return {
         command: "powershell.exe",
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcpConfigPath)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcpConfigPath, newSessionId)],
       };
     }
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath, newSessionId)] };
 }
 
 export function launchCommand(
@@ -73,6 +74,7 @@ export function launchCommand(
   cwd: string,
   promptPath: string | null,
   mcpConfigPath?: string | null,
+  newSessionId?: string | null,
 ): string {
   if (kind === "hermes") {
     return [
@@ -92,7 +94,7 @@ export function launchCommand(
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath)}`.trimEnd(),
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath, newSessionId)}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }
@@ -158,7 +160,7 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
   ].join("; ");
 }
 
-export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null): string {
+export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null, newSessionId?: string | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -167,6 +169,7 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcpConfigPath ? `$mcpConfigPath = ${quotePowerShell(mcpConfigPath)}` : "",
+    newSessionId ? `$newSessionId = ${quotePowerShell(newSessionId)}` : "",
     promptPath
       ? "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan"
       : "Write-Host \"[Context Workspace] Launching $agentLabel\" -ForegroundColor Cyan",
@@ -209,13 +212,17 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     };
   }
   if (kind === "claude") {
+    // A pre-generated `--session-id` pins the Claude session identity at spawn
+    // time so the registry never has to infer it from session-file mtimes,
+    // which mis-attaches when two panes share a workspace (issue #137).
     return {
       label: "Claude Code",
       executable: "claude",
-      powerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += $prompt; & $agentCommand @agentArgs",
-      powerShellCommandWithoutPrompt: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
+      powerShellCommand: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += $prompt; & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += @('--resume', $sessionId); & $agentCommand @agentArgs",
-      args: (_cwd, promptPath, _shell, mcpConfigPath) => [
+      args: (_cwd, promptPath, _shell, mcpConfigPath, newSessionId) => [
+        newSessionId ? `--session-id ${quoteShell(newSessionId)}` : "",
         mcpConfigPath ? `--mcp-config ${quoteShell(mcpConfigPath)}` : "",
         promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
       ].filter(Boolean).join(" "),

@@ -673,9 +673,17 @@ async function querySqlite(dbPath: string, sql: string, params: string[]): Promi
   return [];
 }
 
-async function sqliteUserVersion(dbPath: string, expected: number): Promise<boolean> {
+const warnedSessionIndexes = new Set<string>();
+
+async function sqliteUserVersion(dbPath: string, minimum: number): Promise<boolean> {
   const rows = await querySqlite(dbPath, "pragma user_version", []);
-  return rows.length > 0 && rows[0]?.[0] === expected;
+  const version = rows[0]?.[0];
+  if (typeof version === "number" && version >= minimum) return true;
+  if (!warnedSessionIndexes.has(dbPath)) {
+    warnedSessionIndexes.add(dbPath);
+    console.warn(`Skipping agent session index ${dbPath}: sqlite user_version ${String(version)} is below ${minimum}.`);
+  }
+  return false;
 }
 
 function mergeSessions(sessions: AgentSession[]): AgentSession[] {

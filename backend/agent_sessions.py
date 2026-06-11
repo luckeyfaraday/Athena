@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,8 @@ from typing import Any, Literal
 AgentSessionProvider = Literal["codex", "opencode", "athena", "claude", "hermes"]
 AgentSessionStatus = Literal["historical"]
 MAX_PROVIDER_ROWS = 1000
+
+logger = logging.getLogger(__name__)
 
 # Session ids are interpolated into filesystem paths and glob patterns when
 # reading transcripts. Constrain them to characters real providers use so a
@@ -510,14 +513,17 @@ def _read_opencode_transcript(session_id: str, home: Path) -> str:
 
 def _athena_index_path(home: Path) -> Path:
     configured = os.environ.get("ATHENA_CODE_HOME")
-    if configured and _same_path(home, Path.home().expanduser().resolve()):
+    # Honor the override only for the real home directory so callers that pass
+    # an explicit home_dir (tests) stay isolated. Resolve both sides because
+    # _same_path does not follow symlinks and Path.home() may be a symlink.
+    if configured and _same_path(home.resolve(), Path.home().expanduser().resolve()):
         return Path(configured).expanduser().resolve() / "context" / "sessions.db"
     return home / ".athena-code" / "context" / "sessions.db"
 
 
 def _read_athena_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
     db_path = _athena_index_path(home)
-    if not db_path.exists() or not _sqlite_user_version(db_path, expected=2):
+    if not db_path.exists() or not _sqlite_user_version(db_path, minimum=2):
         return []
     rows = _query_sqlite(
         db_path,
@@ -574,7 +580,7 @@ def _read_athena_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
 
 def _read_athena_transcript(session_id: str, home: Path) -> str:
     db_path = _athena_index_path(home)
-    if not db_path.exists() or not _sqlite_user_version(db_path, expected=2):
+    if not db_path.exists() or not _sqlite_user_version(db_path, minimum=2):
         return ""
     rows = _query_sqlite(
         db_path,
@@ -973,9 +979,13 @@ def _query_sqlite(db_path: Path, sql: str, params: tuple[Any, ...] = ()) -> list
         return []
 
 
-def _sqlite_user_version(db_path: Path, *, expected: int) -> bool:
+def _sqlite_user_version(db_path: Path, *, minimum: int) -> bool:
     rows = _query_sqlite(db_path, "pragma user_version")
-    return bool(rows and rows[0] and rows[0][0] == expected)
+    version = rows[0][0] if rows and rows[0] else None
+    if isinstance(version, int) and version >= minimum:
+        return True
+    logger.debug("Skipping agent session index %s: sqlite user_version %r is below %d", db_path, version, minimum)
+    return False
 
 
 def _merge_sessions(sessions: list[AgentSession]) -> list[AgentSession]:

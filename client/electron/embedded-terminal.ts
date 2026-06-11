@@ -41,6 +41,9 @@ import {
   claudeProjectPathCandidates,
   codexSessionIdForWorkspace,
   effectiveCreationMs,
+  openCodeDatabaseCandidates,
+  openCodeSessionExists,
+  openCodeSessionIdForWorkspace,
   savedResumeSessionId,
   selectDiscoveredSessionId,
   selectEmbeddedTerminalRestoreEntries,
@@ -147,6 +150,15 @@ export function prepareEmbeddedTerminalRestoreForQuit(): void {
   ptyHost.shutdown();
 }
 
+/**
+ * True while a restore attempt from this or a previous run has not yet been
+ * confirmed stable. Read at launch (before the quarantine pass clears it) to
+ * decide whether an unclean previous exit looks like a restore crash-loop.
+ */
+export function hasPendingEmbeddedTerminalRestoreAttempts(): boolean {
+  return readRestoreAttempts() != null;
+}
+
 const terminals = new Map<string, ManagedTerminal>();
 const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
@@ -156,6 +168,8 @@ const CLAUDE_SESSION_DISCOVERY_ATTEMPTS = 20;
 const CLAUDE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 const CODEX_SESSION_DISCOVERY_ATTEMPTS = 20;
 const CODEX_SESSION_DISCOVERY_INTERVAL_MS = 750;
+const OPENCODE_SESSION_DISCOVERY_ATTEMPTS = 20;
+const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 const pendingOutput = new Map<string, string>();
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
@@ -318,6 +332,7 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
       const liveSession = terminals.get(entry.id)?.session;
       if (liveSession) restored.push({ ...liveSession });
     }
+    if (plan.restore.length > 0) scheduleRestoreAttemptClear();
     for (const entry of plan.restore) {
       if (!fs.existsSync(entry.workspace)) continue;
       const resumeSessionId = await resolveRestoreResumeSessionId(entry);
@@ -350,11 +365,21 @@ async function resolveRestoreResumeSessionId(entry: RestorableTerminal): Promise
     // strand the pane, so restore launches fresh instead.
     return (await claudeSessionFileExists(entry.workspace, savedSessionId)) ? savedSessionId : null;
   }
+  if (savedSessionId && isOpenCodeKind(entry.kind)) {
+    // A session deleted inside the TUI would make `--session` fail and strand
+    // the pane, so restore confirms the id is still in the session store.
+    return (await openCodeSessionExists(openCodeDatabaseCandidates(), savedSessionId)) ? savedSessionId : null;
+  }
   if (savedSessionId) return savedSessionId;
-  if (entry.kind !== "codex") return null;
 
   const startedAtMs = Date.parse(entry.createdAt);
   const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : 0;
+  // Entries saved before session-id discovery existed for their kind carry no
+  // id; recover it from the provider's session store by creation time.
+  if (isOpenCodeKind(entry.kind)) {
+    return openCodeSessionIdForWorkspace(openCodeDatabaseCandidates(), entry.workspace, spawnedAtMs, attachedProviderSessionIds(entry.id));
+  }
+  if (entry.kind !== "codex") return null;
   return codexSessionIdForWorkspace(path.join(os.homedir(), ".codex", "sessions"), entry.workspace, spawnedAtMs, attachedProviderSessionIds(entry.id));
 }
 
@@ -1010,6 +1035,22 @@ function clearRestoreAttempts(): void {
   }
 }
 
+// Attempt state exists to catch restores that crash the app right back down
+// (the SIGBUS loop). Once restored terminals have survived this long, the
+// restore itself is proven safe, so the attempt record is cleared; a later
+// crash then neither quarantines those terminals nor pauses future restores.
+const RESTORE_ATTEMPT_STABILITY_MS = 120_000;
+let restoreAttemptClearTimer: NodeJS.Timeout | null = null;
+
+function scheduleRestoreAttemptClear(): void {
+  if (restoreAttemptClearTimer) clearTimeout(restoreAttemptClearTimer);
+  restoreAttemptClearTimer = setTimeout(() => {
+    restoreAttemptClearTimer = null;
+    if (!appQuitting) clearRestoreAttempts();
+  }, RESTORE_ATTEMPT_STABILITY_MS);
+  restoreAttemptClearTimer.unref?.();
+}
+
 function quarantinePendingRestoreAttemptsAfterCrash(): void {
   const launchState = readAthenaLaunchState();
   if (!launchState?.terminalRestorePaused && launchState?.cleanExit !== false) return;
@@ -1303,6 +1344,27 @@ function maybeDiscoverProviderSessionId(terminalId: string, workspace: string, c
   if (!entry || entry.session.providerSessionId) return;
   if (entry.session.kind === "claude") void discoverClaudeSessionId(terminalId, workspace, createdAt);
   else if (entry.session.kind === "codex") void discoverCodexSessionId(terminalId, workspace, createdAt);
+  else if (isOpenCodeKind(entry.session.kind)) void discoverOpenCodeSessionId(terminalId, workspace, createdAt);
+}
+
+// Athena Code is an OpenCode fork that keeps OpenCode's session storage, so
+// both kinds discover their session id from the same database set. Ids bound
+// to other live panes are excluded, which also keeps OpenCode and Athena panes
+// sharing a workspace from claiming each other's session.
+async function discoverOpenCodeSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
+  const startedAtMs = Date.parse(createdAt);
+  const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
+
+  for (let attempt = 0; attempt < OPENCODE_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+    const entry = terminals.get(terminalId);
+    if (!entry || !isOpenCodeKind(entry.session.kind) || entry.session.providerSessionId || entry.session.status !== "running") return;
+    const sessionId = await openCodeSessionIdForWorkspace(openCodeDatabaseCandidates(), workspace, spawnedAtMs, attachedProviderSessionIds(terminalId));
+    if (sessionId) {
+      attachProviderSessionId(terminalId, sessionId);
+      return;
+    }
+    await delay(OPENCODE_SESSION_DISCOVERY_INTERVAL_MS);
+  }
 }
 
 async function discoverCodexSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
@@ -1400,7 +1462,7 @@ async function claudeSessionIdFromFile(filePath: string, fallback: string): Prom
 
 function attachProviderSessionId(terminalId: string, providerSessionId: string): void {
   const entry = terminals.get(terminalId);
-  if (!entry || (entry.session.kind !== "claude" && entry.session.kind !== "codex")) return;
+  if (!entry || !isSessionDiscoveryKind(entry.session.kind)) return;
   // Two concurrent discoveries can race to the same candidate; only the first
   // may bind it. The loser keeps polling and picks up its own session file.
   if (attachedProviderSessionIds(terminalId).has(providerSessionId)) return;
@@ -1435,6 +1497,14 @@ function stringProperty(value: Record<string, unknown> | null, key: string): str
 
 function isAgentKind(kind: EmbeddedTerminalKind): boolean {
   return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes" || kind === "athena";
+}
+
+function isOpenCodeKind(kind: EmbeddedTerminalKind): boolean {
+  return kind === "opencode" || kind === "athena";
+}
+
+function isSessionDiscoveryKind(kind: EmbeddedTerminalKind): boolean {
+  return kind === "claude" || kind === "codex" || isOpenCodeKind(kind);
 }
 
 function emit(channel: string, payload: unknown): void {

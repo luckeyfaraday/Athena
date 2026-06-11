@@ -5,8 +5,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
+import { querySqlite, type SqliteValue } from "./sqlite.js";
 
-export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
+export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes";
 
 export type AgentSession = {
   id: string;
@@ -25,8 +26,6 @@ export type AgentSession = {
   metadata: Record<string, string>;
 };
 
-type SqliteValue = string | number | null;
-
 const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 30_000;
 const MAX_PROVIDER_ROWS = 1000;
@@ -44,13 +43,14 @@ export function listAgentSessionsCached(workspace: string, liveTerminals: Embedd
 }
 
 async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
-  const [codex, opencode, claude, hermes] = await Promise.all([
+  const [codex, opencode, athena, claude, hermes] = await Promise.all([
     readCodexSessions(workspace),
     readOpenCodeSessions(workspace),
+    readAthenaSessions(workspace),
     readClaudeSessions(workspace),
     readHermesSessions(workspace),
   ]);
-  return mergeSessions([...codex, ...opencode, ...claude, ...hermes]);
+  return mergeSessions([...codex, ...opencode, ...athena, ...claude, ...hermes]);
 }
 
 function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTerminalSession[], workspace: string): AgentSession[] {
@@ -300,6 +300,48 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
       pid: null,
       resumeCommand: id ? `opencode ${quoteShellArg(workspace)} --session ${quoteShellArg(id)}` : null,
       metadata: {},
+    };
+    }).filter((session) => Boolean(session.id));
+}
+
+
+async function readAthenaSessions(workspace: string): Promise<AgentSession[]> {
+  const dbPath = path.join(process.env.ATHENA_CODE_HOME || path.join(os.homedir(), ".athena-code"), "context", "sessions.db");
+  if (!fs.existsSync(dbPath) || !await sqliteUserVersion(dbPath, 2)) return [];
+  const rows = await querySqlite(dbPath, [
+    "select m.session_id, m.workspace,",
+    "(select text from messages first_user where first_user.agent = 'athena'",
+    "and first_user.session_id = m.session_id and first_user.workspace = m.workspace",
+    "and first_user.role = 'user' order by first_user.id asc limit 1),",
+    "min(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end),",
+    "max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end), count(*)",
+    "from messages m",
+    "where m.agent = 'athena'",
+    "group by m.session_id, m.workspace",
+    "order by (max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) is null),",
+    "max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) desc, max(id) desc",
+    `limit ${MAX_PROVIDER_ROWS}`,
+  ].join(" "), []);
+  return rows.filter((row) => sameOrDescendantPath(stringValue(row[1]) || workspace, workspace)).map((row): AgentSession => {
+    const id = stringValue(row[0]);
+    const sessionWorkspace = stringValue(row[1]) || workspace;
+    const createdAt = nullableString(row[3]) ?? new Date(0).toISOString();
+    const updatedAt = nullableString(row[4]) ?? createdAt;
+    return {
+      id,
+      provider: "athena",
+      title: cleanSessionTitle(nullableString(row[2])) || "Athena Code session",
+      workspace: sessionWorkspace,
+      branch: null,
+      model: null,
+      agent: "Athena Code",
+      createdAt,
+      updatedAt,
+      status: "historical",
+      terminalId: null,
+      pid: null,
+      resumeCommand: id ? `athena-code --session ${quoteShellArg(id)} ${quoteShellArg(sessionWorkspace)}` : null,
+      metadata: { turns: stringValue(row[5]) },
     };
   }).filter((session) => Boolean(session.id));
 }
@@ -606,28 +648,17 @@ function hermesSessionMatchesWorkspace(metadata: HermesSessionFileMetadata | nul
   return workspaceNeedles(workspace).some((needle) => text.includes(needle));
 }
 
-async function querySqlite(dbPath: string, sql: string, params: string[]): Promise<SqliteValue[][]> {
-  const script = [
-    "import json, sqlite3, sys",
-    "db, sql, params = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])",
-    "con = sqlite3.connect('file:' + db + '?mode=ro', uri=True, timeout=0.25)",
-    "con.row_factory = lambda cursor, row: list(row)",
-    "print(json.dumps(con.execute(sql, params).fetchall()))",
-  ].join("\n");
-  for (const executable of ["python3", "python"]) {
-    try {
-      const { stdout } = await execFileAsync(executable, ["-c", script, dbPath, sql, JSON.stringify(params)], {
-        encoding: "utf8",
-        timeout: 2500,
-        windowsHide: true,
-      });
-      const parsed = JSON.parse(stdout) as SqliteValue[][];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      // Try the next Python executable, then gracefully omit this provider.
-    }
+const warnedSessionIndexes = new Set<string>();
+
+async function sqliteUserVersion(dbPath: string, minimum: number): Promise<boolean> {
+  const rows = await querySqlite(dbPath, "pragma user_version", []);
+  const version = rows[0]?.[0];
+  if (typeof version === "number" && version >= minimum) return true;
+  if (!warnedSessionIndexes.has(dbPath)) {
+    warnedSessionIndexes.add(dbPath);
+    console.warn(`Skipping agent session index ${dbPath}: sqlite user_version ${String(version)} is below ${minimum}.`);
   }
-  return [];
+  return false;
 }
 
 function mergeSessions(sessions: AgentSession[]): AgentSession[] {
@@ -665,7 +696,7 @@ function mergeSessions(sessions: AgentSession[]): AgentSession[] {
 }
 
 function isAgentKind(kind: string): kind is AgentSessionProvider {
-  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes";
+  return kind === "codex" || kind === "opencode" || kind === "athena" || kind === "claude" || kind === "hermes";
 }
 
 function samePath(left: string, right: string): boolean {

@@ -133,7 +133,7 @@ export function CommandRoom({
     for (const session of visibleAgentSessions) {
       counts.set(session.provider, (counts.get(session.provider) ?? 0) + 1);
     }
-    return (["all", "codex", "opencode", "claude", "hermes"] as SessionProviderFilter[]).map((provider) => ({
+    return (["all", "codex", "opencode", "athena", "claude", "hermes"] as SessionProviderFilter[]).map((provider) => ({
       provider,
       label: provider === "all" ? "All" : providerLabel(provider),
       count: counts.get(provider) ?? 0,
@@ -453,7 +453,7 @@ export function CommandRoom({
             <div className="agentSessionsEmpty">
               <Code2 size={30} />
               <strong>No agent sessions found.</strong>
-              <span>Launch Codex, OpenCode, Claude, or Hermes from this workspace to track live and historical sessions here.</span>
+              <span>Launch Codex, OpenCode, Athena Code, Claude, or Hermes from this workspace to track live and historical sessions here.</span>
             </div>
           )}
         </div>

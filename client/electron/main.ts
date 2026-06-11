@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import { registerIpcHandlers } from "./ipc-handlers.js";
-import { prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
+import { hasPendingEmbeddedTerminalRestoreAttempts, prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
@@ -208,7 +208,7 @@ app.on("second-instance", () => {
 
 if (singleInstanceLock) {
   app.whenReady().then(async () => {
-    beginAthenaLaunch();
+    beginAthenaLaunch({ restoreAttemptPending: hasPendingEmbeddedTerminalRestoreAttempts() });
     await runDiskPreflight();
     try {
       installManagedAgentSkills();

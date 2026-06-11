@@ -479,7 +479,10 @@ export function App() {
       const stored = parseStoredWorkspace(preferences[workspaceStorageKey] ?? storedWorkspaceValue());
       const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
       workspacePromise
-        .then((resolved) => activateWorkspace(resolved, { restoreTerminals: false }))
+        // Restoring here brings saved terminals back on app launch; the main
+        // process skips the actual respawn while terminal restore is paused
+        // (crash guard), so this stays safe after an unclean exit.
+        .then((resolved) => activateWorkspace(resolved))
         .catch((err) => setError(String(err)));
     })();
 

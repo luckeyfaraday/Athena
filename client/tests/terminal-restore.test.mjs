@@ -1,17 +1,25 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   claudeProjectPathCandidates,
   codexSessionIdForWorkspace,
   effectiveCreationMs,
+  openCodeDatabaseCandidates,
+  openCodeSessionCandidates,
+  openCodeSessionExists,
+  openCodeSessionIdForWorkspace,
   savedResumeSessionId,
   selectDiscoveredSessionId,
   selectEmbeddedTerminalRestoreEntries,
 } from "../dist-electron/terminal-restore-policy.js";
+
+const execFileAsync = promisify(execFile);
 
 function entry(id, kind, workspace = "/home/dev/project", extras = {}) {
   return {
@@ -223,6 +231,75 @@ test("effectiveCreationMs uses birthtime when present and never exceeds mtime", 
   // Filesystems without birthtime report 0; fall back to mtime.
   assert.equal(effectiveCreationMs({ birthtimeMs: 0, mtimeMs: 5_000 }), 5_000);
 });
+
+test("openCodeDatabaseCandidates matches release and channel-suffixed database names", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "athena-opencode-data-"));
+  for (const name of ["opencode.db", "opencode-.db", "opencode-dev.db", "opencode.db-wal", "opencode.db-shm", "other.db", "notes.txt"]) {
+    await fs.writeFile(path.join(dataDir, name), "");
+  }
+
+  assert.deepEqual(
+    openCodeDatabaseCandidates(dataDir).map((dbPath) => path.basename(dbPath)),
+    ["opencode-.db", "opencode-dev.db", "opencode.db"],
+  );
+  assert.deepEqual(openCodeDatabaseCandidates(path.join(dataDir, "missing")), []);
+});
+
+test("openCodeSessionCandidates keeps only rows for the selected workspace", () => {
+  const workspace = path.join(path.sep, "home", "dev", "project");
+  const candidates = openCodeSessionCandidates([
+    ["ses_own", workspace, 2_000],
+    ["ses_other", path.join(path.sep, "home", "dev", "other"), 3_000],
+    ["ses_string_time", workspace, "4000"],
+    [null, workspace, 5_000],
+    ["ses_no_directory", null, 6_000],
+  ], workspace);
+
+  assert.deepEqual(candidates, [
+    { id: "ses_own", createdMs: 2_000 },
+    { id: "ses_string_time", createdMs: 4_000 },
+  ]);
+});
+
+test("opencode session discovery finds the session created by this spawn", async (t) => {
+  if (!(await hasPython())) return t.skip("python3 is not available");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-opencode-db-"));
+  const workspace = path.join(root, "workspace");
+  const dbPath = path.join(root, "opencode-.db");
+  const spawnedAtMs = Date.now();
+  await createOpenCodeDb(dbPath, [
+    ["ses_old", workspace, spawnedAtMs - 60_000],
+    ["ses_own", workspace, spawnedAtMs + 2_000],
+    ["ses_other_workspace", path.join(root, "other"), spawnedAtMs + 1_000],
+  ]);
+
+  assert.equal(await openCodeSessionIdForWorkspace([dbPath], workspace, spawnedAtMs), "ses_own");
+  assert.equal(await openCodeSessionIdForWorkspace([dbPath], workspace, spawnedAtMs, new Set(["ses_own"])), null);
+  assert.equal(await openCodeSessionExists([dbPath], "ses_own"), true);
+  assert.equal(await openCodeSessionExists([dbPath], "ses_deleted"), false);
+  assert.equal(await openCodeSessionExists([path.join(root, "missing.db")], "ses_own"), false);
+});
+
+async function hasPython() {
+  try {
+    await execFileAsync("python3", ["-c", "import sqlite3"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function createOpenCodeDb(dbPath, rows) {
+  const script = [
+    "import json, sqlite3, sys",
+    "con = sqlite3.connect(sys.argv[1])",
+    "con.execute('create table session (id text primary key, directory text, project_id text, time_created integer)')",
+    "con.execute('create table project (id text primary key, worktree text)')",
+    "con.executemany('insert into session (id, directory, project_id, time_created) values (?, ?, null, ?)', json.loads(sys.argv[2]))",
+    "con.commit()",
+  ].join("\n");
+  await execFileAsync("python3", ["-c", script, dbPath, JSON.stringify(rows)]);
+}
 
 function currentClaudeEncoding(workspace) {
   return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");

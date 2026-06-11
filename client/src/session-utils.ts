@@ -140,6 +140,7 @@ export function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
 export function providerLabel(provider: AgentSession["provider"]): string {
   if (provider === "hermes") return "Hermes";
   if (provider === "opencode") return "OpenCode";
+  if (provider === "athena") return "Athena Code";
   if (provider === "claude") return "Claude";
   return "Codex";
 }

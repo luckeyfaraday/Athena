@@ -1,6 +1,8 @@
 import * as path from "node:path";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
+import { querySqlite, type SqliteValue } from "./sqlite.js";
 
 export type RestorableTerminal = {
   id: string;
@@ -95,6 +97,77 @@ export async function codexSessionIdForWorkspace(
     }
   }
   return selectDiscoveredSessionId(candidates, spawnedAtMs, excludeSessionIds);
+}
+
+// OpenCode (and the Athena Code fork, which keeps OpenCode's storage layout)
+// writes sessions to a sqlite database whose filename embeds the build
+// channel: `opencode.db` for release channels, `opencode-<channel>.db`
+// otherwise (Athena Code builds currently produce `opencode-.db`). Scanning
+// for every variant keeps discovery working across builds and upgrades.
+export function openCodeDatabaseCandidates(dataDir = path.join(os.homedir(), ".local", "share", "opencode")): string[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(dataDir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => /^opencode(-[A-Za-z0-9._-]*)?\.db$/.test(name))
+    .sort()
+    .map((name) => path.join(dataDir, name));
+}
+
+export function openCodeSessionCandidates(rows: SqliteValue[][], workspace: string): SessionFileCandidate[] {
+  const candidates: SessionFileCandidate[] = [];
+  for (const row of rows) {
+    const id = typeof row[0] === "string" && row[0] ? row[0] : null;
+    const directory = typeof row[1] === "string" && row[1] ? row[1] : null;
+    const createdMs = typeof row[2] === "number" ? row[2] : Number(row[2]);
+    if (!id || !directory || !Number.isFinite(createdMs)) continue;
+    if (!samePath(directory, workspace)) continue;
+    candidates.push({ id, createdMs });
+  }
+  return candidates;
+}
+
+const OPENCODE_SESSION_QUERY = [
+  "select s.id, coalesce(s.directory, p.worktree), s.time_created",
+  "from session s",
+  "left join project p on s.project_id = p.id",
+  "order by s.time_created desc",
+  "limit 40",
+].join(" ");
+
+export async function openCodeSessionIdForWorkspace(
+  dbPaths: string[],
+  workspace: string,
+  spawnedAtMs: number,
+  excludeSessionIds?: ReadonlySet<string>,
+): Promise<string | null> {
+  const candidates: SessionFileCandidate[] = [];
+  for (const dbPath of dbPaths) {
+    if (!fs.existsSync(dbPath)) continue;
+    candidates.push(...openCodeSessionCandidates(await querySqlite(dbPath, OPENCODE_SESSION_QUERY, []), workspace));
+  }
+  return selectDiscoveredSessionId(candidates, spawnedAtMs, excludeSessionIds);
+}
+
+export async function openCodeSessionExists(dbPaths: string[], sessionId: string): Promise<boolean> {
+  let sawQueryFailure = false;
+  for (const dbPath of dbPaths) {
+    if (!fs.existsSync(dbPath)) continue;
+    const rows = await querySqlite(dbPath, "select count(*) from session where id = ?", [sessionId]);
+    if (rows.length === 0) {
+      sawQueryFailure = true;
+      continue;
+    }
+    if (Number(rows[0]?.[0]) > 0) return true;
+  }
+  // The saved id only ever came from a successful query of these databases, so
+  // a failed re-check (transient lock, missing Python) is treated as "still
+  // there": resuming optimistically degrades to an error plus a shell, while
+  // launching fresh silently discards the conversation.
+  return sawQueryFailure;
 }
 
 function encodeClaudeProjectPath(workspace: string): string {

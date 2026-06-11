@@ -23,21 +23,31 @@ export function launchStateFilePath(): string {
   return path.join(os.homedir(), ".context-workspace", "athena-launch.json");
 }
 
-export function beginAthenaLaunch(): AthenaLaunchState {
+export function beginAthenaLaunch(options: { restoreAttemptPending?: boolean } = {}): AthenaLaunchState {
   const previous = readAthenaLaunchState();
-  currentState = nextAthenaLaunchState(previous, process.pid, new Date().toISOString());
+  currentState = nextAthenaLaunchState(previous, process.pid, new Date().toISOString(), Boolean(options.restoreAttemptPending));
   if (previous && !previous.cleanExit) cleanupStaleAthenaProcesses();
   writeAthenaLaunchState(currentState);
   return currentState;
 }
 
-export function nextAthenaLaunchState(previous: AthenaLaunchState | null, pid: number, startedAt: string): AthenaLaunchState {
+// Restore is auto-paused only on the crash-loop signature: the previous run
+// died while a terminal restore attempt was still pending (it crashed during
+// or shortly after restoring). A crash hours into a session says nothing about
+// restore being dangerous, and pausing there silently stopped sessions from
+// ever resuming until the user found the Settings toggle.
+export function nextAthenaLaunchState(
+  previous: AthenaLaunchState | null,
+  pid: number,
+  startedAt: string,
+  restoreAttemptPending = false,
+): AthenaLaunchState {
   const previousCrashed = previous != null && !previous.cleanExit;
   return {
     pid,
     startedAt,
     cleanExit: false,
-    terminalRestorePaused: Boolean(previous?.terminalRestorePaused || previousCrashed),
+    terminalRestorePaused: Boolean(previous?.terminalRestorePaused || (previousCrashed && restoreAttemptPending)),
     previousCrashAt: previousCrashed ? previous.startedAt : previous?.previousCrashAt ?? null,
   };
 }

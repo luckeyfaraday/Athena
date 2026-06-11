@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
+import { querySqlite, type SqliteValue } from "./sqlite.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes";
 
@@ -24,8 +25,6 @@ export type AgentSession = {
   resumeCommand: string | null;
   metadata: Record<string, string>;
 };
-
-type SqliteValue = string | number | null;
 
 const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 30_000;
@@ -647,30 +646,6 @@ function hermesSessionMatchesWorkspace(metadata: HermesSessionFileMetadata | nul
     manifestEntry?.title,
   ].filter(Boolean).join("\n"));
   return workspaceNeedles(workspace).some((needle) => text.includes(needle));
-}
-
-async function querySqlite(dbPath: string, sql: string, params: string[]): Promise<SqliteValue[][]> {
-  const script = [
-    "import json, sqlite3, sys",
-    "db, sql, params = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])",
-    "con = sqlite3.connect('file:' + db + '?mode=ro', uri=True, timeout=0.25)",
-    "con.row_factory = lambda cursor, row: list(row)",
-    "print(json.dumps(con.execute(sql, params).fetchall()))",
-  ].join("\n");
-  for (const executable of ["python3", "python"]) {
-    try {
-      const { stdout } = await execFileAsync(executable, ["-c", script, dbPath, sql, JSON.stringify(params)], {
-        encoding: "utf8",
-        timeout: 2500,
-        windowsHide: true,
-      });
-      const parsed = JSON.parse(stdout) as SqliteValue[][];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      // Try the next Python executable, then gracefully omit this provider.
-    }
-  }
-  return [];
 }
 
 const warnedSessionIndexes = new Set<string>();

@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
 
-export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
+export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes";
 
 export type AgentSession = {
   id: string;
@@ -44,13 +44,14 @@ export function listAgentSessionsCached(workspace: string, liveTerminals: Embedd
 }
 
 async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
-  const [codex, opencode, claude, hermes] = await Promise.all([
+  const [codex, opencode, athena, claude, hermes] = await Promise.all([
     readCodexSessions(workspace),
     readOpenCodeSessions(workspace),
+    readAthenaSessions(workspace),
     readClaudeSessions(workspace),
     readHermesSessions(workspace),
   ]);
-  return mergeSessions([...codex, ...opencode, ...claude, ...hermes]);
+  return mergeSessions([...codex, ...opencode, ...athena, ...claude, ...hermes]);
 }
 
 function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTerminalSession[], workspace: string): AgentSession[] {
@@ -300,6 +301,48 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
       pid: null,
       resumeCommand: id ? `opencode ${quoteShellArg(workspace)} --session ${quoteShellArg(id)}` : null,
       metadata: {},
+    };
+    }).filter((session) => Boolean(session.id));
+}
+
+
+async function readAthenaSessions(workspace: string): Promise<AgentSession[]> {
+  const dbPath = path.join(process.env.ATHENA_CODE_HOME || path.join(os.homedir(), ".athena-code"), "context", "sessions.db");
+  if (!fs.existsSync(dbPath) || !await sqliteUserVersion(dbPath, 2)) return [];
+  const rows = await querySqlite(dbPath, [
+    "select m.session_id, m.workspace,",
+    "(select text from messages first_user where first_user.agent = 'athena'",
+    "and first_user.session_id = m.session_id and first_user.workspace = m.workspace",
+    "and first_user.role = 'user' order by first_user.id asc limit 1),",
+    "min(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end),",
+    "max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end), count(*)",
+    "from messages m",
+    "where m.agent = 'athena'",
+    "group by m.session_id, m.workspace",
+    "order by (max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) is null),",
+    "max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) desc, max(id) desc",
+    `limit ${MAX_PROVIDER_ROWS}`,
+  ].join(" "), []);
+  return rows.filter((row) => sameOrDescendantPath(stringValue(row[1]) || workspace, workspace)).map((row): AgentSession => {
+    const id = stringValue(row[0]);
+    const sessionWorkspace = stringValue(row[1]) || workspace;
+    const createdAt = nullableString(row[3]) ?? new Date(0).toISOString();
+    const updatedAt = nullableString(row[4]) ?? createdAt;
+    return {
+      id,
+      provider: "athena",
+      title: cleanSessionTitle(nullableString(row[2])) || "Athena Code session",
+      workspace: sessionWorkspace,
+      branch: null,
+      model: null,
+      agent: "Athena Code",
+      createdAt,
+      updatedAt,
+      status: "historical",
+      terminalId: null,
+      pid: null,
+      resumeCommand: id ? `athena-code --session ${quoteShellArg(id)} ${quoteShellArg(sessionWorkspace)}` : null,
+      metadata: { turns: stringValue(row[5]) },
     };
   }).filter((session) => Boolean(session.id));
 }
@@ -630,6 +673,11 @@ async function querySqlite(dbPath: string, sql: string, params: string[]): Promi
   return [];
 }
 
+async function sqliteUserVersion(dbPath: string, expected: number): Promise<boolean> {
+  const rows = await querySqlite(dbPath, "pragma user_version", []);
+  return rows.length > 0 && rows[0]?.[0] === expected;
+}
+
 function mergeSessions(sessions: AgentSession[]): AgentSession[] {
   const byKey = new Map<string, AgentSession>();
   for (const session of sessions) {
@@ -665,7 +713,7 @@ function mergeSessions(sessions: AgentSession[]): AgentSession[] {
 }
 
 function isAgentKind(kind: string): kind is AgentSessionProvider {
-  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes";
+  return kind === "codex" || kind === "opencode" || kind === "athena" || kind === "claude" || kind === "hermes";
 }
 
 function samePath(left: string, right: string): boolean {

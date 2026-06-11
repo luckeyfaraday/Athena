@@ -126,7 +126,7 @@ async def context_workspace_list_agent_sessions(
     query: str = "",
     limit: int = 100,
 ) -> dict[str, Any]:
-    """List native Codex, OpenCode, and Claude Code sessions for a project."""
+    """List native Codex, OpenCode, Athena Code, Claude Code, and Hermes sessions for a project."""
     return await ContextWorkspaceClient().get(
         "/agents/sessions",
         project_dir=project_dir,

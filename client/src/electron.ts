@@ -30,7 +30,7 @@ export type NativeTerminalSession = {
 };
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena";
-export type AgentSessionProvider = "codex" | "opencode" | "claude" | "hermes";
+export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes";
 export type AgentContextMode = "none" | "task" | "curated" | "immersive" | "immersive_curated";
 export type WorkspacePath = {
   nativePath: string;

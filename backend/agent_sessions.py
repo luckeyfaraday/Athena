@@ -1,4 +1,4 @@
-"""Native agent session discovery for Codex, OpenCode, Claude Code, and Hermes."""
+"""Native agent session discovery for Codex, OpenCode, Athena Code, Claude Code, and Hermes."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 
-AgentSessionProvider = Literal["codex", "opencode", "claude", "hermes"]
+AgentSessionProvider = Literal["codex", "opencode", "athena", "claude", "hermes"]
 AgentSessionStatus = Literal["historical"]
 MAX_PROVIDER_ROWS = 1000
 
@@ -73,13 +73,15 @@ def list_native_agent_sessions(
     """
     workspace = Path(project_dir).expanduser().resolve() if project_dir is not None else None
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
-    providers = [provider] if provider else ["codex", "opencode", "claude", "hermes"]
+    providers = [provider] if provider else ["codex", "opencode", "athena", "claude", "hermes"]
 
     sessions: list[AgentSession] = []
     if "codex" in providers:
         sessions.extend(_read_codex_sessions(workspace, home))
     if "opencode" in providers:
         sessions.extend(_read_opencode_sessions(workspace, home))
+    if "athena" in providers:
+        sessions.extend(_read_athena_sessions(workspace, home))
     if "claude" in providers:
         sessions.extend(_read_claude_sessions(workspace, home))
     if "hermes" in providers:
@@ -119,6 +121,8 @@ def read_agent_session_transcript(
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
     if provider == "opencode":
         markdown = _read_opencode_transcript(normalized_id, home)
+    elif provider == "athena":
+        markdown = _read_athena_transcript(normalized_id, home)
     elif provider == "claude":
         markdown = _read_claude_transcript(normalized_id, home)
     elif provider == "hermes":
@@ -504,6 +508,102 @@ def _read_opencode_transcript(session_id: str, home: Path) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _athena_index_path(home: Path) -> Path:
+    configured = os.environ.get("ATHENA_CODE_HOME")
+    if configured and _same_path(home, Path.home().expanduser().resolve()):
+        return Path(configured).expanduser().resolve() / "context" / "sessions.db"
+    return home / ".athena-code" / "context" / "sessions.db"
+
+
+def _read_athena_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
+    db_path = _athena_index_path(home)
+    if not db_path.exists() or not _sqlite_user_version(db_path, expected=2):
+        return []
+    rows = _query_sqlite(
+        db_path,
+        """
+        select m.session_id, m.workspace,
+               (select text from messages first_user
+                where first_user.agent = 'athena'
+                  and first_user.session_id = m.session_id
+                  and first_user.workspace = m.workspace
+                  and first_user.role = 'user'
+                order by first_user.id asc
+                limit 1),
+               min(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end),
+               max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end),
+               count(*)
+        from messages m
+        where m.agent = 'athena'
+        group by m.session_id, m.workspace
+        order by (max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) is null),
+                 max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) desc,
+                 max(id) desc
+        limit ?
+        """,
+        (MAX_PROVIDER_ROWS,),
+    )
+    sessions: list[AgentSession] = []
+    for row in rows:
+        session_id = _string_value(row[0])
+        session_workspace = _string_value(row[1]) or (str(workspace) if workspace else "")
+        if not session_id or (workspace is not None and not _same_or_descendant_path(session_workspace, workspace)):
+            continue
+        created_at = _nullable_string(row[3]) or datetime.fromtimestamp(0, timezone.utc).isoformat().replace("+00:00", "Z")
+        updated_at = _nullable_string(row[4]) or created_at
+        sessions.append(
+            AgentSession(
+                id=session_id,
+                provider="athena",
+                title=_clean_session_title(_nullable_string(row[2])) or "Athena Code session",
+                workspace=session_workspace,
+                branch=None,
+                model=None,
+                agent="Athena Code",
+                created_at=created_at,
+                updated_at=updated_at,
+                status="historical",
+                terminal_id=None,
+                pid=None,
+                resume_command=f"athena-code --session {_quote_shell_arg(session_id)} {_quote_shell_arg(session_workspace or str(workspace or ''))}",
+                metadata={"turns": _string_value(row[5])},
+            )
+        )
+    return sessions
+
+
+def _read_athena_transcript(session_id: str, home: Path) -> str:
+    db_path = _athena_index_path(home)
+    if not db_path.exists() or not _sqlite_user_version(db_path, expected=2):
+        return ""
+    rows = _query_sqlite(
+        db_path,
+        """
+        select workspace, role, ts, text
+        from messages
+        where agent = 'athena' and session_id = ?
+        order by id asc
+        limit ?
+        """,
+        (session_id, MAX_PROVIDER_ROWS),
+    )
+    if not rows:
+        return ""
+    workspace = _string_value(rows[0][0])
+    lines = ["# Athena Code Session Transcript", "", f"- session: {session_id}"]
+    if workspace:
+        lines.append(f"- workspace: {workspace}")
+    lines.extend(["", "## Indexed Turns", ""])
+    for _workspace, role, ts, text in rows:
+        label = _string_value(role).title() or "Message"
+        timestamp = _string_value(ts)
+        heading = f"### {label}{f' ({timestamp})' if timestamp else ''}"
+        body = _string_value(text).strip()
+        if body:
+            lines.extend([heading, "", body, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
 def _opencode_transcript_header(row: tuple[Any, ...]) -> str:
     title = _clean_session_title(_string_value(row[1])) or "OpenCode session"
     model = _parse_opencode_model(_nullable_string(row[4]))
@@ -871,6 +971,11 @@ def _query_sqlite(db_path: Path, sql: str, params: tuple[Any, ...] = ()) -> list
             connection.close()
     except sqlite3.Error:
         return []
+
+
+def _sqlite_user_version(db_path: Path, *, expected: int) -> bool:
+    rows = _query_sqlite(db_path, "pragma user_version")
+    return bool(rows and rows[0] and rows[0][0] == expected)
 
 
 def _merge_sessions(sessions: list[AgentSession]) -> list[AgentSession]:

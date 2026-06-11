@@ -283,6 +283,59 @@ def test_reads_opencode_transcript_from_message_parts(tmp_path: Path) -> None:
     assert "Here is the SEO plan." in transcript
 
 
+def test_lists_athena_code_sessions_from_native_index(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    other_workspace = tmp_path / "other"
+    workspace.mkdir()
+    other_workspace.mkdir()
+    db_path = home / ".athena-code" / "context" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("pragma user_version = 2")
+        connection.execute(
+            """
+            create table messages (
+              id integer primary key autoincrement,
+              agent text not null,
+              session_id text not null,
+              workspace text not null,
+              role text not null,
+              ts text not null,
+              text text not null
+            )
+            """
+        )
+        connection.execute(
+            "insert into messages (agent, session_id, workspace, role, ts, text) values (?, ?, ?, ?, ?, ?)",
+            ("athena", "athena-session-1", str(workspace), "user", "2026-06-10T10:00:00Z", "Add native Athena Code sessions"),
+        )
+        connection.execute(
+            "insert into messages (agent, session_id, workspace, role, ts, text) values (?, ?, ?, ?, ?, ?)",
+            ("athena", "athena-session-1", str(workspace), "assistant", "2026-06-10T10:05:00Z", "Implemented the session provider."),
+        )
+        connection.execute(
+            "insert into messages (agent, session_id, workspace, role, ts, text) values (?, ?, ?, ?, ?, ?)",
+            ("opencode", "opencode-session", str(workspace), "user", "2026-06-10T11:00:00Z", "Ignore scanned OpenCode rows"),
+        )
+        connection.execute(
+            "insert into messages (agent, session_id, workspace, role, ts, text) values (?, ?, ?, ?, ?, ?)",
+            ("athena", "athena-other", str(other_workspace), "user", "2026-06-10T12:00:00Z", "Other workspace"),
+        )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="athena")
+    transcript = read_agent_session_transcript("athena", "athena-session-1", home_dir=home)
+
+    assert [session.id for session in sessions] == ["athena-session-1"]
+    assert sessions[0].provider == "athena"
+    assert sessions[0].title == "Add native Athena Code sessions"
+    assert sessions[0].agent == "Athena Code"
+    assert sessions[0].metadata["turns"] == "2"
+    assert sessions[0].resume_command == f'athena-code --session "athena-session-1" "{workspace}"'
+    assert "# Athena Code Session Transcript" in transcript
+    assert "Implemented the session provider." in transcript
+
+
 def test_lists_claude_jsonl_sessions(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

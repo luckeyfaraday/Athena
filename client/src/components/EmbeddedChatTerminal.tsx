@@ -441,8 +441,8 @@ function isRecallInjectionLine(line: string): boolean {
     || /^- Context Workspace owns app-side tools/i.test(line)
     || /^- Agents should consume this generated recall/i.test(line)
     || /^Native agent sessions for this workspace:/i.test(line)
-    || /^-\s+\d{4}-\d{2}-\d{2}T.*\[(codex|opencode|claude|hermes),/i.test(line)
-    || /^resume:\s+`?(codex|opencode|claude|hermes)\s+/i.test(line)
+    || /^-\s+\d{4}-\d{2}-\d{2}T.*\[(codex|opencode|athena|claude|hermes),/i.test(line)
+    || /^resume:\s+`?(codex|opencode|athena-code|claude|hermes)\s+/i.test(line)
     || /^Hermes memory is attached below/i.test(line)
     || /^No Hermes memory entries are available\./i.test(line);
 }

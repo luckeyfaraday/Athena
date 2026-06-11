@@ -670,7 +670,7 @@ def _session_provider(provider: str | None) -> Any:
     if provider is None or not provider.strip():
         return None
     normalized = provider.strip().lower()
-    if normalized not in {"codex", "opencode", "claude", "hermes"}:
+    if normalized not in {"codex", "opencode", "athena", "claude", "hermes"}:
         raise ValueError(f"Unsupported session provider: {provider}")
     return normalized
 

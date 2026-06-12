@@ -199,6 +199,65 @@ def test_spawn_agent_can_request_workspace_open(monkeypatch: pytest.MonkeyPatch,
     assert calls[0]["open_workspace"] is True
 
 
+def test_spawn_agent_accepts_athena_code_alias(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    result = asyncio.run(tools.context_workspace_spawn_agent(str(tmp_path), "Review MCP routing", agent_type="athena-code"))
+
+    assert result["mode"] == "visible_terminal"
+    assert calls == [
+        {
+            "project_dir": str(tmp_path),
+            "kind": "athena",
+            "count": 1,
+            "title": "Athena Code: Review MCP routing",
+            "session_label": "New",
+            "task": "Review MCP routing",
+            "context_mode": "task",
+            "context": None,
+            "open_workspace": False,
+        }
+    ]
+
+
+def test_spawn_terminal_normalizes_athena_code_kind(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:
+            calls.append((path, json_body))
+            return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    result = asyncio.run(tools.context_workspace_spawn_terminal(str(tmp_path), kind="Athena Code"))
+
+    assert result["sessions"] == [{"id": "terminal-1"}]
+    assert calls == [
+        (
+            "/terminals/spawn",
+            {
+                "project_dir": str(tmp_path),
+                "kind": "athena",
+                "count": 1,
+                "title": None,
+                "task": None,
+                "resume_session_id": None,
+                "session_label": None,
+                "context_mode": None,
+                "context": None,
+                "open_workspace": False,
+            },
+        )
+    ]
+
+
 def test_open_workspace_posts_to_electron_control(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 

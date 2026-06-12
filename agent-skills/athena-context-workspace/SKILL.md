@@ -20,15 +20,25 @@ Use this skill when the task mentions Athena, Context Workspace, Hermes recall, 
 When Athena MCP tools are available:
 
 - Use `context_workspace_ask_hermes` for ordinary questions to Hermes memory or reasoning.
-- Use `context_workspace_summarize_agent_sessions` when prior Codex, Claude, OpenCode, or Hermes sessions may contain relevant current-state context.
+- Use `context_workspace_summarize_agent_sessions` when prior Codex, Claude, OpenCode, Athena Code, or Hermes sessions may contain relevant current-state context.
 - Use `context_workspace_spawn_agent` or `context_workspace_spawn_terminal` only for user-requested visible work.
 - Use `context_workspace_write_recall_cache` only when saving a handoff or recall note is requested.
 
 When MCP tools are unavailable but `CONTEXT_WORKSPACE_BACKEND_URL` is set, call the local Athena backend route described in the launch prompt. That FastAPI backend serves Hermes, recall, memory, and historical session data only — live terminals are controlled by the separate Electron control server (see below).
 
+## Spawn A New Agent Pane
+
+Use this path only when the user asks to start a new visible agent pane. Do not spawn a pane just to answer an ordinary question.
+
+With MCP tools, prefer `context_workspace_spawn_agent(project_dir, task, agent_type=...)` for one new coding-agent pane. `agent_type` accepts `codex`, `opencode`, `claude`, `athena-code` (or `athena`), and `hermes`. Athena Code launches the `athena-code` CLI, but its live terminal kind and handle prefix are `athena`, such as `athena#1`.
+
+Use `context_workspace_spawn_terminal` for lower-level control such as shells, grids, Hermes panes, or explicit resumes. For Athena Code, pass `kind="athena"` or `kind="athena-code"`; both normalize to the same visible Athena Code pane.
+
+For HTTP fallback through Electron control, call `POST /terminals/spawn` with `{"project_dir": "...", "kind": "athena", "task": "...", "context_mode": "task"}` or use `kind: "athena-code"` on newer Athena builds.
+
 ## Message A Live Agent Pane
 
-Use this fast path when the user wants to reach an agent that is already running in a visible Athena pane: "ping Claude", "tell codex to ...", "ask hermes in its pane", "Claude is already up". It works the same for every agent kind: `claude`, `codex`, `opencode`, `athena` (Athena Code), and `hermes`.
+Use this fast path when the user wants to reach an agent that is already running in a visible Athena pane: "ping Claude", "tell codex to ...", "ask hermes in its pane", "Claude is already up". It works the same for every agent kind: `claude`, `codex`, `opencode`, `athena` (Athena Code / `athena-code` CLI), and `hermes`.
 
 Goal: deliver one message into the existing pane. Do not spawn anything. Do not look up session history. The only discovery step you need is listing live terminals.
 

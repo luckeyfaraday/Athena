@@ -11,7 +11,7 @@
     <img alt="GitHub repo" src="https://img.shields.io/badge/GitHub-Athena-0f1c16?logo=github" />
   </a>
   <img alt="Version" src="https://img.shields.io/badge/version-0.1.7-d9c48a" />
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20WSL-2e5a46" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-2e5a46" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-Electron%20%2B%20React-68c4ff?logo=electron" />
   <img alt="Backend" src="https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi" />
   <img alt="MCP" src="https://img.shields.io/badge/MCP-Hermes%20bridge-8b5cf6" />
@@ -378,7 +378,7 @@ the desktop app shows the current state of both and provides actions where it
 can.
 
 1. **Install the Hermes Agent CLI.** When the in-app installer is supported
-   (Linux/WSL with `bash` and `curl`), the Hermes card shows an **Install
+   (Linux and macOS with `bash` and `curl`), the Hermes card shows an **Install
    Hermes** button wired to `POST /hermes/install`. On native Windows, install
    the native Hermes build separately and make sure `hermes` is on your `PATH`.
    Athena detects Hermes through `shutil.which("hermes")` plus `~/.hermes`.
@@ -386,7 +386,7 @@ can.
 2. **Point Hermes at the Athena MCP bridge.** So Hermes can call Athena's
    `context_workspace_*` tools, add the bridge block to your Hermes config
    (`~/.hermes/config.yaml`). The Hermes card has a **Connect Hermes to Athena**
-   helper with a copyable snippet; the full setup (paths, tokens, WSL notes) is
+   helper with a copyable snippet; the full setup (paths, tokens) is
    in [Hermes MCP Bridge](#hermes-mcp-bridge) below.
 
 The coding-agent skills above and the Hermes bridge are complementary: the
@@ -395,26 +395,26 @@ lets Hermes *drive* Athena (spawn terminals, read sessions, write recall).
 
 ## Hermes MCP Bridge
 
-Athena includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace. This bridge is intended for Hermes running in WSL while Athena runs on Windows, but the same concepts apply to local desktop usage.
+Athena includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace.
 
 Install the MCP server dependencies into the Python environment Hermes will use:
 
 ```bash
-pip install -r /mnt/c/Users/you/context-workspace/mcp_server/requirements.txt
+pip install -r ~/context-workspace/mcp_server/requirements.txt
 ```
 
-Add the bridge to the WSL Hermes config at `~/.hermes/config.yaml`:
+Add the bridge to the Hermes config at `~/.hermes/config.yaml`:
 
 ```yaml
 mcp_servers:
   context_workspace:
     command: "python"
     args:
-      - "/mnt/c/Users/you/context-workspace/mcp_server/server.py"
+      - "/home/you/context-workspace/mcp_server/server.py"
     timeout: 120
     connect_timeout: 30
     env:
-      CONTEXT_WORKSPACE_BACKEND_STATE: "/mnt/c/Users/you/.context-workspace/backend.json"
+      CONTEXT_WORKSPACE_BACKEND_STATE: "/home/you/.context-workspace/backend.json"
 ```
 
 If Hermes uses its own virtual environment, set `command` to that interpreter:
@@ -426,14 +426,10 @@ command: "/home/you/.hermes/hermes-agent/venv/bin/python3"
 The Electron app writes backend discovery state to:
 
 ```text
-C:\Users\you\.context-workspace\backend.json
+~/.context-workspace/backend.json
 ```
 
-From WSL, that file is available at:
-
-```text
-/mnt/c/Users/you/.context-workspace/backend.json
-```
+(On Windows: `C:\Users\you\.context-workspace\backend.json`.)
 
 Start the Athena desktop app before starting Hermes so the backend state file exists. If you run the backend directly on a fixed port, you can use `CONTEXT_WORKSPACE_BACKEND_URL` instead:
 
@@ -447,14 +443,10 @@ The bridge exposes tools for health checks, Hermes memory reads/writes through t
 Visible terminal tools require the Electron app itself, not only the FastAPI backend. Electron writes control discovery state to:
 
 ```text
-C:\Users\you\.context-workspace\electron-control.json
+~/.context-workspace/electron-control.json
 ```
 
-From WSL, that file is available at:
-
-```text
-/mnt/c/Users/you/.context-workspace/electron-control.json
-```
+(On Windows: `C:\Users\you\.context-workspace\electron-control.json`.)
 
 Set `CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL` only when you need to override this discovery file.
 
@@ -475,7 +467,7 @@ When Electron starts the backend, it configures a default recall refresh command
 python scripts/hermes-refresh-recall.py
 ```
 
-You can override it with `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`. The default script writes a short project-local recall cache and uses native Codex/OpenCode/Claude session discovery as fallback context, which keeps recall refresh working even when Hermes in WSL cannot reach the Windows backend loopback URL.
+You can override it with `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`. The default script writes a short project-local recall cache and uses native Codex/OpenCode/Claude session discovery as fallback context, which keeps recall refresh working even when Hermes cannot reach the backend loopback URL.
 
 If the same projects live under different usernames on different machines (for
 example `C:\Users\alanq\...` on Windows and `/home/alan/...` on Linux), set

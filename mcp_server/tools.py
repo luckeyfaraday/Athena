@@ -180,17 +180,19 @@ async def context_workspace_spawn_agent(
     context: str | None = None,
     open_workspace: bool = False,
 ) -> dict[str, Any]:
-    """Spawn Codex/OpenCode/Claude as a visible Athena terminal by default.
+    """Spawn Codex/OpenCode/Claude/Athena Code as a visible Athena terminal by default.
 
     This is the high-level tool Hermes should use when the user asks to start
-    an agent. It routes through Athena's Electron control server, so the desktop
-    app must be running. Visible spawns no longer receive Athena recall/memory
-    automatically. Use context_mode=\"immersive\" or \"immersive_curated\" only
-    when the user explicitly requests Athena's full context mode. Use
-    context_mode=\"task\" for a compact task-only prompt, \"curated\" for only
-    caller-selected background, or \"none\" for a clean launch. Set
-    open_workspace=true when the target project is not already open in Athena.
-    Set visible_terminal=false only for the legacy backend run/artifact path.
+    an agent. agent_type accepts codex, opencode, claude, athena/athena-code,
+    or hermes. It routes through Athena's Electron control server, so the
+    desktop app must be running. Visible spawns no longer receive Athena
+    recall/memory automatically. Use context_mode=\"immersive\" or
+    \"immersive_curated\" only when the user explicitly requests Athena's full
+    context mode. Use context_mode=\"task\" for a compact task-only prompt,
+    \"curated\" for only caller-selected background, or \"none\" for a clean
+    launch. Set open_workspace=true when the target project is not already open
+    in Athena. Set visible_terminal=false only for the legacy backend
+    run/artifact path.
     """
     normalized_agent = _terminal_kind_for_agent(agent_type)
     if visible_terminal:
@@ -235,15 +237,17 @@ async def context_workspace_spawn_terminal(
 ) -> dict[str, Any]:
     """Low-level visible terminal spawner using Athena's Electron control server.
 
+    kind accepts shell, hermes, codex, opencode, claude, athena, or athena-code.
     context_mode accepts: none, task, curated, immersive, immersive_curated.
     Manual/clean launches should use none. Immersive modes are explicit opt-in.
     Set open_workspace=true to add/select the target workspace before spawning.
     """
+    normalized_kind = _terminal_kind_for_terminal(kind)
     return await ContextWorkspaceElectronClient().post(
         "/terminals/spawn",
         {
             "project_dir": project_dir,
-            "kind": kind,
+            "kind": normalized_kind,
             "count": count,
             "title": title,
             "task": task,
@@ -264,7 +268,7 @@ async def context_workspace_spawn_terminals_batch(
     """Spawn multiple visible Athena terminals with one MCP call.
 
     Use this when a task needs several agents at once, for example two
-    OpenCode panes and one Codex pane. Each spec accepts kind, count, title,
+    OpenCode panes and one Athena Code pane. Each spec accepts kind, count, title,
     task, resume_session_id, session_label, context_mode, and context. Athena
     groups compatible same-provider specs into count-based spawn calls where
     possible and returns every created terminal id in one response. Set
@@ -559,7 +563,7 @@ def _resolve_recall_project(project_dir: str) -> Path:
 
 
 def _terminal_kind_for_agent(agent_type: str) -> str:
-    normalized = agent_type.strip().lower().replace("_", "-")
+    normalized = "-".join(agent_type.strip().lower().replace("_", "-").split())
     aliases = {
         "codex": "codex",
         "opencode": "opencode",
@@ -569,10 +573,18 @@ def _terminal_kind_for_agent(agent_type: str) -> str:
         "hermes": "hermes",
         "athena": "athena",
         "athena-code": "athena",
+        "athenacode": "athena",
     }
     if normalized not in aliases:
         raise ValueError(f"Unsupported agent type: {agent_type}")
     return aliases[normalized]
+
+
+def _terminal_kind_for_terminal(kind: str) -> str:
+    normalized = "-".join(kind.strip().lower().replace("_", "-").split())
+    if normalized == "shell":
+        return "shell"
+    return _terminal_kind_for_agent(kind)
 
 
 def _group_batch_spawn_specs(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -602,7 +614,7 @@ def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
     title = _string_or_none(spec.get("title"))
     session_label = _string_or_none(spec.get("session_label"))
     context = _string_or_none(spec.get("context")) or _string_or_none(spec.get("context_text"))
-    if session_label is None and kind in {"codex", "opencode", "claude"}:
+    if session_label is None and kind in {"codex", "opencode", "claude", "athena"}:
         session_label = "New"
     return {
         "kind": kind,
@@ -661,6 +673,7 @@ def _title_for_task(kind: str, task: str) -> str:
         "opencode": "OpenCode",
         "claude": "Claude",
         "hermes": "Hermes",
+        "athena": "Athena Code",
     }.get(kind, "Agent")
     first_line = next((line.strip() for line in task.splitlines() if line.strip()), "")
     return f"{prefix}: {first_line[:48]}" if first_line else prefix

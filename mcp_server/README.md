@@ -56,7 +56,7 @@ The recall bridge workflow is:
 
 1. Hermes runs `session_search(...)`.
 2. Hermes calls `context_workspace_summarize_agent_sessions(...)` when native
-   Codex/OpenCode/Claude session history would help.
+   Codex/OpenCode/Athena Code/Claude session history would help.
 3. Hermes summarizes the useful result.
 4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
 5. Context Workspace includes that cache in future run `context.md` files.
@@ -93,9 +93,10 @@ context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 ```
 
 Use `context_workspace_spawn_agent` when Hermes should start Codex, OpenCode,
-or Claude for a user task. By default it opens a visible Command Room PTY
-through Electron control and injects only a compact task prompt. It no longer
-injects Athena recall or Hermes memory automatically.
+Athena Code, or Claude for a user task. Pass `agent_type="athena-code"` or
+`agent_type="athena"` for Athena Code. By default it opens a visible Command
+Room PTY through Electron control and injects only a compact task prompt. It no
+longer injects Athena recall or Hermes memory automatically.
 Set `open_workspace=true` when the target project is not already open in
 Athena, or call `context_workspace_open_workspace(project_dir)` directly to
 add/select a workspace before later actions.
@@ -111,12 +112,14 @@ Context modes:
 
 Use `context_workspace_spawn_terminal` only when Hermes needs lower-level
 terminal control, such as opening a shell, Hermes pane, grid, or explicit resume.
+Its `kind` accepts `shell`, `hermes`, `codex`, `opencode`, `claude`, `athena`,
+and `athena-code`; Athena Code live handles use the `athena#N` form.
 
 Use `context_workspace_list_live_terminals` before live handoffs. Pick the
 returned `id` or `providerSessionId`, then call
 `context_workspace_inject_terminal_input` to submit the next instruction into
-that running PTY. This is for live Codex/OpenCode/Claude/Hermes handoffs, not
-the legacy backend run board.
+that running PTY. This is for live Codex/OpenCode/Athena Code/Claude/Hermes
+handoffs, not the legacy backend run board.
 
 Use `context_workspace_kill_terminal` to stop one live PTY. Use
 `context_workspace_close_workspace` when the user asks to close a workspace tab;

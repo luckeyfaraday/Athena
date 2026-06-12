@@ -433,17 +433,14 @@ function parseSpawnTerminalRequest(body: unknown): {
   const request = body as SpawnTerminalRequest;
   const workspace = String(request.project_dir ?? request.workspace ?? "").trim();
   if (!workspace) throw new Error("project_dir is required.");
-  const kind = String(request.kind ?? "shell").trim().toLowerCase();
-  if (!SUPPORTED_TERMINAL_KINDS.has(kind as EmbeddedTerminalKind)) {
-    throw new Error(`Unsupported terminal kind: ${request.kind}`);
-  }
+  const kind = embeddedTerminalKindValue(request.kind ?? "shell");
   const rawCount = Number(request.count ?? 1);
   const count = Math.max(1, Math.min(Number.isFinite(rawCount) ? Math.floor(rawCount) : 1, MAX_TERMINAL_SPAWN_COUNT));
   return {
     workspace,
     openWorkspace: booleanValue(request.open_workspace ?? request.openWorkspace),
     selectWorkspace: booleanValue(request.select_workspace ?? request.selectWorkspace ?? request.open_workspace ?? request.openWorkspace, true),
-    kind: kind as EmbeddedTerminalKind,
+    kind,
     count,
     title: stringValue(request.title),
     task: stringValue(request.task),
@@ -454,6 +451,27 @@ function parseSpawnTerminalRequest(body: unknown): {
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
   };
+}
+
+function embeddedTerminalKindValue(value: unknown): EmbeddedTerminalKind {
+  const normalized = String(value).trim().toLowerCase().replace(/_/g, "-").replace(/\s+/g, "-");
+  const aliases: Record<string, EmbeddedTerminalKind> = {
+    shell: "shell",
+    hermes: "hermes",
+    codex: "codex",
+    opencode: "opencode",
+    "open-code": "opencode",
+    claude: "claude",
+    "claude-code": "claude",
+    athena: "athena",
+    "athena-code": "athena",
+    athenacode: "athena",
+  };
+  const kind = aliases[normalized];
+  if (!kind || !SUPPORTED_TERMINAL_KINDS.has(kind)) {
+    throw new Error(`Unsupported terminal kind: ${value}`);
+  }
+  return kind;
 }
 
 function parseOpenWorkspaceRequest(body: unknown): { workspace: string; select: boolean } {

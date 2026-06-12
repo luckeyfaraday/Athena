@@ -485,7 +485,7 @@ example `C:\Users\alanq\...` on Windows and `/home/alan/...` on Linux), set
 Recommended recall workflow:
 
 1. Hermes runs its own `session_search`.
-2. Hermes calls `context_workspace_summarize_agent_sessions` when it needs native Codex/OpenCode/Claude session history for the selected workspace.
+2. Hermes calls `context_workspace_summarize_agent_sessions` when it needs native Codex/OpenCode/Athena Code/Claude session history for the selected workspace.
 3. Hermes summarizes the relevant prior-session context.
 4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
 5. Future Athena agent launches include that cache in the generated prompt context.
@@ -506,7 +506,7 @@ context_workspace_read_recall_cache(project_dir)
 context_workspace_clear_recall_cache(project_dir)
 ```
 
-Use `context_workspace_spawn_agent` for user-requested Codex, OpenCode, or Claude work. It opens a visible Command Room PTY by default through Electron control, so Athena must be running. Set `open_workspace=true` when Hermes should add/select a project folder in Athena before spawning. Use `context_workspace_spawn_terminal` for lower-level terminal control such as shells, grids, Hermes panes, or explicit resumes.
+Use `context_workspace_spawn_agent` for user-requested Codex, OpenCode, Athena Code, or Claude work. Pass `agent_type="athena-code"` or `agent_type="athena"` for Athena Code. It opens a visible Command Room PTY by default through Electron control, so Athena must be running. Set `open_workspace=true` when Hermes should add/select a project folder in Athena before spawning. Use `context_workspace_spawn_terminal` for lower-level terminal control such as shells, grids, Hermes panes, or explicit resumes; its `kind` accepts `athena-code` as an alias for the live `athena` terminal kind.
 
 Use `context_workspace_kill_terminal` to stop one live Athena PTY by terminal id or provider session id. Use `context_workspace_close_workspace` to close a workspace tab and stop its live embedded terminals.
 

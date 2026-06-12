@@ -35,10 +35,6 @@ Athena is a local desktop workspace for orchestrating AI coding agents with shar
 
 In search terms: Athena is an **AI coding agent workspace**, **multi-agent desktop app**, **embedded terminal control room**, **Hermes MCP bridge**, and **session recall manager** for local software development.
 
-<p align="center">
-  <img src="athenafocusmode.png" alt="Athena Command Room showing live agent panes in focus mode" />
-</p>
-
 ## Product Widgets
 
 | Command Room | Session Recall | Agent Coverage | Desktop Runtime |

@@ -51,7 +51,10 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
 
     void desktop.getEmbeddedTerminalBuffer(session.id)
       .then((buffer) => {
-        if (buffer && terminalRef.current === terminal) terminal.write(buffer);
+        if (!buffer || terminalRef.current !== terminal) return;
+        terminal.write(buffer, () => {
+          refreshTerminal(terminal);
+        });
       })
       .catch(() => undefined);
 
@@ -93,17 +96,28 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
   useEffect(() => {
     activeRef.current = active;
     if (!active) return;
+    // Force PTY resize on next fit so the backend re-emits SIGWINCH and TUI apps redraw
+    // after tab/workspace switches that left the pane visually stale.
+    lastResizeRef.current = null;
     const refit = () => {
       const container = containerRef.current;
       const terminal = terminalRef.current;
       const fit = fitRef.current;
       if (!container || !terminal || !fit) return;
       fitVisibleTerminal(container, terminal, fit, session.id, true, lastResizeRef);
+      refreshTerminal(terminal);
       terminal.focus();
     };
-    const timers = [30, 160].map((delay) => window.setTimeout(refit, delay));
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = window.requestAnimationFrame(() => {
+      raf2 = window.requestAnimationFrame(refit);
+    });
+    const timers = [80, 240].map((delay) => window.setTimeout(refit, delay));
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer));
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
     };
   }, [active, session.id]);
 
@@ -230,6 +244,15 @@ function fitVisibleTerminal(
 function hasUsableTerminalSize(container: HTMLDivElement): boolean {
   const rect = container.getBoundingClientRect();
   return rect.width >= 160 && rect.height >= 80;
+}
+
+function refreshTerminal(terminal: Terminal): void {
+  const lastRow = Math.max(0, terminal.rows - 1);
+  try {
+    terminal.refresh(0, lastRow);
+  } catch {
+    // refresh can throw if the renderer is mid-teardown or the pane was hidden during the call.
+  }
 }
 
 function hasImageFiles(dataTransfer: DataTransfer): boolean {

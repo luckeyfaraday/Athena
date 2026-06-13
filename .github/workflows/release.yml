@@ -17,20 +17,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The latest*.yml files are the update feeds electron-updater polls;
+          # in-app updates break if they are missing from the release.
           - label: Linux AppImage
             os: ubuntu-latest
             artifact-name: athena-linux-appimage
-            artifact-path: client/release/*.AppImage
+            artifact-path: |
+              client/release/*.AppImage
+              client/release/latest-linux.yml
           - label: Windows installer
             os: windows-latest
             artifact-name: athena-windows-installer
             artifact-path: |
               client/release/*.exe
               client/release/*.blockmap
+              client/release/latest.yml
           - label: macOS DMG
             os: macos-latest
             artifact-name: athena-macos-dmg
-            artifact-path: client/release/*.dmg
+            artifact-path: |
+              client/release/*.dmg
+              client/release/*.zip
+              client/release/*.blockmap
+              client/release/latest-mac.yml
 
     steps:
       - name: Check out repository

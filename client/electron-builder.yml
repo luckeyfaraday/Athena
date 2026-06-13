@@ -1,6 +1,12 @@
 appId: app.athena.workspace
 productName: ATHENA
 icon: build/icon.png
+# Where the in-app updater (electron-updater) checks for new releases. Builds
+# also emit latest*.yml metadata that must be attached to each GitHub release.
+publish:
+  provider: github
+  owner: luckeyfaraday
+  repo: Athena
 directories:
   output: release
 files:
@@ -45,8 +51,11 @@ win:
     - nsis
 mac:
   icon: build/icon.png
+  # electron-updater reads update metadata from the zip; the dmg is for
+  # first-time installs.
   target:
     - dmg
+    - zip
 linux:
   icon: build/icon.png
   target:

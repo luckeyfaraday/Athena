@@ -13,6 +13,7 @@ import { beginAthenaLaunch, markAthenaCleanExit, pauseTerminalRestore } from "./
 import { checkDiskSpace, formatBytes, DISK_WARN_BYTES } from "./disk-guard.js";
 import { installManagedAgentSkills } from "./agent-skills.js";
 import { installAthenaCli } from "./athena-cli.js";
+import { startAutoUpdates } from "./auto-update.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -231,6 +232,7 @@ if (singleInstanceLock) {
       console.error("Electron control server failed to start:", error);
     });
     await createWindow();
+    startAutoUpdates();
 
     app.on("activate", async () => {
       if (BrowserWindow.getAllWindows().length === 0) {

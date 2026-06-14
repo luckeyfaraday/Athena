@@ -12,6 +12,7 @@
 // PowerShell receives prompts as splatted array elements rather than via string
 // interpolation.
 
+import type { AgentMcpLaunch } from "./agent-mcp.js";
 import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
 import {
   defaultShell,
@@ -26,16 +27,32 @@ export type AgentConfig = {
   powerShellCommand: string;
   powerShellCommandWithoutPrompt: string;
   resumePowerShellCommand: string;
-  args: (cwd: string, promptPath: string | null, shell: "bash", mcpConfigPath?: string | null, newSessionId?: string | null) => string;
-  resumeArgs: (cwd: string, sessionId: string, shell: "bash", mcpConfigPath?: string | null) => string;
+  args: (cwd: string, promptPath: string | null, shell: "bash", mcp?: AgentMcpLaunch | null, newSessionId?: string | null) => string;
+  resumeArgs: (cwd: string, sessionId: string, shell: "bash", mcp?: AgentMcpLaunch | null) => string;
 };
+
+// Bash: render Codex's MCP overrides as ` -c '<override>'` tokens (leading space
+// so the caller can append directly). Empty when no overrides are present.
+function codexMcpBashArgs(mcp?: AgentMcpLaunch | null): string {
+  const overrides = mcp?.codexConfigArgs;
+  if (!overrides || overrides.length === 0) return "";
+  return overrides.map((override) => ` -c ${quoteShell(override)}`).join("");
+}
+
+// PowerShell: render Codex's MCP overrides as the inside of an `@(...)` array,
+// e.g. `'-c', '<override>'`. Empty string yields `@()`.
+function codexMcpPowerShellArray(mcp?: AgentMcpLaunch | null): string {
+  const overrides = mcp?.codexConfigArgs;
+  if (!overrides || overrides.length === 0) return "";
+  return overrides.flatMap((override) => ["'-c'", quotePowerShell(override)]).join(", ");
+}
 
 export function terminalLaunch(
   kind: EmbeddedTerminalKind,
   cwd: string,
   promptPath: string | null,
   resumeSessionId?: string,
-  mcpConfigPath?: string | null,
+  mcp?: AgentMcpLaunch | null,
   newSessionId?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
@@ -54,26 +71,26 @@ export function terminalLaunch(
     if (kind !== "shell" && resumeSessionId) {
       return {
         command: "powershell.exe",
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcpConfigPath)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcp)],
       };
     }
     if (kind !== "shell") {
       return {
         command: "powershell.exe",
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcpConfigPath, newSessionId)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcp, newSessionId)],
       };
     }
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcpConfigPath) : launchCommand(kind, cwd, promptPath, mcpConfigPath, newSessionId)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcp) : launchCommand(kind, cwd, promptPath, mcp, newSessionId)] };
 }
 
 export function launchCommand(
   kind: EmbeddedTerminalKind,
   cwd: string,
   promptPath: string | null,
-  mcpConfigPath?: string | null,
+  mcp?: AgentMcpLaunch | null,
   newSessionId?: string | null,
 ): string {
   if (kind === "hermes") {
@@ -94,7 +111,7 @@ export function launchCommand(
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcpConfigPath, newSessionId)}`.trimEnd(),
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId)}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }
@@ -123,7 +140,7 @@ export function launchHermesPowerShellCommand(cwd: string, resumeSessionId?: str
   ].filter(Boolean).join("; ");
 }
 
-export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcpConfigPath?: string | null): string {
+export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcp?: AgentMcpLaunch | null): string {
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
@@ -138,19 +155,20 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
     `cd ${quoteShell(cwd)}`,
     `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
     `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-    agent.resumeArgs(cwd, resumeSessionId, "bash", mcpConfigPath),
+    agent.resumeArgs(cwd, resumeSessionId, "bash", mcp),
     "exec bash -l",
   ].join("; ");
 }
 
-export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcpConfigPath?: string | null): string {
+export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcp?: AgentMcpLaunch | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
     `$sessionId = ${quotePowerShell(resumeSessionId)}`,
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
-    mcpConfigPath ? `$mcpConfigPath = ${quotePowerShell(mcpConfigPath)}` : "",
+    mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
+    kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
     "Set-Location -LiteralPath $workspace",
     "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
@@ -160,7 +178,7 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
   ].join("; ");
 }
 
-export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcpConfigPath?: string | null, newSessionId?: string | null): string {
+export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcp?: AgentMcpLaunch | null, newSessionId?: string | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -168,7 +186,8 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     "Set-Location -LiteralPath $workspace",
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
-    mcpConfigPath ? `$mcpConfigPath = ${quotePowerShell(mcpConfigPath)}` : "",
+    mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
+    kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
     newSessionId ? `$newSessionId = ${quotePowerShell(newSessionId)}` : "",
     promptPath
       ? "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan"
@@ -221,14 +240,14 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
       powerShellCommand: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += $prompt; & $agentCommand @agentArgs",
       powerShellCommandWithoutPrompt: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += @('--resume', $sessionId); & $agentCommand @agentArgs",
-      args: (_cwd, promptPath, _shell, mcpConfigPath, newSessionId) => [
+      args: (_cwd, promptPath, _shell, mcp, newSessionId) => [
         newSessionId ? `--session-id ${quoteShell(newSessionId)}` : "",
-        mcpConfigPath ? `--mcp-config ${quoteShell(mcpConfigPath)}` : "",
+        mcp?.configPath ? `--mcp-config ${quoteShell(mcp.configPath)}` : "",
         promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
       ].filter(Boolean).join(" "),
-      resumeArgs: (_cwd, sessionId, _shell, mcpConfigPath) => [
+      resumeArgs: (_cwd, sessionId, _shell, mcp) => [
         "claude",
-        mcpConfigPath ? `--mcp-config ${quoteShell(mcpConfigPath)}` : "",
+        mcp?.configPath ? `--mcp-config ${quoteShell(mcp.configPath)}` : "",
         "--resume",
         quoteShell(sessionId),
       ].filter(Boolean).join(" "),
@@ -237,13 +256,17 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
   return {
     label: "Codex",
     executable: "codex",
-    powerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all', '--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
-    powerShellCommandWithoutPrompt: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all', '--cd', $workspace); & $agentCommand @agentArgs",
-    resumePowerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all', 'resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
-    args: (cwd, promptPath) => promptPath
-      ? `-c shell_environment_policy.inherit=all --cd ${quoteShell(cwd)} -- "$(cat ${quoteShell(promptPath)})"`
-      : `-c shell_environment_policy.inherit=all --cd ${quoteShell(cwd)}`,
-    resumeArgs: (cwd, sessionId) => `codex -c shell_environment_policy.inherit=all resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
+    // $mcpConfigArgs is defined by the PowerShell launch builders ('-c <override>'
+    // pairs, or @() when MCP is not wired) and spliced into the argument array.
+    powerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + @('--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
+    powerShellCommandWithoutPrompt: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + @('--cd', $workspace); & $agentCommand @agentArgs",
+    resumePowerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + @('resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
+    args: (cwd, promptPath, _shell, mcp) => {
+      const base = `-c shell_environment_policy.inherit=all${codexMcpBashArgs(mcp)} --cd ${quoteShell(cwd)}`;
+      return promptPath ? `${base} -- "$(cat ${quoteShell(promptPath)})"` : base;
+    },
+    resumeArgs: (cwd, sessionId, _shell, mcp) =>
+      `codex -c shell_environment_policy.inherit=all${codexMcpBashArgs(mcp)} resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };
 }
 

@@ -314,7 +314,12 @@ export function CommandRoom({
       </div>
 
       {activeTab === "terminals" ? (
-        <div className="terminalStage embeddedStage slotTerminalStage">
+        <div
+          className={[
+            "terminalStage embeddedStage slotTerminalStage",
+            activeMaximizedPaneId ? "hasMaximized" : "",
+          ].filter(Boolean).join(" ")}
+        >
           {visibleSessions.map((session) => {
             const displayed = displayedTerminalSessions.some((item) => item.id === session.id);
             return (

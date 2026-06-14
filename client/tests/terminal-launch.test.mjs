@@ -80,7 +80,7 @@ test("agentConfig claude args include the mcp config flag and quote the prompt p
   const claude = agentConfig("claude");
   assert.equal(
     claude.args("/ws", "/tmp/p.md", "bash", { configPath: "/tmp/mcp.json" }),
-    `--mcp-config '/tmp/mcp.json' "$(cat '/tmp/p.md')"`,
+    `--mcp-config '/tmp/mcp.json' -- "$(cat '/tmp/p.md')"`,
   );
   assert.equal(claude.resumeArgs("/ws", "s1", "bash", { configPath: "/tmp/mcp.json" }), `claude --mcp-config '/tmp/mcp.json' --resume 's1'`);
 });
@@ -89,7 +89,7 @@ test("agentConfig claude args pin a pre-assigned session id ahead of the other f
   const claude = agentConfig("claude");
   assert.equal(
     claude.args("/ws", "/tmp/p.md", "bash", { configPath: "/tmp/mcp.json" }, "11111111-2222-3333-4444-555555555555"),
-    `--session-id '11111111-2222-3333-4444-555555555555' --mcp-config '/tmp/mcp.json' "$(cat '/tmp/p.md')"`,
+    `--session-id '11111111-2222-3333-4444-555555555555' --mcp-config '/tmp/mcp.json' -- "$(cat '/tmp/p.md')"`,
   );
   assert.equal(
     claude.args("/ws", null, "bash", null, "11111111-2222-3333-4444-555555555555"),
@@ -119,6 +119,12 @@ test("PowerShell builder splats the new claude session id without string interpo
 
   const withoutId = launchPowerShellCommand("claude", "C:\\ws", null, null);
   assert.doesNotMatch(withoutId, /\$newSessionId = /);
+});
+
+test("PowerShell claude builder separates variadic mcp config from the prompt", () => {
+  const command = launchPowerShellCommand("claude", "C:\\ws", "C:\\tmp\\p.md", { configPath: "C:\\tmp\\mcp.json" });
+  assert.match(command, /\$mcpConfigPath = 'C:\\tmp\\mcp\.json'/);
+  assert.match(command, /\$agentArgs \+= @\('--mcp-config', \$mcpConfigPath, '--'\)/);
 });
 
 test("agentConfig codex injects MCP servers as quoted -c overrides", () => {

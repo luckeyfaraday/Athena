@@ -1083,9 +1083,16 @@ button:disabled { cursor: not-allowed; opacity: .38; }
 }
 .slotPane.maximized {
   grid-column: 1 / -1;
-  min-height: 500px;
+  min-height: 0;
+  height: auto;
+  resize: none;
 }
-.commandRoom.focused .slotPane.maximized { min-height: calc(100vh - 56px); }
+.terminalStage.hasMaximized {
+  overflow: hidden;
+  grid-template-columns: 1fr;
+  grid-auto-rows: minmax(0, 1fr);
+  align-content: stretch;
+}
 .slotPane:hover,
 .slotPane.dragging {
   border-color: rgba(198, 241, 53, 0.2);

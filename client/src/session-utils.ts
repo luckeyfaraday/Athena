@@ -1,7 +1,7 @@
 import type { RecallStatus } from "./api";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
 import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
-import { normalizeWorkspaceKey } from "./workspace-utils";
+import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils";
 
 export { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
 
@@ -148,6 +148,20 @@ export function providerLabel(provider: AgentSession["provider"]): string {
 export function terminalPaneMeta(session: EmbeddedTerminalSession): string {
   if (session.kind === "shell") return `${session.status}${session.pid ? ` · pid ${session.pid}` : ""}`;
   return session.sessionLabel ?? "New";
+}
+
+// Mirrors agentHandle() in client/electron/agent-routing.ts so visible pane
+// numbers line up with the handles the routing layer accepts ("claude#2").
+// Shell panes are numbered too — the user wants every instance identifiable.
+export function sessionInstanceNumber(
+  session: EmbeddedTerminalSession,
+  sessions: EmbeddedTerminalSession[],
+): number {
+  const peers = sessions
+    .filter((item) => item.kind === session.kind && sameWorkspacePath(item.workspace, session.workspace))
+    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id));
+  const index = peers.findIndex((item) => item.id === session.id);
+  return Math.max(0, index) + 1;
 }
 
 export function formatSessionTime(value: string): string {

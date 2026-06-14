@@ -27,6 +27,7 @@ import {
   providerLabel,
   readDeletedAgentSessions,
   type SessionProviderFilter,
+  sessionInstanceNumber,
   terminalPaneMeta,
   writeDeletedAgentSessions,
 } from "../session-utils";
@@ -360,7 +361,10 @@ export function CommandRoom({
                   title={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
                   aria-label={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
                 />
-                <strong>{session.title}</strong>
+                <strong>
+                  <span className="paneInstanceBadge">#{sessionInstanceNumber(session, sessions)}</span>
+                  {session.title}
+                </strong>
                 <em>{terminalPaneMeta(session)}</em>
                 <button type="button" className="terminalChromeAction" onClick={() => onInspectEmbeddedSession(session)} title={`Inspect ${session.title}`}>
                   <FileText size={13} />

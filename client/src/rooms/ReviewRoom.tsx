@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bot, CheckCircle2, Code2, FileText, Play, ScrollText, Sparkles, TerminalSquare, XCircle } from "lucide-react";
+import type { RecallSourceSession, WorkspaceSnapshot } from "../api";
 import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "../electron";
 import { agentSessionDotStatus, embeddedSessionDotStatus, inspectorStatusView, StatusDot, StatusPill } from "../components/status";
 import {
@@ -15,6 +16,7 @@ import { normalizeWorkspaceKey } from "../workspace-utils";
 const inspectorBufferTailChars = 80_000;
 const inspectorBufferFlushMs = 120;
 const visibleHandoffSourceLimit = 60;
+const handoffSchemaVersion = 2;
 
 type HandoffSourceProvider = EmbeddedTerminalKind | AgentSession["provider"];
 
@@ -63,6 +65,14 @@ type HandoffAnalysis = {
   notable: string[];
 };
 
+type HandoffBuild = {
+  markdown: string;
+  handoffId: string;
+  confidence: "high" | "medium" | "low";
+  sourceWorkspaces: string[];
+  sourceSessions: RecallSourceSession[];
+};
+
 export function ReviewRoom({
   embeddedSessions,
   agentSessions,
@@ -75,6 +85,7 @@ export function ReviewRoom({
   onSelectAgentSession,
   onLoadAgentTranscript,
   onReadAgentTranscript,
+  onLoadWorkspaceSnapshot,
   onSaveHandoff,
   onStartFreshFromHandoff,
 }: {
@@ -89,6 +100,7 @@ export function ReviewRoom({
   onSelectAgentSession: (session: AgentSession) => void;
   onLoadAgentTranscript: (session: AgentSession) => Promise<string>;
   onReadAgentTranscript: (session: AgentSession) => Promise<string>;
+  onLoadWorkspaceSnapshot: () => Promise<WorkspaceSnapshot | null>;
   onSaveHandoff: (preview: HandoffPreview) => Promise<void>;
   onStartFreshFromHandoff: (kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">, preview: HandoffPreview) => Promise<void>;
 }) {
@@ -231,18 +243,26 @@ export function ReviewRoom({
     setHandoffGenerating(true);
     setHandoffError(null);
     try {
-      const evidence = await Promise.all(selectedHandoffSources.map((source) => loadHandoffEvidence(source, onReadAgentTranscript)));
+      const [evidence, workspaceSnapshot] = await Promise.all([
+        Promise.all(selectedHandoffSources.map((source) => loadHandoffEvidence(source, onReadAgentTranscript))),
+        onLoadWorkspaceSnapshot().catch(() => null),
+      ]);
       if (!evidence.some((source) => source.usable)) {
         setHandoffPreview(null);
         setHandoffError("No usable handoff evidence found. Pick live sessions with task output or sessions with readable transcripts.");
         return;
       }
-      const markdown = buildHandoffMarkdown(workspace, evidence);
+      const handoff = buildHandoffMarkdown(workspace, evidence, workspaceSnapshot);
       setHandoffPreview({
-        markdown,
-        bytes: byteLength(markdown),
+        markdown: handoff.markdown,
+        bytes: byteLength(handoff.markdown),
         sourceCount: evidence.length,
         sourceTitles: evidence.map((source) => `${source.title} (${workspaceLabel(source.workspace)})`),
+        schemaVersion: handoffSchemaVersion,
+        handoffId: handoff.handoffId,
+        confidence: handoff.confidence,
+        sourceWorkspaces: handoff.sourceWorkspaces,
+        sourceSessions: handoff.sourceSessions,
         workspace,
       });
     } catch (err) {
@@ -722,25 +742,18 @@ async function loadHandoffEvidence(source: HandoffSessionSource, readAgentTransc
   }
 }
 
-function buildHandoffMarkdown(targetWorkspace: string, sources: HandoffEvidence[]): string {
+function buildHandoffMarkdown(targetWorkspace: string, sources: HandoffEvidence[], workspaceSnapshot: WorkspaceSnapshot | null): HandoffBuild {
   const generated = new Date().toISOString();
   const usableSources = sources.filter((source) => source.usable);
   const unusableSources = sources.filter((source) => !source.usable);
   const combined = combineHandoffAnalyses(usableSources.map((source) => source.analysis));
   const sourceWorkspaces = uniqueSourceWorkspaces(sources);
-  const workspaceMap = sourceWorkspaces
-    .map((sourceWorkspace) => {
-      const count = sources.filter((source) => sourceWorkspaceKey(source.workspace) === sourceWorkspaceKey(sourceWorkspace)).length;
-      const targetMarker = sourceWorkspaceKey(sourceWorkspace) === sourceWorkspaceKey(targetWorkspace) ? " target" : "";
-      return `- ${workspaceLabel(sourceWorkspace)}${targetMarker}: ${sourceWorkspace} (${count} source${count === 1 ? "" : "s"})`;
-    })
-    .join("\n");
-  const selectedSessions = sources
-    .map((source) => {
-      const score = source.analysis.score ? `, evidence score ${source.analysis.score}` : "";
-      return `- [${workspaceLabel(source.workspace)}] ${source.label}: ${source.title} (${source.status}, ${source.id}${score})${source.usable ? "" : " - no usable evidence"}`;
-    })
-    .join("\n");
+  const sourceSessions = sources.map(sourceSessionMetadata);
+  const handoffId = createHandoffId(generated, targetWorkspace, sources);
+  const confidence = handoffConfidence(combined, sources, workspaceSnapshot);
+  const confidenceReasons = handoffConfidenceReasons(confidence, combined, sources, workspaceSnapshot);
+  const workspaceMap = formatWorkspaceMap(targetWorkspace, sourceWorkspaces, sources);
+  const selectedSessions = sourceSessions.map(formatSourceSessionLine).join("\n");
   const evidenceSections: string[] = [];
   let remainingEvidenceChars = 10000;
   for (const source of usableSources) {
@@ -749,56 +762,80 @@ function buildHandoffMarkdown(targetWorkspace: string, sources: HandoffEvidence[
       continue;
     }
     const evidence = [
-      formatEvidenceGroup("Files touched or inspected", source.analysis.files),
-      formatEvidenceGroup("Commands and checks", source.analysis.commands),
-      formatEvidenceGroup("Outcomes", source.analysis.outcomes),
-      formatEvidenceGroup("Failures or blockers", source.analysis.failures),
-      formatEvidenceGroup("Decisions", source.analysis.decisions),
-      formatEvidenceGroup("Open questions", source.analysis.questions),
-      formatEvidenceGroup("Next steps", source.analysis.nextSteps),
-      formatEvidenceGroup("Recent concrete evidence", source.analysis.notable, 10),
+      formatEvidenceGroup("Files touched or inspected", source.analysis.files, 10, 4),
+      formatEvidenceGroup("Commands and checks", source.analysis.commands, 10, 4),
+      formatEvidenceGroup("Outcomes", source.analysis.outcomes, 10, 4),
+      formatEvidenceGroup("Failures or blockers", source.analysis.failures, 10, 4),
+      formatEvidenceGroup("Decisions", source.analysis.decisions, 10, 4),
+      formatEvidenceGroup("Open questions", source.analysis.questions, 8, 4),
+      formatEvidenceGroup("Next steps", source.analysis.nextSteps, 8, 4),
+      formatEvidenceGroup("Raw supporting excerpts", source.analysis.notable, 10, 4),
     ].filter(Boolean).join("\n\n");
     const cappedEvidence = tailText(evidence || "No evidence available.", Math.min(2200, remainingEvidenceChars));
     remainingEvidenceChars -= cappedEvidence.length;
-    evidenceSections.push([`### ${source.title}`, cappedEvidence].join("\n\n"));
+    evidenceSections.push([`### ${source.title}`, formatSourceProvenance(source), cappedEvidence].join("\n\n"));
   }
   for (const source of unusableSources) {
-    evidenceSections.push(`### ${source.title}\n\n${source.note ?? "No usable evidence found."}`);
+    evidenceSections.push(`### ${source.title}\n\n${formatSourceProvenance(source)}\n\n${source.note ?? "No usable evidence found."}`);
   }
   const evidence = evidenceSections.join("\n\n");
-  const qualityWarning = usableSources.length === 0
-    ? "- No selected source met the usefulness threshold. Do not launch a fresh agent from this handoff."
-    : combined.score < 8
-      ? "- Evidence is thin. Verify the current workspace state before relying on this handoff."
-      : "- Evidence includes concrete commands, files, outcomes, decisions, or blockers.";
-  return [
-    "# Athena Session Handoff",
+  const markdown = [
+    "# Athena Handoff",
     "",
-    `Generated: ${generated}`,
-    `Target workspace: ${targetWorkspace}`,
-    `Source workspaces: ${sourceWorkspaces.length}`,
-    `Sources: ${usableSources.length} usable of ${sources.length} selected`,
-    `Evidence score: ${combined.score}`,
+    "---",
+    `schema_version: ${handoffSchemaVersion}`,
+    `handoff_id: ${handoffId}`,
+    `generated_at: ${generated}`,
+    `target_workspace: ${targetWorkspace}`,
+    `source: athena-reviews`,
+    `confidence: ${confidence}`,
+    `source_count: ${sources.length}`,
+    `usable_source_count: ${usableSources.length}`,
+    `source_workspace_count: ${sourceWorkspaces.length}`,
+    `evidence_score: ${combined.score}`,
+    "---",
     "",
-    "## Executive Summary",
-    qualityWarning,
-    formatEvidenceGroup("Files likely relevant", combined.files, 12),
-    formatEvidenceGroup("Commands/checks observed", combined.commands, 12),
-    formatEvidenceGroup("Decisions made", combined.decisions, 12),
-    formatEvidenceGroup("Known failures/blockers", combined.failures, 12),
-    formatEvidenceGroup("Current outcomes", combined.outcomes, 12),
-    formatEvidenceGroup("Open questions", combined.questions, 8),
-    formatEvidenceGroup("Recommended next actions", combined.nextSteps, 8),
+    "## Mission",
+    "- Continue from the selected Athena sessions without losing useful project context.",
+    "- Treat the latest user instruction as authoritative over this handoff.",
+    "- Use the target workspace as the place where new work should happen unless the user says otherwise.",
+    "",
+    "## Current State",
+    formatWorkspaceSnapshot(targetWorkspace, workspaceSnapshot),
+    "",
+    "## Handoff Quality",
+    `- Confidence: ${confidence}`,
+    `- Evidence score: ${combined.score}`,
+    ...confidenceReasons.map((reason) => `- ${reason}`),
     unusableSources.length ? `- ${unusableSources.length} selected source${unusableSources.length === 1 ? "" : "s"} had no usable evidence and should not drive the next agent.` : "",
     sourceWorkspaces.length > 1 ? "- This handoff combines multiple workspaces. Verify every path against the target workspace before editing." : "",
     "",
-    "## Workspace Map",
+    "## Completed Work",
+    formatBulletList(combined.outcomes, "No completed work could be inferred from the selected evidence.", 12),
+    "",
+    "## Decisions",
+    formatBulletList(combined.decisions, "No explicit decisions were extracted from the selected evidence.", 12),
+    "",
+    "## Open Work",
+    formatBulletList(combined.nextSteps, "No next steps were extracted. Inspect the target workspace and selected evidence before continuing.", 12),
+    "",
+    "## Blockers And Risks",
+    formatBulletList([
+      ...combined.failures,
+      ...combined.questions.map((question) => `Open question: ${question}`),
+    ], "No blockers or open questions were extracted. Still verify current git status and tests first.", 14),
+    "",
+    "## Files And Commands",
+    formatEvidenceGroup("Files likely relevant", combined.files, 14),
+    formatEvidenceGroup("Commands/checks observed", combined.commands, 14),
+    "",
+    "## Source Map",
     workspaceMap || "- None",
     "",
-    "## Selected Sessions",
+    "## Source Sessions",
     selectedSessions || "- None",
     "",
-    "## Source Evidence",
+    "## Evidence",
     evidence || "No evidence selected.",
     "",
     "## Instructions For The Next Agent",
@@ -806,8 +843,132 @@ function buildHandoffMarkdown(targetWorkspace: string, sources: HandoffEvidence[
     "- Verify current git status, active branch, and recent file changes before editing.",
     "- Prefer concrete evidence above over generic session labels.",
     "- Treat source workspaces as provenance. Do not assume files from one workspace exist in another without checking.",
+    "- If source and target workspaces differ, map file paths deliberately before editing.",
     "- If the evidence is thin, inspect the referenced sessions or ask for clarification before continuing.",
   ].filter((line) => line !== "").join("\n");
+  return { markdown, handoffId, confidence, sourceWorkspaces, sourceSessions };
+}
+
+function createHandoffId(generated: string, targetWorkspace: string, sources: HandoffEvidence[]): string {
+  const seed = [generated, targetWorkspace, ...sources.map((source) => `${source.workspace}:${source.provider}:${source.id}:${source.analysis.score}`)].join("|");
+  return `handoff-${generated.replace(/[^0-9TZ]/g, "").slice(0, 15).toLowerCase()}-${simpleHash(seed)}`;
+}
+
+function simpleHash(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function handoffConfidence(analysis: HandoffAnalysis, sources: HandoffEvidence[], workspaceSnapshot: WorkspaceSnapshot | null): "high" | "medium" | "low" {
+  const usableSources = sources.filter((source) => source.usable).length;
+  const hasGitState = Boolean(workspaceSnapshot?.git.available);
+  if (usableSources === 0) return "low";
+  if (analysis.score >= 20 && usableSources === sources.length && hasGitState) return "high";
+  if (analysis.score >= 8) return "medium";
+  return "low";
+}
+
+function handoffConfidenceReasons(
+  confidence: "high" | "medium" | "low",
+  analysis: HandoffAnalysis,
+  sources: HandoffEvidence[],
+  workspaceSnapshot: WorkspaceSnapshot | null,
+): string[] {
+  const usableSources = sources.filter((source) => source.usable).length;
+  const reasons = [
+    `${usableSources}/${sources.length} selected sources had usable evidence.`,
+    workspaceSnapshot?.git.available
+      ? `Target git snapshot captured (${workspaceSnapshot.git.dirty_count} dirty file${workspaceSnapshot.git.dirty_count === 1 ? "" : "s"}).`
+      : "Target git snapshot was not available; verify workspace state manually.",
+  ];
+  if (analysis.failures.length > 0) reasons.push(`${analysis.failures.length} blocker/failure signal${analysis.failures.length === 1 ? "" : "s"} extracted.`);
+  if (analysis.nextSteps.length === 0) reasons.push("No explicit next steps were extracted.");
+  if (confidence === "low") reasons.push("Use this handoff as orientation only until current state is verified.");
+  return reasons;
+}
+
+function formatWorkspaceSnapshot(targetWorkspace: string, snapshot: WorkspaceSnapshot | null): string {
+  if (!snapshot) {
+    return [
+      `- Target workspace: ${targetWorkspace}`,
+      "- Git snapshot: unavailable",
+      "- Required first action: run git status and inspect recent changes before editing.",
+    ].join("\n");
+  }
+  if (!snapshot.git.available) {
+    return [
+      `- Target workspace: ${snapshot.project_dir}`,
+      `- Git snapshot: unavailable (${snapshot.git.error ?? "not a git workspace"})`,
+      "- Required first action: inspect the workspace manually before editing.",
+    ].join("\n");
+  }
+  return [
+    `- Target workspace: ${snapshot.project_dir}`,
+    `- Git root: ${snapshot.git.root ?? "unknown"}`,
+    `- Branch: ${snapshot.git.branch ?? "detached or unknown"}`,
+    `- HEAD: ${snapshot.git.head ?? "unknown"}`,
+    `- Dirty files: ${snapshot.git.dirty_count}`,
+    formatBulletGroup("Recent commits", snapshot.git.recent_commits, 5, "No recent commits reported."),
+    formatBulletGroup("Dirty file summary", snapshot.git.status_short, 20, "Working tree was clean when the snapshot was captured."),
+  ].join("\n");
+}
+
+function formatWorkspaceMap(targetWorkspace: string, sourceWorkspaces: string[], sources: HandoffEvidence[]): string {
+  return sourceWorkspaces
+    .map((sourceWorkspace) => {
+      const count = sources.filter((source) => sourceWorkspaceKey(source.workspace) === sourceWorkspaceKey(sourceWorkspace)).length;
+      const targetMarker = sourceWorkspaceKey(sourceWorkspace) === sourceWorkspaceKey(targetWorkspace) ? "target" : "source";
+      return `- ${workspaceLabel(sourceWorkspace)} (${targetMarker}): ${sourceWorkspace} (${count} source${count === 1 ? "" : "s"})`;
+    })
+    .join("\n");
+}
+
+function sourceSessionMetadata(source: HandoffEvidence): RecallSourceSession {
+  return {
+    key: source.key,
+    kind: source.kind,
+    provider: source.provider,
+    title: source.title,
+    workspace: source.workspace,
+    id: source.id,
+    status: source.status,
+    usable: source.usable,
+    evidence_score: source.analysis.score,
+    terminal_id: source.kind === "embedded" ? source.session.id : source.session.terminalId ?? undefined,
+    provider_session_id: source.kind === "embedded" ? source.session.providerSessionId ?? undefined : source.session.id,
+    branch: source.kind === "native" ? source.session.branch ?? undefined : undefined,
+    model: source.kind === "native" ? source.session.model ?? undefined : undefined,
+  };
+}
+
+function formatSourceSessionLine(source: RecallSourceSession): string {
+  const score = typeof source.evidence_score === "number" ? `, score ${source.evidence_score}` : "";
+  const usable = source.usable ? "usable" : "no usable evidence";
+  return `- [${workspaceLabel(String(source.workspace ?? ""))}] ${source.kind ?? "source"} ${source.provider ?? "unknown"}: ${source.title ?? "Untitled"} (${source.status ?? "unknown"}, ${source.id ?? "no id"}, ${usable}${score})`;
+}
+
+function formatSourceProvenance(source: HandoffEvidence): string {
+  return [
+    `- Workspace: ${source.workspace}`,
+    `- Provider: ${source.provider}`,
+    `- Session: ${source.id}`,
+    `- Status: ${source.status}`,
+    `- Evidence score: ${source.analysis.score}`,
+  ].join("\n");
+}
+
+function formatBulletList(items: string[], empty: string, limit: number): string {
+  const visible = items.slice(0, limit).filter(Boolean);
+  return visible.length ? visible.map((item) => `- ${item}`).join("\n") : `- ${empty}`;
+}
+
+function formatBulletGroup(title: string, items: string[], limit: number, empty: string): string {
+  const visible = items.slice(0, limit).filter(Boolean);
+  return [`- ${title}:`, ...(visible.length ? visible : [empty]).map((item) => `  - ${item}`)].join("\n");
 }
 
 function uniqueSourceWorkspaces(sources: HandoffSessionSource[]): string[] {
@@ -922,10 +1083,10 @@ function handoffScore(analysis: HandoffAnalysis): number {
     + Math.min(4, analysis.notable.length);
 }
 
-function formatEvidenceGroup(title: string, items: string[], limit = 10): string {
+function formatEvidenceGroup(title: string, items: string[], limit = 10, headingLevel = 3): string {
   const visible = items.slice(0, limit).filter(Boolean);
   if (visible.length === 0) return "";
-  return [`### ${title}`, ...visible.map((item) => `- ${item}`)].join("\n");
+  return [`${"#".repeat(headingLevel)} ${title}`, ...visible.map((item) => `- ${item}`)].join("\n");
 }
 
 function collectUnique(target: string[], values: string[], limit: number): void {

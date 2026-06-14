@@ -941,15 +941,33 @@ export function App() {
     }
   }
 
-  async function saveHandoffToRecall(markdown: string, metadata: { sourceCount?: number; sourceTitles?: string[] } = {}) {
+  async function saveHandoffToRecall(markdown: string, metadata: {
+    sourceCount?: number;
+    sourceTitles?: string[];
+    schemaVersion?: number;
+    handoffId?: string;
+    confidence?: string;
+    sourceWorkspaces?: string[];
+    sourceSessions?: HandoffPreview["sourceSessions"];
+  } = {}) {
     if (!client || !workspace) throw new Error("Backend or workspace is not available.");
     const result = await client.writeRecall(workspace, markdown, "athena-session-handoff", {
       source_count: metadata.sourceCount,
       source_titles: metadata.sourceTitles,
+      schema_version: metadata.schemaVersion,
+      handoff_id: metadata.handoffId,
+      confidence: metadata.confidence,
+      source_workspaces: metadata.sourceWorkspaces,
+      source_sessions: metadata.sourceSessions,
     });
     setState((current) => ({ ...current, recall: result.recall }));
     setError(null);
   }
+
+  const loadWorkspaceSnapshot = useCallback(async () => {
+    if (!client || !workspace) return null;
+    return client.workspaceSnapshot(workspace);
+  }, [client, workspace]);
 
   async function startFreshFromHandoff(
     kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">,
@@ -963,6 +981,11 @@ export function App() {
     await saveHandoffToRecall(preview.markdown, {
       sourceCount: preview.sourceCount,
       sourceTitles: preview.sourceTitles,
+      schemaVersion: preview.schemaVersion,
+      handoffId: preview.handoffId,
+      confidence: preview.confidence,
+      sourceWorkspaces: preview.sourceWorkspaces,
+      sourceSessions: preview.sourceSessions,
     });
     const created = await desktop.spawnEmbeddedTerminal(workspace, handoffLaunchOptions(kind, preview.markdown));
     if (created.status === "failed") {
@@ -1207,9 +1230,15 @@ export function App() {
                 onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
                 onLoadAgentTranscript={loadAgentTranscript}
                 onReadAgentTranscript={readAgentTranscript}
+                onLoadWorkspaceSnapshot={loadWorkspaceSnapshot}
                 onSaveHandoff={(preview) => saveHandoffToRecall(preview.markdown, {
                   sourceCount: preview.sourceCount,
                   sourceTitles: preview.sourceTitles,
+                  schemaVersion: preview.schemaVersion,
+                  handoffId: preview.handoffId,
+                  confidence: preview.confidence,
+                  sourceWorkspaces: preview.sourceWorkspaces,
+                  sourceSessions: preview.sourceSessions,
                 })}
                 onStartFreshFromHandoff={startFreshFromHandoff}
               />

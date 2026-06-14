@@ -151,6 +151,8 @@ def create_app(
             project = resolve_project_dir(project_dir)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Project directory does not exist: {project_dir}") from exc
         return _workspace_snapshot(project)
 
     @app.post("/context/bundles")

@@ -446,6 +446,14 @@ def test_workspace_snapshot_reports_non_git_workspace(tmp_path: Path) -> None:
     assert snapshot["git"]["dirty_count"] == 0
 
 
+def test_workspace_snapshot_rejects_missing_directory(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/workspace/snapshot", params={"project_dir": str(tmp_path / "missing")})
+
+    assert response.status_code == 400
+
+
 def test_hermes_recall_mark_used_updates_metadata(tmp_path: Path) -> None:
     client = _client(tmp_path)
     client.post(

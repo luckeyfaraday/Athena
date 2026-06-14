@@ -79,16 +79,16 @@ test("agentConfig codex args inline the prompt via double-quoted command substit
 test("agentConfig claude args include the mcp config flag and quote the prompt path", () => {
   const claude = agentConfig("claude");
   assert.equal(
-    claude.args("/ws", "/tmp/p.md", "bash", "/tmp/mcp.json"),
+    claude.args("/ws", "/tmp/p.md", "bash", { configPath: "/tmp/mcp.json" }),
     `--mcp-config '/tmp/mcp.json' "$(cat '/tmp/p.md')"`,
   );
-  assert.equal(claude.resumeArgs("/ws", "s1", "bash", "/tmp/mcp.json"), `claude --mcp-config '/tmp/mcp.json' --resume 's1'`);
+  assert.equal(claude.resumeArgs("/ws", "s1", "bash", { configPath: "/tmp/mcp.json" }), `claude --mcp-config '/tmp/mcp.json' --resume 's1'`);
 });
 
 test("agentConfig claude args pin a pre-assigned session id ahead of the other flags", () => {
   const claude = agentConfig("claude");
   assert.equal(
-    claude.args("/ws", "/tmp/p.md", "bash", "/tmp/mcp.json", "11111111-2222-3333-4444-555555555555"),
+    claude.args("/ws", "/tmp/p.md", "bash", { configPath: "/tmp/mcp.json" }, "11111111-2222-3333-4444-555555555555"),
     `--session-id '11111111-2222-3333-4444-555555555555' --mcp-config '/tmp/mcp.json' "$(cat '/tmp/p.md')"`,
   );
   assert.equal(
@@ -106,7 +106,7 @@ test("launchCommand for claude threads the new session id through fully quoted",
 });
 
 test("launchCommand without a new session id matches the legacy claude launch", () => {
-  const command = launchCommand("claude", "/home/dev/project", null, "/tmp/mcp.json");
+  const command = launchCommand("claude", "/home/dev/project", null, { configPath: "/tmp/mcp.json" });
   assert.doesNotMatch(command, /--session-id/);
   assert.match(command, /claude --mcp-config '\/tmp\/mcp.json'/);
 });
@@ -119,6 +119,26 @@ test("PowerShell builder splats the new claude session id without string interpo
 
   const withoutId = launchPowerShellCommand("claude", "C:\\ws", null, null);
   assert.doesNotMatch(withoutId, /\$newSessionId = /);
+});
+
+test("agentConfig codex injects MCP servers as quoted -c overrides", () => {
+  const codex = agentConfig("codex");
+  const mcp = {
+    codexConfigArgs: [
+      `mcp_servers.context_workspace.command="python3"`,
+      `mcp_servers.context_workspace.args=["/opt/app/mcp_server/server.py"]`,
+    ],
+  };
+  assert.equal(
+    codex.args("/ws", "/tmp/p.md", "bash", mcp),
+    `-c shell_environment_policy.inherit=all -c 'mcp_servers.context_workspace.command="python3"' -c 'mcp_servers.context_workspace.args=["/opt/app/mcp_server/server.py"]' --cd '/ws' -- "$(cat '/tmp/p.md')"`,
+  );
+  assert.equal(
+    codex.resumeArgs("/ws", "s1", "bash", mcp),
+    `codex -c shell_environment_policy.inherit=all -c 'mcp_servers.context_workspace.command="python3"' -c 'mcp_servers.context_workspace.args=["/opt/app/mcp_server/server.py"]' resume --cd '/ws' 's1'`,
+  );
+  // Without MCP wiring the codex command is byte-for-byte the legacy launch.
+  assert.equal(codex.args("/ws", "/tmp/p.md", "bash"), `-c shell_environment_policy.inherit=all --cd '/ws' -- "$(cat '/tmp/p.md')"`);
 });
 
 test("agentConfig opencode collapses prompt whitespace and quotes the path", () => {
@@ -144,7 +164,17 @@ test("PowerShell builders pass values through quotePowerShell, not raw interpola
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);
   assert.match(command, /Set-Location -LiteralPath \$workspace/);
   // Codex prompt is splatted as an array element ($prompt), never string-built.
-  assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all', '--cd', \$workspace, '--', \$prompt\)/);
+  assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all'\) \+ \$mcpConfigArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);
+  // With no MCP wiring the spliced array is empty.
+  assert.match(command, /\$mcpConfigArgs = @\(\)/);
+});
+
+test("PowerShell codex builder splats MCP -c overrides through a quoted array", () => {
+  const command = launchPowerShellCommand("codex", "C:\\ws", "C:\\tmp\\p.md", {
+    codexConfigArgs: [`mcp_servers.context_workspace.command="python3"`],
+  });
+  // quotePowerShell wraps in single quotes; embedded double quotes stay literal.
+  assert.match(command, /\$mcpConfigArgs = @\('-c', 'mcp_servers.context_workspace.command="python3"'\)/);
 });
 
 test("PowerShell builder escapes embedded double-quotes in the prompt for the native arg hop", () => {

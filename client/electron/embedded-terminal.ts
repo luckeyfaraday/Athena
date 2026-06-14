@@ -7,6 +7,12 @@ import { promisify } from "node:util";
 import { BrowserWindow } from "electron";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import {
+  buildClaudeMcpConfig,
+  buildCodexMcpConfigArgs,
+  buildOpenCodeMcpConfigContent,
+  type AgentMcpLaunch,
+} from "./agent-mcp.js";
+import {
   agentMessageEnvelope,
   createAgentMessage,
   expireInFlightAgentMessages,
@@ -588,9 +594,7 @@ export async function spawnEmbeddedTerminal(
         options.contextText,
         immersiveBundle,
       );
-  const mcpConfigPath = isAgentKind(kind) && backendUrl && controlUrl
-    ? writeMcpConfig(kind, backendUrl, controlUrl)
-    : null;
+  const mcpWiring = resolveAgentMcpWiring(kind, backendUrl, controlUrl);
   // Fresh Claude panes get their session id assigned up front (claude
   // --session-id <uuid>) instead of inferred from session-file mtimes after
   // launch. Inference mis-attached a neighbor pane's session when two panes
@@ -598,7 +602,7 @@ export async function spawnEmbeddedTerminal(
   const assignedSessionId = kind === "claude" && !options.resumeSessionId && !options.providerSessionId
     ? randomUUID()
     : null;
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpConfigPath, assignedSessionId);
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpWiring.launch, assignedSessionId);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId ?? assignedSessionId ?? undefined);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? assignedSessionId : null;
   const restoreEntry: RestorableTerminal = {
@@ -656,6 +660,7 @@ export async function spawnEmbeddedTerminal(
         ...(openCodeBaseline ? { OPENCODE_BIN_PATH: openCodeBaseline } : {}),
         ...(backendUrl ? { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl } : {}),
         ...(controlUrl ? { CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl } : {}),
+        ...mcpWiring.env,
       },
     });
 
@@ -1233,28 +1238,40 @@ function resolveMcpServerPath(): string | null {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-function writeMcpConfig(kind: EmbeddedTerminalKind, backendUrl: string, controlUrl: string): string | null {
+// MCP wiring split: `launch` is threaded into the command builders (Claude's
+// --mcp-config file, Codex's -c overrides), while `env` is merged into the spawn
+// environment (opencode/athena read OPENCODE_CONFIG_CONTENT). Each agent uses
+// exactly one of the two; the other stays empty.
+type AgentMcpWiring = { launch: AgentMcpLaunch | null; env: Record<string, string> };
+
+function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | null, controlUrl: string | null): AgentMcpWiring {
+  const empty: AgentMcpWiring = { launch: null, env: {} };
+  if (!isAgentKind(kind) || !backendUrl || !controlUrl) return empty;
   const serverPath = resolveMcpServerPath();
-  if (!serverPath) return null;
+  if (!serverPath) return empty;
   try {
-    if (kind === "claude") return writeClaudeMcpConfig(backendUrl, controlUrl, serverPath);
+    if (kind === "claude") {
+      return { launch: { configPath: writeClaudeMcpConfigFile(serverPath, backendUrl, controlUrl) }, env: {} };
+    }
+    if (kind === "codex") {
+      return { launch: { codexConfigArgs: buildCodexMcpConfigArgs(serverPath, backendUrl, controlUrl) }, env: {} };
+    }
+    if (kind === "opencode" || kind === "athena") {
+      return { launch: null, env: { OPENCODE_CONFIG_CONTENT: buildOpenCodeMcpConfigContent(serverPath, backendUrl, controlUrl) } };
+    }
+    // Hermes is intentionally unwired: the context_workspace server proxies into
+    // the backend (i.e. Hermes itself), so its memory/ask tools would be circular.
+    // Hermes also registers MCP servers persistently via `hermes mcp add` rather
+    // than through an ephemeral per-launch flag, and bypasses the agentConfig path.
   } catch {
-    // Non-fatal: agent launches without MCP wiring if config write fails.
+    // Non-fatal: agent launches without MCP wiring if config generation fails.
   }
-  return null;
+  return empty;
 }
 
-function writeClaudeMcpConfig(backendUrl: string, controlUrl: string, serverPath: string): string {
+function writeClaudeMcpConfigFile(serverPath: string, backendUrl: string, controlUrl: string): string {
   const configPath = path.join(tempWorkspaceDirectory(), `athena-claude-mcp-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
-  const config = {
-    mcpServers: {
-      context_workspace: {
-        command: "python3",
-        args: [serverPath],
-        env: { CONTEXT_WORKSPACE_BACKEND_URL: backendUrl, CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl },
-      },
-    },
-  };
+  const config = buildClaudeMcpConfig(serverPath, backendUrl, controlUrl);
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: "utf8", mode: 0o600 });
   return configPath;
 }

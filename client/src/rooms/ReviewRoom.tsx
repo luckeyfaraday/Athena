@@ -10,15 +10,18 @@ import {
   type AgentTranscriptState,
   type HandoffPreview,
 } from "../session-utils";
+import { normalizeWorkspaceKey } from "../workspace-utils";
 
 const inspectorBufferTailChars = 80_000;
 const inspectorBufferFlushMs = 120;
+const visibleHandoffSourceLimit = 60;
 
 type HandoffSourceProvider = EmbeddedTerminalKind | AgentSession["provider"];
 
 type HandoffSessionSource =
   | {
       key: string;
+      selectionKey: string;
       kind: "embedded";
       title: string;
       label: string;
@@ -30,6 +33,7 @@ type HandoffSessionSource =
     }
   | {
       key: string;
+      selectionKey: string;
       kind: "native";
       title: string;
       label: string;
@@ -96,33 +100,43 @@ export function ReviewRoom({
   const [handoffError, setHandoffError] = useState<string | null>(null);
   const [handoffSavedAt, setHandoffSavedAt] = useState<string | null>(null);
   const [handoffProviderTab, setHandoffProviderTab] = useState<HandoffSourceProvider | "all">("all");
+  const [handoffWorkspaceTab, setHandoffWorkspaceTab] = useState("all");
+  const [handoffQuery, setHandoffQuery] = useState("");
   const selectedLabel = selectedEmbeddedSession?.title ?? selectedAgentSession?.title ?? "No session selected";
   const liveAgentSessions = embeddedSessions.filter((session) => session.kind !== "shell" && session.status === "running");
   const historicalAgentSessions = agentSessions.filter((session) => session.status === "historical");
   const handoffSources = useMemo<HandoffSessionSource[]>(
     () => [
-      ...embeddedSessions.map((session) => ({
-        key: embeddedSessionKey(session),
-        kind: "embedded" as const,
-        title: session.title,
-        label: `embedded ${session.kind}`,
-        status: session.status,
-        id: session.id,
-        workspace: session.workspace,
-        session,
-        provider: session.kind,
-      })),
-      ...agentSessions.map((session) => ({
-        key: selectedAgentSessionKey(session),
-        kind: "native" as const,
-        title: session.title,
-        label: `native ${providerLabel(session.provider)}`,
-        status: session.status,
-        id: session.id,
-        workspace: session.workspace,
-        session,
-        provider: session.provider,
-      })),
+      ...embeddedSessions.map((session) => {
+        const selectionKey = embeddedSessionKey(session);
+        return {
+          key: handoffSourceKey(session.workspace, selectionKey),
+          selectionKey,
+          kind: "embedded" as const,
+          title: session.title,
+          label: `embedded ${session.kind}`,
+          status: session.status,
+          id: session.id,
+          workspace: session.workspace,
+          session,
+          provider: session.kind,
+        };
+      }),
+      ...agentSessions.map((session) => {
+        const selectionKey = selectedAgentSessionKey(session);
+        return {
+          key: handoffSourceKey(session.workspace, selectionKey),
+          selectionKey,
+          kind: "native" as const,
+          title: session.title,
+          label: `native ${providerLabel(session.provider)}`,
+          status: session.status,
+          id: session.id,
+          workspace: session.workspace,
+          session,
+          provider: session.provider,
+        };
+      }),
     ],
     [agentSessions, embeddedSessions],
   );
@@ -131,7 +145,7 @@ export function ReviewRoom({
     for (const source of handoffSources) {
       counts.set(source.provider, (counts.get(source.provider) ?? 0) + 1);
     }
-    return (["all", "codex", "opencode", "claude", "hermes", "shell"] as (HandoffSourceProvider | "all")[])
+    return (["all", "codex", "opencode", "athena", "claude", "hermes", "shell"] as (HandoffSourceProvider | "all")[])
       .filter((provider) => provider === "all" || (counts.get(provider) ?? 0) > 0)
       .map((provider) => ({
         provider,
@@ -139,12 +153,35 @@ export function ReviewRoom({
         count: counts.get(provider) ?? 0,
       }));
   }, [handoffSources]);
-  const visibleHandoffSources = handoffProviderTab === "all"
-    ? handoffSources
-    : handoffSources.filter((source) => source.provider === handoffProviderTab);
+  const handoffWorkspaceTabs = useMemo(() => {
+    const counts = new Map<string, { workspace: string; count: number }>();
+    for (const source of handoffSources) {
+      const key = sourceWorkspaceKey(source.workspace);
+      const current = counts.get(key);
+      counts.set(key, { workspace: current?.workspace ?? source.workspace, count: (current?.count ?? 0) + 1 });
+    }
+    return [
+      { key: "all", label: "All workspaces", workspace: "", count: handoffSources.length },
+      ...Array.from(counts.entries())
+        .sort((left, right) => right[1].count - left[1].count || workspaceLabel(left[1].workspace).localeCompare(workspaceLabel(right[1].workspace)))
+        .map(([key, value]) => ({ key, label: workspaceLabel(value.workspace), workspace: value.workspace, count: value.count })),
+    ];
+  }, [handoffSources]);
+  const normalizedHandoffQuery = handoffQuery.trim().toLowerCase();
+  const visibleHandoffSources = handoffSources.filter((source) => {
+    if (handoffProviderTab !== "all" && source.provider !== handoffProviderTab) return false;
+    if (handoffWorkspaceTab !== "all" && sourceWorkspaceKey(source.workspace) !== handoffWorkspaceTab) return false;
+    if (!normalizedHandoffQuery) return true;
+    return [source.title, source.label, source.status, source.id, source.workspace, source.provider]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalizedHandoffQuery);
+  });
+  const hiddenHandoffSourceCount = Math.max(0, visibleHandoffSources.length - visibleHandoffSourceLimit);
   const selectedHandoffSources = handoffSelection.size > 0
     ? handoffSources.filter((source) => handoffSelection.has(source.key))
-    : handoffSources.filter((source) => source.key === selectedSessionKey);
+    : handoffSources.filter((source) => source.selectionKey === selectedSessionKey);
+  const selectedHandoffWorkspaceCount = new Set(selectedHandoffSources.map((source) => sourceWorkspaceKey(source.workspace))).size;
   const selectedHandoffSignature = selectedHandoffSources
     .map((source) => `${source.key}:${source.status}:${source.workspace}`)
     .sort()
@@ -164,6 +201,12 @@ export function ReviewRoom({
     if (handoffSources.some((source) => source.provider === handoffProviderTab)) return;
     setHandoffProviderTab("all");
   }, [handoffProviderTab, handoffSources]);
+
+  useEffect(() => {
+    if (handoffWorkspaceTab === "all") return;
+    if (handoffSources.some((source) => sourceWorkspaceKey(source.workspace) === handoffWorkspaceTab)) return;
+    setHandoffWorkspaceTab("all");
+  }, [handoffWorkspaceTab, handoffSources]);
 
   useEffect(() => {
     setHandoffPreview(null);
@@ -199,7 +242,7 @@ export function ReviewRoom({
         markdown,
         bytes: byteLength(markdown),
         sourceCount: evidence.length,
-        sourceTitles: evidence.map((source) => source.title),
+        sourceTitles: evidence.map((source) => `${source.title} (${workspaceLabel(source.workspace)})`),
         workspace,
       });
     } catch (err) {
@@ -243,7 +286,7 @@ export function ReviewRoom({
         <div>
           <span className="tinyLabel">Session review</span>
           <h3>{selectedLabel}</h3>
-          <p>Inspect live buffers, prompt paths, provider session IDs, and native metadata.</p>
+          <p>Inspect live buffers, native history, and source evidence across open workspaces before creating a handoff.</p>
         </div>
         <div className={liveAgentSessions.length ? "decisionBadge ship" : historicalAgentSessions.length ? "decisionBadge idle" : "decisionBadge risk"}>
           {liveAgentSessions.length ? <Activity size={20} /> : historicalAgentSessions.length ? <Code2 size={20} /> : <XCircle size={20} />}
@@ -254,14 +297,18 @@ export function ReviewRoom({
       <div className="reviewColumns">
         <ReviewCard title="Live buffers" icon={<TerminalSquare size={17} />} items={[`${embeddedSessions.length} embedded terminals`, `${liveAgentSessions.length} live agent panes`, "Terminal output captured from panes"]} />
         <ReviewCard title="Native history" icon={<Code2 size={17} />} items={[`${historicalAgentSessions.length} historical sessions`, "Provider metadata", "Transcript reads when available"]} />
-        <ReviewCard title="Inspector scope" icon={<Play size={17} />} items={["Inspect live pane output", "Inspect provider metadata", "Read native transcripts"]} />
+        <ReviewCard title="Handoff scope" icon={<Play size={17} />} items={[`${Math.max(0, handoffWorkspaceTabs.length - 1)} workspaces in review`, "Cross-workspace evidence basket", "Active workspace is the launch target"]} />
       </div>
 
       <section className="handoffPanel">
         <div className="handoffPanelHeader">
           <div>
             <span className="tinyLabel">Session continuity</span>
-            <strong>{selectedHandoffSources.length ? `${selectedHandoffSources.length} selected` : "Select sessions for handoff"}</strong>
+            <strong>
+              {selectedHandoffSources.length
+                ? `${selectedHandoffSources.length} selected across ${selectedHandoffWorkspaceCount} workspace${selectedHandoffWorkspaceCount === 1 ? "" : "s"}`
+                : "Select sessions for handoff"}
+            </strong>
           </div>
           <div className="sessionInspectorActions">
             <button type="button" className="ghostButton" onClick={() => void createHandoffPreview()} disabled={!canCreateHandoff}>
@@ -272,7 +319,7 @@ export function ReviewRoom({
             </button>
           </div>
         </div>
-        <p>Bounded handoff preview for the active workspace.</p>
+        <p>Build a bounded handoff from selected sources across workspaces. Save and launch still target the active workspace: {workspace || "none"}.</p>
         <div className="handoffProviderTabs" aria-label="Handoff source providers">
           {handoffProviderTabs.map((tab) => (
             <button
@@ -286,9 +333,45 @@ export function ReviewRoom({
             </button>
           ))}
         </div>
+        <div className="handoffWorkspaceTabs" aria-label="Handoff source workspaces">
+          {handoffWorkspaceTabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              className={handoffWorkspaceTab === tab.key ? "active" : ""}
+              title={tab.workspace || "All workspaces"}
+              onClick={() => setHandoffWorkspaceTab(tab.key)}
+            >
+              {tab.label}
+              <span>{tab.count}</span>
+            </button>
+          ))}
+        </div>
+        <div className="handoffFilters">
+          <input
+            type="search"
+            value={handoffQuery}
+            placeholder="Search title, workspace, provider, status"
+            aria-label="Search handoff sources"
+            onChange={(event) => setHandoffQuery(event.target.value)}
+          />
+          <button
+            type="button"
+            className="ghostButton"
+            onClick={() => {
+              setHandoffSelection(new Set());
+              setHandoffPreview(null);
+              setHandoffError(null);
+              setHandoffSavedAt(null);
+            }}
+            disabled={handoffSelection.size === 0}
+          >
+            Clear basket
+          </button>
+        </div>
         <div className="handoffSourcePicker" aria-label="Handoff sources">
-          {visibleHandoffSources.slice(0, 12).map((source) => {
-            const selected = handoffSelection.has(source.key) || (handoffSelection.size === 0 && selectedSessionKey === source.key);
+          {visibleHandoffSources.slice(0, visibleHandoffSourceLimit).map((source) => {
+            const selected = handoffSelection.has(source.key) || (handoffSelection.size === 0 && selectedSessionKey === source.selectionKey);
             return (
               <button
                 key={source.key}
@@ -299,18 +382,31 @@ export function ReviewRoom({
                 {selected ? <CheckCircle2 size={13} /> : <span />}
                 <strong>{source.title}</strong>
                 <em>{source.label}</em>
+                <small>{workspaceLabel(source.workspace)}</small>
               </button>
             );
           })}
           {handoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions available for handoff.</span>}
-          {handoffSources.length > 0 && visibleHandoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions for this provider.</span>}
+          {handoffSources.length > 0 && visibleHandoffSources.length === 0 && <span className="handoffSourceEmpty">No sessions match these filters.</span>}
+          {hiddenHandoffSourceCount > 0 && <span className="handoffSourceEmpty">{hiddenHandoffSourceCount} more sources hidden. Refine the search or workspace filter.</span>}
         </div>
+        {selectedHandoffSources.length > 0 && (
+          <div className="handoffSelectionBasket" aria-label="Selected handoff sources">
+            {selectedHandoffSources.map((source) => (
+              <button key={source.key} type="button" onClick={() => toggleHandoffSource(source.key)} title={`Remove ${source.title}`}>
+                <strong>{source.title}</strong>
+                <span>{workspaceLabel(source.workspace)}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {handoffError && <p className="handoffError">{handoffError}</p>}
         {handoffSavedAt && <p className="handoffSaved">Saved to recall at {handoffSavedAt}</p>}
         {handoffPreview && (
           <div className="handoffPreview">
             <div>
               <span>{handoffPreview.sourceCount} sources</span>
+              <span>{selectedHandoffWorkspaceCount} workspaces</span>
               <span>{handoffPreview.bytes} bytes</span>
               <span>{handoffPreview.workspace}</span>
             </div>
@@ -331,76 +427,86 @@ export function ReviewRoom({
       </section>
 
       <div className="sessionReviewList">
-        {embeddedSessions.map((session) => (
-          <article
-            key={embeddedSessionKey(session)}
-            className={selectedSessionKey === embeddedSessionKey(session) || handoffSelection.has(embeddedSessionKey(session)) ? "selected" : ""}
-            onClick={() => onSelectEmbeddedSession(session)}
-          >
-            <button
-              type="button"
-              className={handoffSelection.has(embeddedSessionKey(session)) ? "handoffSelectButton selected" : "handoffSelectButton"}
-              aria-pressed={handoffSelection.has(embeddedSessionKey(session))}
-              onClick={(event) => {
-                event.stopPropagation();
-                toggleHandoffSource(embeddedSessionKey(session));
-              }}
+        {embeddedSessions.map((session) => {
+          const selectionKey = embeddedSessionKey(session);
+          const handoffKey = handoffSourceKey(session.workspace, selectionKey);
+          const included = handoffSelection.has(handoffKey);
+          return (
+            <article
+              key={handoffKey}
+              className={selectedSessionKey === selectionKey || included ? "selected" : ""}
+              onClick={() => onSelectEmbeddedSession(session)}
             >
-              {handoffSelection.has(embeddedSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
-              {handoffSelection.has(embeddedSessionKey(session)) ? "Selected" : "Include"}
-            </button>
-            <StatusDot status={embeddedSessionDotStatus(session.status)} />
-            <div>
-              <strong>{session.title}</strong>
-              <span>{session.kind} · {session.status}{session.promptPath ? " · prompt attached" : ""}</span>
-            </div>
-            <em>{session.pid ? `pid ${session.pid}` : "no pid"}</em>
-            <button type="button" className="ghostIconButton" onClick={(event) => {
-              event.stopPropagation();
-              onSelectEmbeddedSession(session);
-            }}>
-              <FileText size={14} />
-            </button>
-          </article>
-        ))}
-        {agentSessions.slice(0, 8).map((session) => (
-          <article
-            key={selectedAgentSessionKey(session)}
-            className={selectedSessionKey === selectedAgentSessionKey(session) || handoffSelection.has(selectedAgentSessionKey(session)) ? "selected" : ""}
-            onClick={() => onSelectAgentSession(session)}
-          >
-            <button
-              type="button"
-              className={handoffSelection.has(selectedAgentSessionKey(session)) ? "handoffSelectButton selected" : "handoffSelectButton"}
-              aria-pressed={handoffSelection.has(selectedAgentSessionKey(session))}
-              onClick={(event) => {
+              <button
+                type="button"
+                className={included ? "handoffSelectButton selected" : "handoffSelectButton"}
+                aria-pressed={included}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleHandoffSource(handoffKey);
+                }}
+              >
+                {included ? <CheckCircle2 size={14} /> : <span />}
+                {included ? "Selected" : "Include"}
+              </button>
+              <StatusDot status={embeddedSessionDotStatus(session.status)} />
+              <div>
+                <strong>{session.title}</strong>
+                <span>{session.kind} · {workspaceLabel(session.workspace)} · {session.status}{session.promptPath ? " · prompt attached" : ""}</span>
+              </div>
+              <em>{session.pid ? `pid ${session.pid}` : "no pid"}</em>
+              <button type="button" className="ghostIconButton" onClick={(event) => {
                 event.stopPropagation();
-                toggleHandoffSource(selectedAgentSessionKey(session));
-              }}
+                onSelectEmbeddedSession(session);
+              }}>
+                <FileText size={14} />
+              </button>
+            </article>
+          );
+        })}
+        {agentSessions.map((session) => {
+          const selectionKey = selectedAgentSessionKey(session);
+          const handoffKey = handoffSourceKey(session.workspace, selectionKey);
+          const included = handoffSelection.has(handoffKey);
+          return (
+            <article
+              key={handoffKey}
+              className={selectedSessionKey === selectionKey || included ? "selected" : ""}
+              onClick={() => onSelectAgentSession(session)}
             >
-              {handoffSelection.has(selectedAgentSessionKey(session)) ? <CheckCircle2 size={14} /> : <span />}
-              {handoffSelection.has(selectedAgentSessionKey(session)) ? "Selected" : "Include"}
-            </button>
-            <StatusDot status={agentSessionDotStatus(session.status)} />
-            <div>
-              <strong>{session.title}</strong>
-              <span>{providerLabel(session.provider)} · {session.id}</span>
-            </div>
-            <em>{session.status}</em>
-            <button type="button" className="ghostIconButton" onClick={(event) => {
-              event.stopPropagation();
-              onSelectAgentSession(session);
-            }}>
-              <FileText size={14} />
-            </button>
-            <button type="button" className="ghostIconButton" onClick={(event) => {
-              event.stopPropagation();
-              void onLoadAgentTranscript(session);
-            }}>
-              <ScrollText size={14} />
-            </button>
-          </article>
-        ))}
+              <button
+                type="button"
+                className={included ? "handoffSelectButton selected" : "handoffSelectButton"}
+                aria-pressed={included}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleHandoffSource(handoffKey);
+                }}
+              >
+                {included ? <CheckCircle2 size={14} /> : <span />}
+                {included ? "Selected" : "Include"}
+              </button>
+              <StatusDot status={agentSessionDotStatus(session.status)} />
+              <div>
+                <strong>{session.title}</strong>
+                <span>{providerLabel(session.provider)} · {workspaceLabel(session.workspace)} · {session.id}</span>
+              </div>
+              <em>{session.status}</em>
+              <button type="button" className="ghostIconButton" onClick={(event) => {
+                event.stopPropagation();
+                onSelectAgentSession(session);
+              }}>
+                <FileText size={14} />
+              </button>
+              <button type="button" className="ghostIconButton" onClick={(event) => {
+                event.stopPropagation();
+                void onLoadAgentTranscript(session);
+              }}>
+                <ScrollText size={14} />
+              </button>
+            </article>
+          );
+        })}
         {embeddedSessions.length === 0 && agentSessions.length === 0 && <p>No sessions yet. Launch an embedded agent or resume a native session from the Command Room.</p>}
       </div>
       <SessionInspector embeddedSession={selectedEmbeddedSession} agentSession={selectedAgentSession} agentTranscript={agentTranscript} onLoadAgentTranscript={onLoadAgentTranscript} />
@@ -616,15 +722,23 @@ async function loadHandoffEvidence(source: HandoffSessionSource, readAgentTransc
   }
 }
 
-function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): string {
+function buildHandoffMarkdown(targetWorkspace: string, sources: HandoffEvidence[]): string {
   const generated = new Date().toISOString();
   const usableSources = sources.filter((source) => source.usable);
   const unusableSources = sources.filter((source) => !source.usable);
   const combined = combineHandoffAnalyses(usableSources.map((source) => source.analysis));
+  const sourceWorkspaces = uniqueSourceWorkspaces(sources);
+  const workspaceMap = sourceWorkspaces
+    .map((sourceWorkspace) => {
+      const count = sources.filter((source) => sourceWorkspaceKey(source.workspace) === sourceWorkspaceKey(sourceWorkspace)).length;
+      const targetMarker = sourceWorkspaceKey(sourceWorkspace) === sourceWorkspaceKey(targetWorkspace) ? " target" : "";
+      return `- ${workspaceLabel(sourceWorkspace)}${targetMarker}: ${sourceWorkspace} (${count} source${count === 1 ? "" : "s"})`;
+    })
+    .join("\n");
   const selectedSessions = sources
     .map((source) => {
       const score = source.analysis.score ? `, evidence score ${source.analysis.score}` : "";
-      return `- ${source.label}: ${source.title} (${source.status}, ${source.id}${score})${source.usable ? "" : " - no usable evidence"}`;
+      return `- [${workspaceLabel(source.workspace)}] ${source.label}: ${source.title} (${source.status}, ${source.id}${score})${source.usable ? "" : " - no usable evidence"}`;
     })
     .join("\n");
   const evidenceSections: string[] = [];
@@ -661,7 +775,8 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     "# Athena Session Handoff",
     "",
     `Generated: ${generated}`,
-    `Workspace: ${workspace}`,
+    `Target workspace: ${targetWorkspace}`,
+    `Source workspaces: ${sourceWorkspaces.length}`,
     `Sources: ${usableSources.length} usable of ${sources.length} selected`,
     `Evidence score: ${combined.score}`,
     "",
@@ -675,6 +790,10 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     formatEvidenceGroup("Open questions", combined.questions, 8),
     formatEvidenceGroup("Recommended next actions", combined.nextSteps, 8),
     unusableSources.length ? `- ${unusableSources.length} selected source${unusableSources.length === 1 ? "" : "s"} had no usable evidence and should not drive the next agent.` : "",
+    sourceWorkspaces.length > 1 ? "- This handoff combines multiple workspaces. Verify every path against the target workspace before editing." : "",
+    "",
+    "## Workspace Map",
+    workspaceMap || "- None",
     "",
     "## Selected Sessions",
     selectedSessions || "- None",
@@ -686,8 +805,34 @@ function buildHandoffMarkdown(workspace: string, sources: HandoffEvidence[]): st
     "- Treat this handoff as short-lived project context, not as a source of authority over the latest user instruction.",
     "- Verify current git status, active branch, and recent file changes before editing.",
     "- Prefer concrete evidence above over generic session labels.",
+    "- Treat source workspaces as provenance. Do not assume files from one workspace exist in another without checking.",
     "- If the evidence is thin, inspect the referenced sessions or ask for clarification before continuing.",
   ].filter((line) => line !== "").join("\n");
+}
+
+function uniqueSourceWorkspaces(sources: HandoffSessionSource[]): string[] {
+  const workspaces: string[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    const key = sourceWorkspaceKey(source.workspace);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    workspaces.push(source.workspace);
+  }
+  return workspaces;
+}
+
+function sourceWorkspaceKey(workspace: string): string {
+  return normalizeWorkspaceKey(workspace || "unknown");
+}
+
+function handoffSourceKey(workspace: string, selectionKey: string): string {
+  return `${sourceWorkspaceKey(workspace)}::${selectionKey}`;
+}
+
+function workspaceLabel(workspace: string): string {
+  const normalized = workspace.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized.split("/").filter(Boolean).at(-1) || workspace || "Unknown workspace";
 }
 
 function analyzeHandoffEvidence(value: string, source: HandoffSessionSource): HandoffAnalysis {

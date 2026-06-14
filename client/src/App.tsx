@@ -231,7 +231,7 @@ export function App() {
   const [state, setState] = useState<LoadState>(emptyLoadState);
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
   const [workspaceAttention, setWorkspaceAttention] = useState<Record<string, WorkspaceAttention>>({});
-  const [agentSessions, setAgentSessions] = useState<AgentSession[]>([]);
+  const [agentSessionsByWorkspace, setAgentSessionsByWorkspace] = useState<Record<string, AgentSession[]>>({});
   const [sessionRenames, setSessionRenames] = useState<Record<string, string>>(() => readRenamedSessions(workspace));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -250,8 +250,8 @@ export function App() {
   const [restoreRequest, setRestoreRequest] = useState<{ workspaceKey: string; nonce: number } | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
-  const agentSessionsRefreshInFlight = useRef<string | null>(null);
-  const agentSessionsLastRefreshAt = useRef(0);
+  const agentSessionsRefreshInFlight = useRef<Set<string>>(new Set());
+  const agentSessionsLastRefreshAt = useRef<Map<string, number>>(new Map());
   const activeWorkspaceRef = useRef("");
   const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
@@ -305,6 +305,28 @@ export function App() {
     return backend?.healthy && backend.baseUrl ? new BackendClient(backend.baseUrl) : null;
   }, [backend?.baseUrl, backend?.healthy]);
 
+  const agentSessions = useMemo(() => {
+    return agentSessionsByWorkspace[normalizeWorkspaceKey(workspace)] ?? [];
+  }, [agentSessionsByWorkspace, workspace]);
+
+  const reviewAgentSessions = useMemo(() => {
+    const orderedKeys = new Set<string>();
+    if (workspace) orderedKeys.add(normalizeWorkspaceKey(workspace));
+    for (const tab of workspaceTabs) orderedKeys.add(workspaceKey(tab));
+    for (const key of Object.keys(agentSessionsByWorkspace)) orderedKeys.add(key);
+    const sessions: AgentSession[] = [];
+    const seen = new Set<string>();
+    for (const key of orderedKeys) {
+      for (const session of agentSessionsByWorkspace[key] ?? []) {
+        const sessionKey = `${normalizeWorkspaceKey(session.workspace)}:${selectedAgentSessionKey(session)}`;
+        if (seen.has(sessionKey)) continue;
+        seen.add(sessionKey);
+        sessions.push(session);
+      }
+    }
+    return sessions;
+  }, [agentSessionsByWorkspace, workspace, workspaceTabs]);
+
   const refreshBackend = useCallback(async () => {
     if (backendRefreshInFlight.current) return null;
     backendRefreshInFlight.current = true;
@@ -349,29 +371,31 @@ export function App() {
     setError(null);
   }
 
-  const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {
-    if (!workspace) {
-      setAgentSessions([]);
-      return;
-    }
-    const requestedWorkspace = workspace;
+  const refreshWorkspaceAgentSessions = useCallback(async (targetWorkspace: string, options: { force?: boolean } = {}) => {
+    if (!targetWorkspace) return;
+    const requestedWorkspace = targetWorkspace;
     const requestedWorkspaceKey = normalizeWorkspaceKey(requestedWorkspace);
-    if (agentSessionsRefreshInFlight.current === requestedWorkspaceKey) return;
+    if (agentSessionsRefreshInFlight.current.has(requestedWorkspaceKey)) return;
     const now = Date.now();
-    if (!options.force && now - agentSessionsLastRefreshAt.current < nativeSessionRefreshIntervalMs) return;
-    agentSessionsLastRefreshAt.current = now;
-    agentSessionsRefreshInFlight.current = requestedWorkspaceKey;
+    const lastRefreshAt = agentSessionsLastRefreshAt.current.get(requestedWorkspaceKey) ?? 0;
+    if (!options.force && now - lastRefreshAt < nativeSessionRefreshIntervalMs) return;
+    agentSessionsLastRefreshAt.current.set(requestedWorkspaceKey, now);
+    agentSessionsRefreshInFlight.current.add(requestedWorkspaceKey);
     try {
-      const sessions = applyAgentSessionRenames(await desktop.listAgentSessions(requestedWorkspace), sessionRenames);
-      if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) {
-        setAgentSessions(sessions);
-      }
+      const renames = sameWorkspacePath(requestedWorkspace, workspace) ? sessionRenames : readRenamedSessions(requestedWorkspace);
+      const sessions = applyAgentSessionRenames(await desktop.listAgentSessions(requestedWorkspace), renames);
+      setAgentSessionsByWorkspace((current) => ({ ...current, [requestedWorkspaceKey]: sessions }));
     } catch (err) {
       if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) setError(String(err));
     } finally {
-      if (agentSessionsRefreshInFlight.current === requestedWorkspaceKey) agentSessionsRefreshInFlight.current = null;
+      agentSessionsRefreshInFlight.current.delete(requestedWorkspaceKey);
     }
   }, [sessionRenames, workspace]);
+
+  const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {
+    if (!workspace) return;
+    await refreshWorkspaceAgentSessions(workspace, options);
+  }, [refreshWorkspaceAgentSessions, workspace]);
 
   const refreshPerformanceDiagnostics = useCallback(async () => {
     try {
@@ -536,6 +560,12 @@ export function App() {
   }, [refreshAgentSessions, embeddedSessions]);
 
   useEffect(() => {
+    const workspaces = new Set(workspaceTabs.map((tab) => tab.nativePath).filter(Boolean));
+    if (workspace) workspaces.add(workspace);
+    for (const reviewWorkspace of workspaces) void refreshWorkspaceAgentSessions(reviewWorkspace);
+  }, [embeddedSessions, refreshWorkspaceAgentSessions, workspace, workspaceTabs]);
+
+  useEffect(() => {
     embeddedSessionsRef.current = embeddedSessions;
   }, [embeddedSessions]);
 
@@ -545,8 +575,7 @@ export function App() {
     const nextRenames = readRenamedSessions(workspace);
     setSessionRenames(nextRenames);
     setEmbeddedSessions((current) => applyEmbeddedSessionRenames(current, nextRenames));
-    setAgentSessions([]);
-    agentSessionsLastRefreshAt.current = 0;
+    if (workspace) agentSessionsLastRefreshAt.current.set(normalizeWorkspaceKey(workspace), 0);
   }, [workspace]);
 
   useEffect(() => {
@@ -669,7 +698,6 @@ export function App() {
     setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
     clearWorkspaceAttention(nextWorkspace);
     setSelectedSessionKey(null);
-    setAgentSessions([]);
     setState((current) => ({ ...current, recall: null }));
     if (options.restoreTerminals !== false) {
       setRestoreRequest({ workspaceKey: workspaceKey(nextWorkspace), nonce: Date.now() });
@@ -691,13 +719,18 @@ export function App() {
         if (failure) setError(String(failure.reason));
       });
     }
+    setAgentSessionsByWorkspace((current) => {
+      if (!current[key]) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
     setWorkspaceTabs((current) => {
       const next = current.filter((item) => workspaceKey(item) !== key);
       if (workspacePath && workspaceKey(workspacePath) === key) {
         const replacement = next[0] ?? null;
         setWorkspacePath(replacement);
         setSelectedSessionKey(null);
-        setAgentSessions([]);
         setState((currentState) => ({ ...currentState, recall: null }));
       }
       return next;
@@ -844,10 +877,18 @@ export function App() {
     const nextTitle = window.prompt("Rename session", session.title)?.trim();
     if (!nextTitle || nextTitle === session.title) return;
     const key = selectedAgentSessionKey(session);
-    const nextRenames = { ...sessionRenames, [key]: nextTitle };
-    setSessionRenames(nextRenames);
-    writeRenamedSessions(workspace, nextRenames);
-    setAgentSessions((current) => current.map((item) => selectedAgentSessionKey(item) === key ? { ...item, title: nextTitle } : item));
+    const renameWorkspace = session.workspace || workspace;
+    const existingRenames = sameWorkspacePath(renameWorkspace, workspace) ? sessionRenames : readRenamedSessions(renameWorkspace);
+    const nextRenames = { ...existingRenames, [key]: nextTitle };
+    if (sameWorkspacePath(renameWorkspace, workspace)) setSessionRenames(nextRenames);
+    writeRenamedSessions(renameWorkspace, nextRenames);
+    setAgentSessionsByWorkspace((current) => {
+      const workspaceKey = normalizeWorkspaceKey(renameWorkspace);
+      return {
+        ...current,
+        [workspaceKey]: (current[workspaceKey] ?? []).map((item) => selectedAgentSessionKey(item) === key ? { ...item, title: nextTitle } : item),
+      };
+    });
   }
 
   async function broadcastPromptToAgents(prompt: string, sessionIds: string[]) {
@@ -943,13 +984,13 @@ export function App() {
     () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
     [embeddedSessions, workspace],
   );
-  const selectedEmbeddedSession = activeEmbeddedSessions.find((session) => embeddedSessionKey(session) === selectedSessionKey) ?? null;
-  const selectedAgentSession = agentSessions.find((session) => selectedAgentSessionKey(session) === selectedSessionKey) ?? null;
+  const selectedEmbeddedSession = embeddedSessions.find((session) => embeddedSessionKey(session) === selectedSessionKey) ?? null;
+  const selectedAgentSession = reviewAgentSessions.find((session) => selectedAgentSessionKey(session) === selectedSessionKey) ?? null;
   const memoryEntries = [...state.memory].reverse();
   const codexInstalled = Boolean(state.adapters.codex?.installed);
   const installedAdapters = Object.values(state.adapters).filter((adapter) => adapter.installed).length;
   const liveSessionCount = activeEmbeddedSessions.filter((session) => session.status === "running").length;
-  const reviewSessionCount = activeEmbeddedSessions.length + agentSessions.length;
+  const reviewSessionCount = embeddedSessions.length + reviewAgentSessions.length;
   const activeRoute = roomRouteById[activeRoom];
   const workspaceSummaries = useMemo<WorkspaceSummary[]>(() => {
     return workspaceTabs.map((tab) => {
@@ -1155,8 +1196,8 @@ export function App() {
             )}
             {activeRoom === "review" && (
               <ReviewRoom
-                embeddedSessions={activeEmbeddedSessions}
-                agentSessions={agentSessions}
+                embeddedSessions={embeddedSessions}
+                agentSessions={reviewAgentSessions}
                 selectedEmbeddedSession={selectedEmbeddedSession}
                 selectedAgentSession={selectedAgentSession}
                 selectedSessionKey={selectedSessionKey}

@@ -2236,7 +2236,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .handoffPanel .handoffSaved {
   color: var(--green);
 }
-.handoffProviderTabs {
+.handoffProviderTabs,
+.handoffWorkspaceTabs {
   margin-top: 10px;
   padding: 3px;
   display: inline-flex;
@@ -2247,7 +2248,11 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 7px;
   background: #061a15;
 }
-.handoffProviderTabs button {
+.handoffWorkspaceTabs {
+  display: flex;
+}
+.handoffProviderTabs button,
+.handoffWorkspaceTabs button {
   height: 28px;
   padding: 0 9px;
   display: inline-flex;
@@ -2261,11 +2266,13 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-weight: 800;
   white-space: nowrap;
 }
-.handoffProviderTabs button.active {
+.handoffProviderTabs button.active,
+.handoffWorkspaceTabs button.active {
   background: rgba(217,196,138,.14);
   color: var(--gold);
 }
-.handoffProviderTabs button span {
+.handoffProviderTabs button span,
+.handoffWorkspaceTabs button span {
   min-width: 17px;
   height: 17px;
   display: inline-grid;
@@ -2274,6 +2281,27 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   background: rgba(226,214,183,.1);
   color: var(--muted);
   font-size: 9px;
+}
+.handoffFilters {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.handoffFilters input {
+  min-width: 0;
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid rgba(226,214,183,.14);
+  border-radius: 6px;
+  background: rgba(0,0,0,.18);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+.handoffFilters input::placeholder {
+  color: var(--muted);
 }
 .handoffSourcePicker {
   margin-top: 10px;
@@ -2287,7 +2315,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   padding: 8px 10px;
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   align-items: center;
   column-gap: 8px;
   border: 1px solid var(--line);
@@ -2298,7 +2326,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 }
 .handoffSourceChip > svg,
 .handoffSourceChip > span {
-  grid-row: 1 / span 2;
+  grid-row: 1 / span 3;
 }
 .handoffSourceChip > span {
   width: 14px;
@@ -2307,7 +2335,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-radius: 3px;
 }
 .handoffSourceChip strong,
-.handoffSourceChip em {
+.handoffSourceChip em,
+.handoffSourceChip small {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2323,6 +2352,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   font-weight: 800;
   text-transform: uppercase;
 }
+.handoffSourceChip small {
+  color: var(--muted);
+  font-size: 9px;
+}
 .handoffSourceChip.selected {
   border-color: rgba(217,196,138,.62);
   background: rgba(217,196,138,.15);
@@ -2331,6 +2364,37 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .handoffSourceEmpty {
   color: var(--muted);
   font-size: 11px;
+}
+.handoffSelectionBasket {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.handoffSelectionBasket button {
+  max-width: 260px;
+  padding: 7px 9px;
+  display: inline-grid;
+  gap: 2px;
+  border: 1px solid rgba(217,196,138,.35);
+  border-radius: 999px;
+  background: rgba(217,196,138,.1);
+  color: var(--gold);
+  text-align: left;
+}
+.handoffSelectionBasket strong,
+.handoffSelectionBasket span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.handoffSelectionBasket strong {
+  font-size: 10px;
+}
+.handoffSelectionBasket span {
+  color: var(--muted);
+  font-size: 9px;
 }
 .handoffPreview {
   margin-top: 10px;
@@ -2480,6 +2544,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .sessionInspectorGrid pre + pre {
     border-left: 0;
     border-top: 1px solid var(--line);
+  }
+  .handoffPanelHeader,
+  .handoffFilters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .handoffProviderTabs,
+  .handoffWorkspaceTabs {
+    width: 100%;
   }
 }
 

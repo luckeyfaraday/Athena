@@ -1,8 +1,12 @@
 import * as pty from "node-pty";
 import type { PtyHostMessage, PtyHostRequest, PtyHostSpawnRequest } from "./pty-host-protocol.js";
+import { PTY_WRITE_CHUNK_DELAY_MS, PTY_WRITE_CHUNK_SIZE, chunkPtyWrite } from "./pty-write.js";
 
 const terminals = new Map<string, pty.IPty>();
 const pendingOutput = new Map<string, string>();
+// Tail of the in-flight write for each terminal, so chunked Windows writes
+// never interleave with a later write to the same PTY (see enqueueWrite).
+const writeChains = new Map<string, Promise<void>>();
 const FLUSH_INTERVAL_MS = 16;
 const MAX_BATCH_CHARS = 64_000;
 let flushTimer: NodeJS.Timeout | null = null;
@@ -44,6 +48,7 @@ function spawnTerminal(payload: PtyHostSpawnRequest): number {
   terminal.onExit(({ exitCode }) => {
     flushOutput(payload.id);
     terminals.delete(payload.id);
+    writeChains.delete(payload.id);
     send({ type: "exit", id: payload.id, exitCode });
   });
   return terminal.pid;
@@ -86,6 +91,47 @@ function requireTerminal(id: string): pty.IPty {
   return terminal;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+}
+
+// On Windows, large single writes overflow ConPTY's bounded console input
+// buffer and get silently truncated, so we feed them in small chunks with a
+// short pause between each. Unix PTYs have real flow control and write in one
+// shot. The terminal is re-resolved before every chunk because it can be killed
+// during the inter-chunk delays. See pty-write.ts for the full rationale.
+async function writeTerminal(id: string, data: string): Promise<void> {
+  if (process.platform !== "win32" || data.length <= PTY_WRITE_CHUNK_SIZE) {
+    requireTerminal(id).write(data);
+    return;
+  }
+  const chunks = chunkPtyWrite(data, PTY_WRITE_CHUNK_SIZE);
+  for (let i = 0; i < chunks.length; i++) {
+    if (i > 0) await delay(PTY_WRITE_CHUNK_DELAY_MS);
+    requireTerminal(id).write(chunks[i]);
+  }
+}
+
+// Serialize writes per terminal so a chunked Windows write never has its chunks
+// interleaved with a later write to the same PTY (the synchronous write path
+// was previously atomic). The promise stored in the chain swallows rejections
+// so one failed write doesn't break the ordering of the writes behind it; the
+// caller still observes the real outcome through the returned promise.
+function enqueueWrite(id: string, data: string): Promise<void> {
+  const prior = writeChains.get(id) ?? Promise.resolve();
+  const result = prior.then(() => writeTerminal(id, data));
+  writeChains.set(
+    id,
+    result.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return result;
+}
+
 process.on("message", (message: PtyHostRequest) => {
   if (!message || typeof message !== "object" || !("type" in message)) return;
   try {
@@ -94,8 +140,15 @@ process.on("message", (message: PtyHostRequest) => {
       return;
     }
     if (message.type === "write") {
-      requireTerminal(message.id).write(message.data);
-      response(message.requestId, true, null);
+      const { requestId, id } = message;
+      enqueueWrite(id, message.data).then(
+        () => response(requestId, true, null),
+        (error) => {
+          const detail = String(error);
+          send({ type: "error", id, error: detail });
+          response(requestId, false, detail);
+        },
+      );
       return;
     }
     if (message.type === "resize") {
@@ -107,6 +160,7 @@ process.on("message", (message: PtyHostRequest) => {
       flushOutput(message.id);
       requireTerminal(message.id).kill();
       terminals.delete(message.id);
+      writeChains.delete(message.id);
       response(message.requestId, true, null);
       return;
     }
@@ -133,6 +187,7 @@ function shutdown(exitCode: number): void {
   for (const terminal of terminals.values()) terminal.kill();
   terminals.clear();
   pendingOutput.clear();
+  writeChains.clear();
   setTimeout(() => process.exit(exitCode), 0).unref?.();
 }
 

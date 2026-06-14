@@ -237,12 +237,13 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     return {
       label: "Claude Code",
       executable: "claude",
-      powerShellCommand: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += $prompt; & $agentCommand @agentArgs",
+      powerShellCommand: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath, '--') }; $agentArgs += $prompt; & $agentCommand @agentArgs",
       powerShellCommandWithoutPrompt: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += @('--resume', $sessionId); & $agentCommand @agentArgs",
       args: (_cwd, promptPath, _shell, mcp, newSessionId) => [
         newSessionId ? `--session-id ${quoteShell(newSessionId)}` : "",
         mcp?.configPath ? `--mcp-config ${quoteShell(mcp.configPath)}` : "",
+        mcp?.configPath && promptPath ? "--" : "",
         promptPath ? `"$(cat ${quoteShell(promptPath)})"` : "",
       ].filter(Boolean).join(" "),
       resumeArgs: (_cwd, sessionId, _shell, mcp) => [

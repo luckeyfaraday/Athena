@@ -47,9 +47,42 @@ export type RecallStatus = {
   source: string | null;
   source_count: number | null;
   source_titles: string[];
+  schema_version: number | null;
+  handoff_id: string | null;
+  confidence: string | null;
+  source_workspaces: string[];
+  source_sessions: RecallSourceSession[];
   used_for_launch_at: string | null;
   last_launch_agent: string | null;
   refresh_configured: boolean;
+};
+
+export type RecallSourceSession = {
+  key?: string;
+  kind?: string;
+  provider?: string;
+  title?: string;
+  workspace?: string;
+  id?: string;
+  status?: string;
+  usable?: boolean;
+  evidence_score?: number;
+  [key: string]: unknown;
+};
+
+export type WorkspaceSnapshot = {
+  project_dir: string;
+  generated_at: string;
+  git: {
+    available: boolean;
+    root: string | null;
+    branch: string | null;
+    head: string | null;
+    dirty_count: number;
+    status_short: string[];
+    recent_commits: string[];
+    error: string | null;
+  };
 };
 
 export type RecallRefreshResult = {
@@ -142,7 +175,15 @@ export class BackendClient {
     projectDir: string,
     markdown: string,
     source = "athena-session-handoff",
-    metadata: { source_count?: number; source_titles?: string[] } = {},
+    metadata: {
+      source_count?: number;
+      source_titles?: string[];
+      schema_version?: number;
+      handoff_id?: string;
+      confidence?: string;
+      source_workspaces?: string[];
+      source_sessions?: RecallSourceSession[];
+    } = {},
   ): Promise<RecallWriteResult> {
     return this.json("/hermes/recall/write", {
       method: "POST",
@@ -153,8 +194,17 @@ export class BackendClient {
         source,
         source_count: metadata.source_count,
         source_titles: metadata.source_titles ?? [],
+        schema_version: metadata.schema_version,
+        handoff_id: metadata.handoff_id,
+        confidence: metadata.confidence,
+        source_workspaces: metadata.source_workspaces ?? [],
+        source_sessions: metadata.source_sessions ?? [],
       }),
     });
+  }
+
+  async workspaceSnapshot(projectDir: string): Promise<WorkspaceSnapshot> {
+    return this.json(`/workspace/snapshot?project_dir=${encodeURIComponent(projectDir)}`);
   }
 
   async markRecallUsed(projectDir: string, agent: string): Promise<RecallWriteResult> {

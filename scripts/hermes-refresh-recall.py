@@ -25,6 +25,7 @@ from backend.safety import SafetyError, resolve_project_dir
 
 
 SOURCE = "context-workspace-refresh-script"
+SCHEMA_VERSION = 2
 MAX_RECALL_SESSIONS = 5
 MAX_SESSION_TITLE_CHARS = 120
 
@@ -48,7 +49,9 @@ def main() -> int:
     if not sessions:
         sessions = list_native_agent_sessions(project, limit=10)
 
-    markdown = _render_recall(project, task_hint=task_hint, backend_url=backend_url, sessions=_curate_sessions(project, sessions))
+    curated_sessions = _curate_sessions(project, sessions)
+    handoff_id = _handoff_id(project)
+    markdown = _render_recall(project, task_hint=task_hint, backend_url=backend_url, sessions=curated_sessions, handoff_id=handoff_id)
     cache_dir = project / ".context-workspace" / "hermes"
     recall_path = cache_dir / "session-recall.md"
     metadata_path = cache_dir / "last-refresh.json"
@@ -58,6 +61,13 @@ def main() -> int:
     metadata: dict[str, Any] = {
         "refreshed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "source": SOURCE,
+        "schema_version": SCHEMA_VERSION,
+        "handoff_id": handoff_id,
+        "confidence": "low" if not curated_sessions else "medium",
+        "source_count": len(curated_sessions),
+        "source_titles": [session.title[:160] for session in curated_sessions[:20]],
+        "source_workspaces": [str(project)],
+        "source_sessions": [_session_metadata(session) for session in curated_sessions],
         "bytes": len(markdown.encode("utf-8")),
         "task_hint": task_hint or None,
     }
@@ -95,30 +105,81 @@ def _wsl_mount_to_windows_path(project_dir: str) -> str:
     return f"{drive.upper()}:\\{rest}"
 
 
-def _render_recall(project: Path, *, task_hint: str, backend_url: str, sessions: list[AgentSession]) -> str:
+def _render_recall(project: Path, *, task_hint: str, backend_url: str, sessions: list[AgentSession], handoff_id: str) -> str:
     now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     lines = [
-        "# Athena Recall",
+        "# Athena Handoff",
         "",
-        f"Generated: {now}",
-        f"Workspace: `{project}`",
+        "---",
+        f"schema_version: {SCHEMA_VERSION}",
+        f"handoff_id: {handoff_id}",
+        f"generated_at: {now}",
+        f"target_workspace: {project}",
+        f"source: {SOURCE}",
+        f"confidence: {'low' if not sessions else 'medium'}",
+        f"source_count: {len(sessions)}",
+        "source_workspace_count: 1",
+        "---",
     ]
-    if task_hint and not _is_generic_task_hint(task_hint):
-        lines.append(f"- Task hint: {task_hint}")
     lines.extend(
         [
             "",
-            "## Use",
+            "## Mission",
+            "- Provide a compact recent-session recall cache for the next Athena agent.",
+            f"- Target workspace: {project}",
+            f"- Task hint: {task_hint}" if task_hint and not _is_generic_task_hint(task_hint) else "- Task hint: none",
+            "",
+            "## Current State",
+            "- Git snapshot: not captured by automatic recall refresh.",
+            "- Required first action: verify current git status, branch, and recent file changes before editing.",
+            "",
+            "## Handoff Quality",
+            f"- Confidence: {'low' if not sessions else 'medium'}",
+            f"- Source sessions: {len(sessions)}",
+            "- Automatic refresh includes session titles and metadata, not full transcripts.",
+            "",
+            "## Source Map",
+            f"- {project.name} (target): {project} ({len(sessions)} source{'s' if len(sessions) != 1 else ''})",
+            "",
+            "## Source Sessions",
+            _format_compact_sessions(sessions),
+            "",
+            "## Evidence",
+            "- No raw transcript evidence is included in automatic recall refresh.",
+            "- Use Reviews handoff generation for source excerpts, commands, decisions, and blockers.",
+            "",
+            "## Instructions For The Next Agent",
             "- Current user instruction has priority.",
             "- Treat this as short-lived background context, not durable truth.",
-            "",
-            "## Relevant Recent Sessions",
-            "",
-            _format_compact_sessions(sessions),
+            "- Verify current git status before editing.",
+            "- If this automatic recall is too thin, ask the user to create a Reviews handoff from specific sessions.",
             "",
         ]
     )
     return "\n".join(lines)
+
+
+def _handoff_id(project: Path) -> str:
+    now = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    seed = f"{project}:{now}"
+    hash_value = 2166136261
+    for char in seed:
+        hash_value ^= ord(char)
+        hash_value = (hash_value * 16777619) & 0xFFFFFFFF
+    return f"handoff-{now.lower()}-{hash_value:x}"
+
+
+def _session_metadata(session: AgentSession) -> dict[str, Any]:
+    return {
+        "kind": "native",
+        "provider": session.provider,
+        "title": session.title[:160],
+        "workspace": session.workspace,
+        "id": session.id,
+        "status": session.status,
+        "branch": session.branch,
+        "model": session.model,
+    }
 
 
 def _curate_sessions(project: Path, sessions: list[AgentSession]) -> list[AgentSession]:

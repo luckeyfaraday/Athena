@@ -386,6 +386,24 @@ def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
             "source": "test-handoff",
             "source_count": 2,
             "source_titles": ["Codex Builder", "OpenCode Reviewer"],
+            "schema_version": 2,
+            "handoff_id": "handoff-test-123",
+            "confidence": "medium",
+            "source_workspaces": [str(tmp_path), str(tmp_path / "other")],
+            "source_sessions": [
+                {
+                    "key": "codex:test",
+                    "kind": "native",
+                    "provider": "codex",
+                    "title": "Codex Builder",
+                    "workspace": str(tmp_path),
+                    "id": "test",
+                    "status": "historical",
+                    "usable": True,
+                    "evidence_score": 8,
+                    "ignored": "not persisted",
+                }
+            ],
         },
     )
 
@@ -397,13 +415,43 @@ def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
     assert recall["source"] == "test-handoff"
     assert recall["source_count"] == 2
     assert recall["source_titles"] == ["Codex Builder", "OpenCode Reviewer"]
+    assert recall["schema_version"] == 2
+    assert recall["handoff_id"] == "handoff-test-123"
+    assert recall["confidence"] == "medium"
+    assert recall["source_workspaces"] == [str(tmp_path), str(tmp_path / "other")]
+    assert recall["source_sessions"][0]["provider"] == "codex"
     assert recall_path.read_text(encoding="utf-8").endswith("\n")
     assert "Continue from selected sessions" in recall_path.read_text(encoding="utf-8")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["source"] == "test-handoff"
     assert metadata["bytes"] == recall_path.stat().st_size
     assert metadata["source_count"] == 2
+    assert metadata["schema_version"] == 2
+    assert metadata["handoff_id"] == "handoff-test-123"
+    assert metadata["confidence"] == "medium"
+    assert metadata["source_sessions"][0]["key"] == "codex:test"
+    assert "ignored" not in metadata["source_sessions"][0]
     assert not list(metadata_path.parent.glob(".*.tmp"))
+
+
+def test_workspace_snapshot_reports_non_git_workspace(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/workspace/snapshot", params={"project_dir": str(tmp_path)})
+
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["project_dir"] == str(tmp_path)
+    assert snapshot["git"]["available"] is False
+    assert snapshot["git"]["dirty_count"] == 0
+
+
+def test_workspace_snapshot_rejects_missing_directory(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/workspace/snapshot", params={"project_dir": str(tmp_path / "missing")})
+
+    assert response.status_code == 400
 
 
 def test_hermes_recall_mark_used_updates_metadata(tmp_path: Path) -> None:

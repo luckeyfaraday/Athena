@@ -73,6 +73,11 @@ class HermesRecallWriteRequest(BaseModel):
     source: str = Field(default="athena-session-handoff", min_length=1, max_length=120)
     source_count: int | None = Field(default=None, ge=0, le=500)
     source_titles: list[str] = Field(default_factory=list, max_length=500)
+    schema_version: int | None = Field(default=None, ge=1, le=20)
+    handoff_id: str | None = Field(default=None, max_length=120)
+    confidence: str | None = Field(default=None, max_length=20)
+    source_workspaces: list[str] = Field(default_factory=list, max_length=500)
+    source_sessions: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
 
 
 class HermesRecallMarkUsedRequest(BaseModel):
@@ -139,6 +144,16 @@ def create_app(
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/workspace/snapshot")
+    def workspace_snapshot(project_dir: str = Query(min_length=1)) -> dict[str, Any]:
+        try:
+            project = resolve_project_dir(project_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=400, detail=f"Project directory does not exist: {project_dir}") from exc
+        return _workspace_snapshot(project)
 
     @app.post("/context/bundles")
     def create_context_bundle(request: ContextBundleCreateRequest) -> dict[str, Any]:
@@ -240,6 +255,11 @@ def create_app(
             source=request.source.strip(),
             source_count=request.source_count,
             source_titles=request.source_titles,
+            schema_version=request.schema_version,
+            handoff_id=request.handoff_id,
+            confidence=request.confidence,
+            source_workspaces=request.source_workspaces,
+            source_sessions=request.source_sessions,
         )
         return {"recall": recall}
 
@@ -720,6 +740,11 @@ def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
         "source": metadata.get("source") if isinstance(metadata.get("source"), str) else None,
         "source_count": metadata.get("source_count") if isinstance(metadata.get("source_count"), int) else None,
         "source_titles": metadata.get("source_titles") if isinstance(metadata.get("source_titles"), list) else [],
+        "schema_version": metadata.get("schema_version") if isinstance(metadata.get("schema_version"), int) else None,
+        "handoff_id": metadata.get("handoff_id") if isinstance(metadata.get("handoff_id"), str) else None,
+        "confidence": metadata.get("confidence") if isinstance(metadata.get("confidence"), str) else None,
+        "source_workspaces": metadata.get("source_workspaces") if isinstance(metadata.get("source_workspaces"), list) else [],
+        "source_sessions": metadata.get("source_sessions") if isinstance(metadata.get("source_sessions"), list) else [],
         "used_for_launch_at": metadata.get("used_for_launch_at") if isinstance(metadata.get("used_for_launch_at"), str) else None,
         "last_launch_agent": metadata.get("last_launch_agent") if isinstance(metadata.get("last_launch_agent"), str) else None,
         "refresh_configured": bool(os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()),
@@ -797,6 +822,110 @@ def _bounded_text(text: str, *, max_chars: int) -> str:
     return "[truncated]\n" + text[-max_chars:]
 
 
+def _workspace_snapshot(project_dir: Path) -> dict[str, Any]:
+    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    root = _git_output(project_dir, ["rev-parse", "--show-toplevel"])
+    if root["returncode"] != 0:
+        return {
+            "project_dir": str(project_dir),
+            "generated_at": generated_at,
+            "git": {
+                "available": False,
+                "root": None,
+                "branch": None,
+                "head": None,
+                "dirty_count": 0,
+                "status_short": [],
+                "recent_commits": [],
+                "error": root["error"] or "Not a git workspace.",
+            },
+        }
+
+    branch = _git_output(project_dir, ["branch", "--show-current"])
+    head = _git_output(project_dir, ["rev-parse", "--short", "HEAD"])
+    status = _git_output(project_dir, ["status", "--short"])
+    commits = _git_output(project_dir, ["log", "--oneline", "-5"])
+    status_lines = _bounded_lines(status["stdout"], limit=80)
+    return {
+        "project_dir": str(project_dir),
+        "generated_at": generated_at,
+        "git": {
+            "available": True,
+            "root": root["stdout"].strip() or None,
+            "branch": branch["stdout"].strip() or None,
+            "head": head["stdout"].strip() or None,
+            "dirty_count": len(status_lines),
+            "status_short": status_lines,
+            "recent_commits": _bounded_lines(commits["stdout"], limit=5),
+            "error": status["error"] or commits["error"] or None,
+        },
+    }
+
+
+def _git_output(project_dir: Path, args: list[str]) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=project_dir,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"returncode": 1, "stdout": "", "error": str(exc)}
+    return {
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "error": completed.stderr.strip() if completed.returncode != 0 else "",
+    }
+
+
+def _bounded_lines(value: str, *, limit: int) -> list[str]:
+    return [line[:500] for line in value.splitlines() if line.strip()][:limit]
+
+
+def _bounded_string_list(values: list[str], *, limit: int, max_chars: int) -> list[str]:
+    bounded: list[str] = []
+    for value in values[:limit]:
+        text = str(value).strip()
+        if text:
+            bounded.append(text[:max_chars])
+    return bounded
+
+
+def _bounded_source_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    allowed = {
+        "key",
+        "kind",
+        "provider",
+        "title",
+        "workspace",
+        "id",
+        "status",
+        "usable",
+        "evidence_score",
+        "terminal_id",
+        "provider_session_id",
+        "branch",
+        "model",
+    }
+    bounded: list[dict[str, Any]] = []
+    for session in sessions[:80]:
+        item: dict[str, Any] = {}
+        for key, value in session.items():
+            if key not in allowed:
+                continue
+            if isinstance(value, str):
+                item[key] = value[:300]
+            elif isinstance(value, (int, float, bool)) or value is None:
+                item[key] = value
+        if item:
+            bounded.append(item)
+    return bounded
+
+
 def _write_recall_cache(
     project_dir: Path,
     markdown: str,
@@ -804,6 +933,11 @@ def _write_recall_cache(
     source: str,
     source_count: int | None = None,
     source_titles: list[str] | None = None,
+    schema_version: int | None = None,
+    handoff_id: str | None = None,
+    confidence: str | None = None,
+    source_workspaces: list[str] | None = None,
+    source_sessions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     cache_dir = project_dir / ".context-workspace" / "hermes"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -820,6 +954,16 @@ def _write_recall_cache(
         metadata["source_count"] = source_count
     if source_titles:
         metadata["source_titles"] = [str(title)[:160] for title in source_titles[:20]]
+    if schema_version is not None:
+        metadata["schema_version"] = schema_version
+    if handoff_id:
+        metadata["handoff_id"] = str(handoff_id)[:120]
+    if confidence:
+        metadata["confidence"] = str(confidence)[:20]
+    if source_workspaces:
+        metadata["source_workspaces"] = _bounded_string_list(source_workspaces, limit=40, max_chars=300)
+    if source_sessions:
+        metadata["source_sessions"] = _bounded_source_sessions(source_sessions)
     _atomic_write_text(recall_path, text)
     _atomic_write_text(metadata_path, json.dumps(metadata, indent=2) + "\n")
     return _recall_status_payload(project_dir)

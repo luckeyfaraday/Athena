@@ -1,4 +1,4 @@
-import type { RecallStatus } from "./api";
+import type { RecallSourceSession, RecallStatus } from "./api";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
 import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
 import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils";
@@ -19,6 +19,11 @@ export type HandoffPreview = {
   bytes: number;
   sourceCount: number;
   sourceTitles: string[];
+  schemaVersion: number;
+  handoffId: string;
+  confidence: string;
+  sourceWorkspaces: string[];
+  sourceSessions: RecallSourceSession[];
   workspace: string;
 };
 

@@ -42,13 +42,14 @@ In search terms: Athena is an **AI coding agent workspace**, **multi-agent deskt
 ## Demo
 
 <p align="center">
-  <video src="https://github.com/luckeyfaraday/Athena/raw/main/athena-demo.mp4" controls muted width="720">
-    Your browser does not render embedded video.
-    <a href="athena-demo.mp4">Watch the Athena demo</a>.
-  </video>
+  <a href="https://github.com/luckeyfaraday/Athena/blob/main/athena-demo.mp4">
+    <img src="athena-demo-poster.jpg" alt="Watch the Athena demo" width="720" />
+  </a>
 </p>
 
-> If the player does not load above, [watch the demo video](athena-demo.mp4).
+<p align="center">
+  <a href="https://github.com/luckeyfaraday/Athena/blob/main/athena-demo.mp4">▶ Watch the demo (with audio)</a>
+</p>
 
 ## Product Widgets
 

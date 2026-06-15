@@ -56,6 +56,7 @@ type SpawnTerminalRequest = {
   context_mode?: string;
   context?: string;
   context_text?: string;
+  model?: string;
   cols?: number;
   rows?: number;
 };
@@ -347,6 +348,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           sessionLabel: payload.sessionLabel,
           contextMode: payload.contextMode,
           contextText: payload.contextText,
+          model: payload.model,
           controlSource: "electron-control",
         }).catch((error) => {
           recordControlFailure({
@@ -426,6 +428,7 @@ function parseSpawnTerminalRequest(body: unknown): {
   sessionLabel?: string;
   contextMode?: "none" | "task" | "curated" | "immersive" | "immersive_curated";
   contextText?: string;
+  model?: string;
   cols?: number;
   rows?: number;
 } {
@@ -448,9 +451,23 @@ function parseSpawnTerminalRequest(body: unknown): {
     sessionLabel: stringValue(request.session_label),
     contextMode: contextModeValue(request.context_mode),
     contextText: stringValue(request.context_text) ?? stringValue(request.context),
+    model: modelValue(request.model),
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
   };
+}
+
+// Model is forwarded verbatim as a CLI flag argument (quoted downstream in
+// terminal-launch). Reject whitespace/control characters so a malformed request
+// fails fast rather than launching an agent with a broken flag.
+function modelValue(value: unknown): string | undefined {
+  const model = stringValue(value);
+  if (model === undefined) return undefined;
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\x00-\x1f]/.test(model)) {
+    throw new Error("model must be a single token without whitespace or control characters.");
+  }
+  return model;
 }
 
 function embeddedTerminalKindValue(value: unknown): EmbeddedTerminalKind {

@@ -170,9 +170,11 @@ test("PowerShell builders pass values through quotePowerShell, not raw interpola
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);
   assert.match(command, /Set-Location -LiteralPath \$workspace/);
   // Codex prompt is splatted as an array element ($prompt), never string-built.
-  assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all'\) \+ \$mcpConfigArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);
+  assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all'\) \+ \$mcpConfigArgs \+ \$modelArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);
   // With no MCP wiring the spliced array is empty.
   assert.match(command, /\$mcpConfigArgs = @\(\)/);
+  // With no explicit model the spliced model array is empty too.
+  assert.match(command, /\$modelArgs = @\(\)/);
 });
 
 test("PowerShell codex builder splats MCP -c overrides through a quoted array", () => {
@@ -198,6 +200,53 @@ test("PowerShell resume builder quotes the session id", () => {
   const command = launchResumePowerShellCommand("claude", "C:\\ws", "sess'9", null);
   // quotePowerShell doubles single quotes: ' -> ''
   assert.match(command, /\$sessionId = 'sess''9'/);
+});
+
+test("agentConfig args omit --model unless a model is explicitly requested", () => {
+  // The default (no model) launch must be byte-for-byte the legacy command so
+  // unspecified spawns keep using each agent CLI's own default model.
+  assert.equal(agentConfig("codex").args("/ws", null, "bash"), `-c shell_environment_policy.inherit=all --cd '/ws'`);
+  assert.equal(agentConfig("claude").args("/ws", null, "bash"), "");
+  assert.equal(agentConfig("opencode").args("/ws", "/tmp/p.md", "bash"), `--prompt "$(tr '\\r\\n' '  ' < '/tmp/p.md')" '/ws'`);
+});
+
+test("agentConfig threads an explicit model through as a quoted --model flag", () => {
+  // claude/codex take a bare model id; opencode/athena take provider/model.
+  assert.equal(
+    agentConfig("claude").args("/ws", "/tmp/p.md", "bash", null, null, "opus"),
+    `--model 'opus' "$(cat '/tmp/p.md')"`,
+  );
+  assert.equal(
+    agentConfig("codex").args("/ws", null, "bash", null, null, "gpt-5-codex"),
+    `-c shell_environment_policy.inherit=all --model 'gpt-5-codex' --cd '/ws'`,
+  );
+  assert.equal(
+    agentConfig("opencode").args("/ws", "/tmp/p.md", "bash", null, null, "anthropic/claude-opus-4-8"),
+    `--model 'anthropic/claude-opus-4-8' --prompt "$(tr '\\r\\n' '  ' < '/tmp/p.md')" '/ws'`,
+  );
+  assert.equal(
+    agentConfig("athena").args("/ws", null, "bash", null, null, "anthropic/claude-opus-4-8"),
+    `--model 'anthropic/claude-opus-4-8' '/ws'`,
+  );
+});
+
+test("launchCommand quote-escapes a hostile model value", () => {
+  const command = launchCommand("claude", "/home/dev/project", null, null, null, INJECTION);
+  assert.ok(command.includes(`--model ${quoteShell(INJECTION)}`));
+});
+
+test("PowerShell builders splice an explicit model array, empty by default", () => {
+  const codex = launchPowerShellCommand("codex", "C:\\ws", "C:\\tmp\\p.md", null, null, "gpt-5-codex");
+  assert.match(codex, /\$modelArgs = @\('--model', 'gpt-5-codex'\)/);
+  assert.match(codex, /\$mcpConfigArgs \+ \$modelArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);
+
+  const claude = launchPowerShellCommand("claude", "C:\\ws", null, null, null, "opus");
+  assert.match(claude, /\$modelArgs = @\('--model', 'opus'\)/);
+  assert.match(claude, /\$agentArgs = @\(\) \+ \$modelArgs/);
+
+  const opencode = launchPowerShellCommand("opencode", "C:\\ws", null);
+  assert.match(opencode, /\$modelArgs = @\(\)/);
+  assert.match(opencode, /\$agentArgs = \$modelArgs \+ @\(\$workspace\)/);
 });
 
 test("Hermes PowerShell builder launches native hermes without WSL", () => {

@@ -102,6 +102,7 @@ export type EmbeddedTerminalSpawnOptions = {
   providerSessionId?: string;
   contextMode?: AgentContextMode;
   contextText?: string;
+  model?: string;
   controlSource?: string;
 };
 
@@ -602,7 +603,7 @@ export async function spawnEmbeddedTerminal(
   const assignedSessionId = kind === "claude" && !options.resumeSessionId && !options.providerSessionId
     ? randomUUID()
     : null;
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpWiring.launch, assignedSessionId);
+  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpWiring.launch, assignedSessionId, options.model);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId ?? assignedSessionId ?? undefined);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? assignedSessionId : null;
   const restoreEntry: RestorableTerminal = {

@@ -27,9 +27,17 @@ export type AgentConfig = {
   powerShellCommand: string;
   powerShellCommandWithoutPrompt: string;
   resumePowerShellCommand: string;
-  args: (cwd: string, promptPath: string | null, shell: "bash", mcp?: AgentMcpLaunch | null, newSessionId?: string | null) => string;
+  args: (cwd: string, promptPath: string | null, shell: "bash", mcp?: AgentMcpLaunch | null, newSessionId?: string | null, model?: string | null) => string;
   resumeArgs: (cwd: string, sessionId: string, shell: "bash", mcp?: AgentMcpLaunch | null) => string;
 };
+
+// Bash: render an explicit model selection as ` --model <model>` (leading space
+// so callers can append directly). Empty when no model is requested. The value
+// is quoted because it originates from a user request. Every supported agent CLI
+// (claude, codex, opencode, athena) accepts the same `--model` flag shape.
+function modelBashArg(model?: string | null): string {
+  return model ? ` --model ${quoteShell(model)}` : "";
+}
 
 // Bash: render Codex's MCP overrides as ` -c '<override>'` tokens (leading space
 // so the caller can append directly). Empty when no overrides are present.
@@ -54,6 +62,7 @@ export function terminalLaunch(
   resumeSessionId?: string,
   mcp?: AgentMcpLaunch | null,
   newSessionId?: string | null,
+  model?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
     if (kind === "hermes" && resumeSessionId) {
@@ -77,13 +86,13 @@ export function terminalLaunch(
     if (kind !== "shell") {
       return {
         command: "powershell.exe",
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcp, newSessionId)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcp, newSessionId, model)],
       };
     }
     return defaultShell();
   }
 
-  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcp) : launchCommand(kind, cwd, promptPath, mcp, newSessionId)] };
+  return { command: "bash", args: ["-lc", resumeSessionId ? launchResumeCommand(kind, cwd, resumeSessionId, mcp) : launchCommand(kind, cwd, promptPath, mcp, newSessionId, model)] };
 }
 
 export function launchCommand(
@@ -92,6 +101,7 @@ export function launchCommand(
   promptPath: string | null,
   mcp?: AgentMcpLaunch | null,
   newSessionId?: string | null,
+  model?: string | null,
 ): string {
   if (kind === "hermes") {
     return [
@@ -111,7 +121,7 @@ export function launchCommand(
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
-      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId)}`.trimEnd(),
+      `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId, model)}`.trimEnd(),
       "exec bash -l",
     ].join("; ");
   }
@@ -178,7 +188,7 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
   ].join("; ");
 }
 
-export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcp?: AgentMcpLaunch | null, newSessionId?: string | null): string {
+export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcp?: AgentMcpLaunch | null, newSessionId?: string | null, model?: string | null): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -188,6 +198,9 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
     kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
+    // $modelArgs is spliced into every agent's argument array; @() when no model
+    // was explicitly requested, so the agent CLI keeps its own default.
+    model ? `$modelArgs = @('--model', ${quotePowerShell(model)})` : "$modelArgs = @()",
     newSessionId ? `$newSessionId = ${quotePowerShell(newSessionId)}` : "",
     promptPath
       ? "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan"
@@ -212,10 +225,13 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     return {
       label: "Athena Code",
       executable: "athena-code",
-      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
-      powerShellCommandWithoutPrompt: "$agentArgs = @($workspace); & $agentCommand @agentArgs",
+      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = $modelArgs + @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = $modelArgs + @($workspace); & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @('--session', $sessionId, $workspace); & $agentCommand @agentArgs",
-      args: (cwd, promptPath) => promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd),
+      args: (cwd, promptPath, _shell, _mcp, _newSessionId, model) => {
+        const base = promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd);
+        return `${modelBashArg(model)} ${base}`.trim();
+      },
       resumeArgs: (cwd, sessionId) => `athena-code --session ${quoteShell(sessionId)} ${quoteShell(cwd)}`,
     };
   }
@@ -223,10 +239,13 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     return {
       label: "OpenCode",
       executable: "opencode",
-      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
-      powerShellCommandWithoutPrompt: "$agentArgs = @($workspace); & $agentCommand @agentArgs",
+      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = $modelArgs + @('--prompt', $agentPrompt, $workspace); & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = $modelArgs + @($workspace); & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @('--session', $sessionId, $workspace); & $agentCommand @agentArgs",
-      args: (cwd, promptPath) => promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd),
+      args: (cwd, promptPath, _shell, _mcp, _newSessionId, model) => {
+        const base = promptPath ? `--prompt "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})" ${quoteShell(cwd)}` : quoteShell(cwd);
+        return `${modelBashArg(model)} ${base}`.trim();
+      },
       resumeArgs: (cwd, sessionId) => `opencode --session ${quoteShell(sessionId)} ${quoteShell(cwd)}`,
     };
   }
@@ -237,10 +256,11 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     return {
       label: "Claude Code",
       executable: "claude",
-      powerShellCommand: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath, '--') }; $agentArgs += $prompt; & $agentCommand @agentArgs",
-      powerShellCommandWithoutPrompt: "$agentArgs = @(); if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
+      powerShellCommand: "$agentArgs = @() + $modelArgs; if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath, '--') }; $agentArgs += $prompt; & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = @() + $modelArgs; if ($newSessionId) { $agentArgs += @('--session-id', $newSessionId) }; if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; & $agentCommand @agentArgs",
       resumePowerShellCommand: "$agentArgs = @(); if ($mcpConfigPath) { $agentArgs += @('--mcp-config', $mcpConfigPath) }; $agentArgs += @('--resume', $sessionId); & $agentCommand @agentArgs",
-      args: (_cwd, promptPath, _shell, mcp, newSessionId) => [
+      args: (_cwd, promptPath, _shell, mcp, newSessionId, model) => [
+        model ? `--model ${quoteShell(model)}` : "",
         newSessionId ? `--session-id ${quoteShell(newSessionId)}` : "",
         mcp?.configPath ? `--mcp-config ${quoteShell(mcp.configPath)}` : "",
         mcp?.configPath && promptPath ? "--" : "",
@@ -259,11 +279,11 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     executable: "codex",
     // $mcpConfigArgs is defined by the PowerShell launch builders ('-c <override>'
     // pairs, or @() when MCP is not wired) and spliced into the argument array.
-    powerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + @('--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
-    powerShellCommandWithoutPrompt: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + @('--cd', $workspace); & $agentCommand @agentArgs",
+    powerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + $modelArgs + @('--cd', $workspace, '--', $prompt); & $agentCommand @agentArgs",
+    powerShellCommandWithoutPrompt: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + $modelArgs + @('--cd', $workspace); & $agentCommand @agentArgs",
     resumePowerShellCommand: "$agentArgs = @('-c', 'shell_environment_policy.inherit=all') + $mcpConfigArgs + @('resume', '--cd', $workspace, $sessionId); & $agentCommand @agentArgs",
-    args: (cwd, promptPath, _shell, mcp) => {
-      const base = `-c shell_environment_policy.inherit=all${codexMcpBashArgs(mcp)} --cd ${quoteShell(cwd)}`;
+    args: (cwd, promptPath, _shell, mcp, _newSessionId, model) => {
+      const base = `-c shell_environment_policy.inherit=all${codexMcpBashArgs(mcp)}${modelBashArg(model)} --cd ${quoteShell(cwd)}`;
       return promptPath ? `${base} -- "$(cat ${quoteShell(promptPath)})"` : base;
     },
     resumeArgs: (cwd, sessionId, _shell, mcp) =>

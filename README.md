@@ -39,6 +39,17 @@ In search terms: Athena is an **AI coding agent workspace**, **multi-agent deskt
   <img src="athenafocusmode.png" alt="Athena Command Room showing live agent panes in focus mode" />
 </p>
 
+## Demo
+
+<p align="center">
+  <video src="https://github.com/luckeyfaraday/Athena/raw/main/athena-demo.mp4" controls muted width="720">
+    Your browser does not render embedded video.
+    <a href="athena-demo.mp4">Watch the Athena demo</a>.
+  </video>
+</p>
+
+> If the player does not load above, [watch the demo video](athena-demo.mp4).
+
 ## Product Widgets
 
 | Command Room | Session Recall | Agent Coverage | Desktop Runtime |

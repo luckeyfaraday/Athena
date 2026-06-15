@@ -22,7 +22,7 @@ import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
 import { roomRouteById, type ActiveRoom } from "./routes";
 import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
-import { handoffLaunchOptions } from "./handoff-launch";
+import { handoffLaunchOptions, type HandoffAgentKind } from "./handoff-launch";
 import {
   applyAgentSessionRenames,
   applyEmbeddedSessionRenames,
@@ -970,7 +970,7 @@ export function App() {
   }, [client, workspace]);
 
   async function startFreshFromHandoff(
-    kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">,
+    kind: HandoffAgentKind,
     preview: HandoffPreview,
   ) {
     if (!client || !workspace) throw new Error("Backend or workspace is not available.");

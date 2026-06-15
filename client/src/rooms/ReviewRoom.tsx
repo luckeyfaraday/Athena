@@ -12,6 +12,7 @@ import {
   type HandoffPreview,
 } from "../session-utils";
 import { normalizeWorkspaceKey } from "../workspace-utils";
+import type { HandoffAgentKind } from "../handoff-launch";
 
 const inspectorBufferTailChars = 80_000;
 const inspectorBufferFlushMs = 120;
@@ -102,7 +103,7 @@ export function ReviewRoom({
   onReadAgentTranscript: (session: AgentSession) => Promise<string>;
   onLoadWorkspaceSnapshot: () => Promise<WorkspaceSnapshot | null>;
   onSaveHandoff: (preview: HandoffPreview) => Promise<void>;
-  onStartFreshFromHandoff: (kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">, preview: HandoffPreview) => Promise<void>;
+  onStartFreshFromHandoff: (kind: HandoffAgentKind, preview: HandoffPreview) => Promise<void>;
 }) {
   const [handoffSelection, setHandoffSelection] = useState<Set<string>>(() => new Set());
   const [handoffPreview, setHandoffPreview] = useState<HandoffPreview | null>(null);
@@ -286,7 +287,7 @@ export function ReviewRoom({
     }
   }
 
-  async function startFreshFromHandoff(kind: Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude">) {
+  async function startFreshFromHandoff(kind: HandoffAgentKind) {
     if (!handoffPreview) return;
     setHandoffLaunching(kind);
     setHandoffError(null);
@@ -440,6 +441,9 @@ export function ReviewRoom({
               </button>
               <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("claude")} disabled={Boolean(handoffLaunching)}>
                 <Sparkles size={14} /> {handoffLaunching === "claude" ? "Launching" : "Start Claude"}
+              </button>
+              <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("athena")} disabled={Boolean(handoffLaunching)}>
+                <ScrollText size={14} /> {handoffLaunching === "athena" ? "Launching" : "Start Athena Code"}
               </button>
             </div>
           </div>

@@ -179,6 +179,7 @@ async def context_workspace_spawn_agent(
     context_mode: str = "task",
     context: str | None = None,
     open_workspace: bool = False,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Spawn Codex/OpenCode/Claude/Athena Code as a visible Athena terminal by default.
 
@@ -192,7 +193,10 @@ async def context_workspace_spawn_agent(
     \"curated\" for only caller-selected background, or \"none\" for a clean
     launch. Set open_workspace=true when the target project is not already open
     in Athena. Set visible_terminal=false only for the legacy backend
-    run/artifact path.
+    run/artifact path. Set model ONLY when the user explicitly asks the agent to
+    run on a specific model; leave it unset to use the agent CLI's own default.
+    Pass the flag value the target CLI expects (e.g. \"opus\"/\"sonnet\" for
+    claude, a model id for codex, or \"provider/model\" for opencode and athena).
     """
     normalized_agent = _terminal_kind_for_agent(agent_type)
     if visible_terminal:
@@ -208,6 +212,7 @@ async def context_workspace_spawn_agent(
                 context_mode=context_mode,
                 context=context,
                 open_workspace=open_workspace,
+                model=model,
             ),
         }
 
@@ -219,6 +224,7 @@ async def context_workspace_spawn_agent(
             "agent_type": agent_type,
             "memory_query": memory_query,
             "timeout_seconds": timeout_seconds,
+            "model": _validate_model(model),
         },
     )
 
@@ -234,6 +240,7 @@ async def context_workspace_spawn_terminal(
     context_mode: str | None = None,
     context: str | None = None,
     open_workspace: bool = False,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Low-level visible terminal spawner using Athena's Electron control server.
 
@@ -241,6 +248,9 @@ async def context_workspace_spawn_terminal(
     context_mode accepts: none, task, curated, immersive, immersive_curated.
     Manual/clean launches should use none. Immersive modes are explicit opt-in.
     Set open_workspace=true to add/select the target workspace before spawning.
+    Set model ONLY when the user explicitly requests a specific model; otherwise
+    leave it unset so the agent CLI picks its own default. The model flag is
+    ignored when resuming a session.
     """
     normalized_kind = _terminal_kind_for_terminal(kind)
     return await ContextWorkspaceElectronClient().post(
@@ -256,6 +266,7 @@ async def context_workspace_spawn_terminal(
             "context_mode": context_mode,
             "context": context,
             "open_workspace": open_workspace,
+            "model": _validate_model(model),
         },
     )
 
@@ -269,10 +280,12 @@ async def context_workspace_spawn_terminals_batch(
 
     Use this when a task needs several agents at once, for example two
     OpenCode panes and one Athena Code pane. Each spec accepts kind, count, title,
-    task, resume_session_id, session_label, context_mode, and context. Athena
-    groups compatible same-provider specs into count-based spawn calls where
-    possible and returns every created terminal id in one response. Set
-    open_workspace=true to add/select the target workspace before spawning.
+    task, resume_session_id, session_label, context_mode, context, and model.
+    Set a spec's model ONLY when the user explicitly requests a specific model;
+    specs with different models are never merged. Athena groups compatible
+    same-provider specs into count-based spawn calls where possible and returns
+    every created terminal id in one response. Set open_workspace=true to
+    add/select the target workspace before spawning.
     """
     if not specs:
         raise ValueError("specs must include at least one terminal request.")
@@ -625,6 +638,7 @@ def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
         "session_label": session_label,
         "context_mode": _batch_context_mode(spec.get("context_mode"), task, context),
         "context": context,
+        "model": _validate_model(spec.get("model")),
     }
 
 
@@ -639,11 +653,28 @@ def _can_merge_batch_spawn_requests(left: dict[str, Any], right: dict[str, Any])
         and left.get("session_label") == right.get("session_label")
         and left.get("context_mode") == right.get("context_mode")
         and left.get("context") == right.get("context")
+        and left.get("model") == right.get("model")
     )
 
 
 def _string_or_none(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _validate_model(value: Any) -> str | None:
+    """Normalize an explicit model selection or reject an unsafe one.
+
+    The value is forwarded verbatim as a CLI flag argument, so it is quoted
+    downstream rather than interpolated. We still reject whitespace/control
+    characters here so a malformed request fails fast instead of launching an
+    agent with a broken flag.
+    """
+    model = _string_or_none(value)
+    if model is None:
+        return None
+    if any(char.isspace() for char in model) or any(ord(char) < 0x20 for char in model):
+        raise ValueError("model must be a single token without whitespace or control characters.")
+    return model
 
 
 def _context_mode_or_none(value: Any) -> str | None:

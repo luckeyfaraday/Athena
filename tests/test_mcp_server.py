@@ -91,6 +91,9 @@ def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
     assert schema["properties"]["open_workspace"] == {"type": "boolean"}
+    assert schema["properties"]["model"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
     assert schema["required"] == ["project_dir"]
 
 
@@ -174,6 +177,7 @@ def test_spawn_agent_defaults_to_visible_terminal(monkeypatch: pytest.MonkeyPatc
             "context_mode": "task",
             "context": None,
             "open_workspace": False,
+            "model": None,
         }
     ]
 
@@ -222,6 +226,7 @@ def test_spawn_agent_accepts_athena_code_alias(monkeypatch: pytest.MonkeyPatch, 
             "context_mode": "task",
             "context": None,
             "open_workspace": False,
+            "model": None,
         }
     ]
 
@@ -253,6 +258,7 @@ def test_spawn_terminal_normalizes_athena_code_kind(monkeypatch: pytest.MonkeyPa
                 "context_mode": None,
                 "context": None,
                 "open_workspace": False,
+                "model": None,
             },
         )
     ]
@@ -340,6 +346,7 @@ def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.Monke
             "session_label": "New",
             "context_mode": "task",
             "context": None,
+            "model": None,
         },
         {
             "project_dir": str(tmp_path),
@@ -351,6 +358,7 @@ def test_spawn_terminals_batch_groups_compatible_specs(monkeypatch: pytest.Monke
             "session_label": "New",
             "context_mode": "task",
             "context": None,
+            "model": None,
         },
     ]
 
@@ -376,6 +384,77 @@ def test_spawn_terminals_batch_defaults_context_from_spec(monkeypatch: pytest.Mo
     )
 
     assert [call["context_mode"] for call in calls] == ["task", "curated", None]
+
+
+def test_spawn_agent_forwards_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    asyncio.run(
+        tools.context_workspace_spawn_agent(
+            str(tmp_path),
+            "Investigate",
+            agent_type="claude",
+            model="opus",
+        )
+    )
+
+    assert calls[0]["model"] == "opus"
+
+
+def test_spawn_terminal_forwards_model_to_electron(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:
+            calls.append((path, json_body))
+            return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    asyncio.run(tools.context_workspace_spawn_terminal(str(tmp_path), kind="opencode", model="anthropic/claude-opus-4-8"))
+
+    assert calls[0][1]["model"] == "anthropic/claude-opus-4-8"
+
+
+def test_spawn_terminal_rejects_model_with_whitespace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:  # pragma: no cover
+            raise AssertionError("electron client must not be called for an invalid model")
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    with pytest.raises(ValueError):
+        asyncio.run(tools.context_workspace_spawn_terminal(str(tmp_path), kind="codex", model="bad model; rm -rf /"))
+
+
+def test_spawn_terminals_batch_keeps_distinct_models_separate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": f"terminal-{len(calls)}"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    asyncio.run(
+        tools.context_workspace_spawn_terminals_batch(
+            str(tmp_path),
+            [
+                {"kind": "opencode", "task": "Review", "model": "anthropic/claude-opus-4-8"},
+                {"kind": "opencode", "task": "Review", "model": "anthropic/claude-sonnet-4-6"},
+            ],
+        )
+    )
+
+    # Specs with different models must not be merged into a single count-2 spawn.
+    assert [call["count"] for call in calls] == [1, 1]
+    assert [call["model"] for call in calls] == ["anthropic/claude-opus-4-8", "anthropic/claude-sonnet-4-6"]
 
 
 def test_electron_control_discovery_reports_stale_health(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

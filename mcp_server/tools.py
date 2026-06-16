@@ -280,10 +280,12 @@ async def context_workspace_spawn_terminals_batch(
 
     Use this when a task needs several agents at once, for example two
     OpenCode panes and one Athena Code pane. Each spec accepts kind, count, title,
-    task, resume_session_id, session_label, context_mode, and context. Athena
-    groups compatible same-provider specs into count-based spawn calls where
-    possible and returns every created terminal id in one response. Set
-    open_workspace=true to add/select the target workspace before spawning.
+    task, resume_session_id, session_label, context_mode, context, and model.
+    Set a spec's model ONLY when the user explicitly requests a specific model;
+    specs with different models are never merged. Athena groups compatible
+    same-provider specs into count-based spawn calls where possible and returns
+    every created terminal id in one response. Set open_workspace=true to
+    add/select the target workspace before spawning.
     """
     if not specs:
         raise ValueError("specs must include at least one terminal request.")

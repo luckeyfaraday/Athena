@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, shell, type MenuItemConstructorOptions } from "electron";
+import { app, BrowserWindow, Menu, dialog, shell, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,28 @@ const appRoot = path.resolve(__dirname, "..");
 
 let mainWindow: BrowserWindow | null = null;
 let viteProc: ChildProcess | null = null;
+
+// Resolve the ATHENA app icon for the live window/taskbar/dock. The
+// electron-builder `icon` config only brands the *packaged* bundle, so without
+// this the running app (and dev `electron .`) falls back to the default
+// Electron placeholder even though we ship the assets. Prefer the high-res PNG;
+// `build/**` is bundled in packaged builds and present in the repo for dev.
+function resolveAppIcon(): NativeImage | null {
+  const candidates = [
+    path.join(appRoot, "build", "icon-512.png"),
+    path.join(appRoot, "build", "icon.png"),
+    path.join(appRoot, "dist", "athena-icon-256.png"),
+  ];
+  for (const candidate of candidates) {
+    const image = nativeImage.createFromPath(candidate);
+    if (!image.isEmpty()) {
+      return image;
+    }
+  }
+  return null;
+}
+
+const appIcon = resolveAppIcon();
 const singleInstanceLock = app.isPackaged ? app.requestSingleInstanceLock() : true;
 
 if (!singleInstanceLock) {
@@ -144,6 +166,7 @@ async function createWindow(): Promise<void> {
     height: 820,
     minWidth: 960,
     minHeight: 640,
+    ...(appIcon ? { icon: appIcon } : {}),
     frame: false,
     titleBarStyle: "hidden",
     backgroundColor: "#07120f",
@@ -209,6 +232,10 @@ app.on("second-instance", () => {
 
 if (singleInstanceLock) {
   app.whenReady().then(async () => {
+    // macOS ignores the BrowserWindow `icon` option for the dock; set it here.
+    if (process.platform === "darwin" && appIcon && app.dock) {
+      app.dock.setIcon(appIcon);
+    }
     beginAthenaLaunch({ restoreAttemptPending: hasPendingEmbeddedTerminalRestoreAttempts() });
     await runDiskPreflight();
     try {

@@ -12,6 +12,8 @@ directories:
 files:
   - dist/**
   - dist-electron/**
+  - build/icon-512.png
+  - build/icon.png
   - package.json
 extraResources:
   - from: ../backend

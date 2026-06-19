@@ -165,6 +165,24 @@ test("agentConfig athena mirrors opencode's argument shape with the athena-code 
   assert.equal(athena.resumeArgs("/ws", "s1", "bash"), `athena-code --session 's1' '/ws'`);
 });
 
+test("agentConfig grok passes the workspace via --cwd and resumes with -r", () => {
+  const grok = agentConfig("grok");
+  assert.equal(grok.executable, "grok");
+  assert.equal(
+    grok.args("/ws", "/tmp/p.md", "bash"),
+    `--cwd '/ws' "$(tr '\\r\\n' '  ' < '/tmp/p.md')"`,
+  );
+  assert.equal(grok.args("/ws", null, "bash"), `--cwd '/ws'`);
+  assert.equal(grok.args("/ws", "/tmp/p.md", "bash", null, null, "grok-4"), `--model 'grok-4' --cwd '/ws' "$(tr '\\r\\n' '  ' < '/tmp/p.md')"`);
+  assert.equal(grok.resumeArgs("/ws", "s1", "bash"), `grok --cwd '/ws' -r 's1'`);
+});
+
+test("launchCommand treats Grok as a PATH-installed agent", () => {
+  const command = launchCommand("grok", "/home/dev/project", null);
+  assert.match(command, /command -v 'grok'/);
+  assert.match(command, /grok --cwd '\/home\/dev\/project'/);
+});
+
 test("PowerShell builders pass values through quotePowerShell, not raw interpolation", () => {
   const command = launchPowerShellCommand("codex", "C:\\Users\\dev\\proj", "C:\\tmp\\p.md", null);
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);

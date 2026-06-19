@@ -7,7 +7,7 @@ import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
 import { querySqlite, type SqliteValue } from "./sqlite.js";
 
-export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes";
+export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
 
 export type AgentSession = {
   id: string;
@@ -43,14 +43,15 @@ export function listAgentSessionsCached(workspace: string, liveTerminals: Embedd
 }
 
 async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
-  const [codex, opencode, athena, claude, hermes] = await Promise.all([
+  const [codex, opencode, athena, claude, hermes, grok] = await Promise.all([
     readCodexSessions(workspace),
     readOpenCodeSessions(workspace),
     readAthenaSessions(workspace),
     readClaudeSessions(workspace),
     readHermesSessions(workspace),
+    readGrokSessions(workspace),
   ]);
-  return mergeSessions([...codex, ...opencode, ...athena, ...claude, ...hermes]);
+  return mergeSessions([...codex, ...opencode, ...athena, ...claude, ...hermes, ...grok]);
 }
 
 function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTerminalSession[], workspace: string): AgentSession[] {
@@ -344,6 +345,104 @@ async function readAthenaSessions(workspace: string): Promise<AgentSession[]> {
       metadata: { turns: stringValue(row[5]) },
     };
   }).filter((session) => Boolean(session.id));
+}
+
+// Grok Build stores one directory per session at
+// ~/.grok/sessions/<urlencoded-cwd>/<session-id>/, each holding summary.json
+// (id, cwd, created/updated, model) and chat_history.jsonl (messages). There is
+// no shared database to query, so we enumerate the session dirs whose decoded cwd
+// is the workspace or a descendant and read each summary.
+async function readGrokSessions(workspace: string): Promise<AgentSession[]> {
+  const sessionsRoot = path.join(os.homedir(), ".grok", "sessions");
+  let cwdDirs: fs.Dirent[];
+  try {
+    cwdDirs = await fs.promises.readdir(sessionsRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const sessions: AgentSession[] = [];
+  for (const cwdDir of cwdDirs) {
+    if (!cwdDir.isDirectory()) continue;
+    const decodedCwd = decodeGrokCwd(cwdDir.name);
+    if (!decodedCwd || !sameOrDescendantPath(decodedCwd, workspace)) continue;
+    const cwdPath = path.join(sessionsRoot, cwdDir.name);
+    let sessionDirs: fs.Dirent[];
+    try {
+      sessionDirs = await fs.promises.readdir(cwdPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessionDir of sessionDirs) {
+      if (!sessionDir.isDirectory()) continue;
+      const session = await readGrokSession(path.join(cwdPath, sessionDir.name), sessionDir.name, decodedCwd);
+      if (session) sessions.push(session);
+      if (sessions.length >= MAX_PROVIDER_ROWS) return sessions;
+    }
+  }
+  return sessions;
+}
+
+async function readGrokSession(sessionPath: string, dirName: string, fallbackWorkspace: string): Promise<AgentSession | null> {
+  const summary = parseJsonObject(await readFileSafe(path.join(sessionPath, "summary.json")));
+  const info = objectProperty(summary, "info");
+  const id = stringProperty(info, "id") ?? dirName;
+  if (!id) return null;
+  const sessionWorkspace = stringProperty(info, "cwd") ?? fallbackWorkspace;
+  const createdAt = stringProperty(summary, "created_at") ?? new Date(0).toISOString();
+  const updatedAt = stringProperty(summary, "updated_at") ?? createdAt;
+  const summaryTitle = stringProperty(summary, "session_summary");
+  const title = cleanSessionTitle(summaryTitle ?? await firstGrokUserMessage(path.join(sessionPath, "chat_history.jsonl"))) || "Grok session";
+  return {
+    id,
+    provider: "grok",
+    title,
+    workspace: sessionWorkspace,
+    branch: null,
+    model: stringProperty(summary, "current_model_id"),
+    agent: "Grok",
+    createdAt,
+    updatedAt,
+    status: "historical",
+    terminalId: null,
+    pid: null,
+    resumeCommand: `grok --cwd ${quoteShellArg(sessionWorkspace)} -r ${quoteShellArg(id)}`,
+    metadata: {},
+  };
+}
+
+function decodeGrokCwd(dirName: string): string | null {
+  try {
+    return decodeURIComponent(dirName);
+  } catch {
+    return null;
+  }
+}
+
+async function firstGrokUserMessage(historyPath: string): Promise<string | null> {
+  const raw = await readFileSafe(historyPath);
+  if (!raw) return null;
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const entry = parseJsonObject(line);
+    // Skip injected system-reminders, which Grok records as synthetic user turns.
+    if (!entry || entry.type !== "user" || "synthetic_reason" in entry) continue;
+    const content = entry.content;
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content.map((block) => (block && typeof block === "object" ? stringProperty(block as Record<string, unknown>, "text") ?? "" : "")).join(" ")
+        : "";
+    if (text.trim()) return text;
+  }
+  return null;
+}
+
+async function readFileSafe(filePath: string): Promise<string | null> {
+  try {
+    return await fs.promises.readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 async function readClaudeSessions(workspace: string): Promise<AgentSession[]> {
@@ -696,7 +795,7 @@ function mergeSessions(sessions: AgentSession[]): AgentSession[] {
 }
 
 function isAgentKind(kind: string): kind is AgentSessionProvider {
-  return kind === "codex" || kind === "opencode" || kind === "athena" || kind === "claude" || kind === "hermes";
+  return kind === "codex" || kind === "opencode" || kind === "athena" || kind === "claude" || kind === "hermes" || kind === "grok";
 }
 
 function samePath(left: string, right: string): boolean {

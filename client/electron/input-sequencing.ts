@@ -8,7 +8,7 @@ const BRACKETED_PASTE_END = "\x1b[201~";
 // paste-detecting the burst) instead of submitting. For these we paste the body
 // atomically and submit with a separate, isolated Enter. `shell` is line-based and
 // submits reliably from a single `text\r`, so it stays on the simple path.
-const PASTE_SUBMIT_KINDS = new Set(["codex", "claude", "opencode", "athena", "hermes"]);
+const PASTE_SUBMIT_KINDS = new Set(["codex", "claude", "opencode", "athena", "hermes", "grok"]);
 
 export type TerminalInputWrite = {
   data: string;

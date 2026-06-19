@@ -219,6 +219,25 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
 }
 
 export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
+  if (kind === "grok") {
+    // xAI's Grok Build CLI: the interactive TUI takes a positional initial prompt
+    // and `--cwd <dir>` for the working directory, and resumes a saved session with
+    // `-r <id>`. It accepts the shared `--model` flag, so $modelArgs is reused.
+    return {
+      label: "Grok",
+      executable: "grok",
+      powerShellCommand: "$agentPrompt = (($prompt -replace '[\\r\\n]+', ' ') -replace '\\s{2,}', ' ').Trim(); $agentArgs = $modelArgs + @('--cwd', $workspace, $agentPrompt); & $agentCommand @agentArgs",
+      powerShellCommandWithoutPrompt: "$agentArgs = $modelArgs + @('--cwd', $workspace); & $agentCommand @agentArgs",
+      resumePowerShellCommand: "$agentArgs = @('--cwd', $workspace, '-r', $sessionId); & $agentCommand @agentArgs",
+      args: (cwd, promptPath, _shell, _mcp, _newSessionId, model) => {
+        const base = promptPath
+          ? `--cwd ${quoteShell(cwd)} "$(tr '\\r\\n' '  ' < ${quoteShell(promptPath)})"`
+          : `--cwd ${quoteShell(cwd)}`;
+        return `${modelBashArg(model)} ${base}`.trim();
+      },
+      resumeArgs: (cwd, sessionId) => `grok --cwd ${quoteShell(cwd)} -r ${quoteShell(sessionId)}`,
+    };
+  }
   if (kind === "athena") {
     // Athena Code is a standalone opencode fork installed like any other
     // agent CLI, so it shares opencode's argument shape.

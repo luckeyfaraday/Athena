@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from .adapters.base import AgentAdapter
 from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
 from .adapters.codex import CodexAdapter
+from .adapters.grok import GrokAdapter
 from .context_bundle import ContextBundleStore
 from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
@@ -135,7 +136,7 @@ def create_app(
     app.state.registry = registry or RunRegistry()
     app.state.executor = executor or RunExecutor(registry=app.state.registry)
     app.state.context_bundles = ContextBundleStore()
-    app.state.adapters = adapters or {"codex": CodexAdapter()}
+    app.state.adapters = adapters or {"codex": CodexAdapter(), "grok": GrokAdapter()}
     app.state.limits = limits or RuntimeLimits()
     app.state.pool = ThreadPoolExecutor(max_workers=4)
     app.state.execute_inline = execute_inline
@@ -690,7 +691,7 @@ def _session_provider(provider: str | None) -> Any:
     if provider is None or not provider.strip():
         return None
     normalized = provider.strip().lower()
-    if normalized not in {"codex", "opencode", "athena", "claude", "hermes"}:
+    if normalized not in {"codex", "opencode", "athena", "claude", "hermes", "grok"}:
         raise ValueError(f"Unsupported session provider: {provider}")
     return normalized
 

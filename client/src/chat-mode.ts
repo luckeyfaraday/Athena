@@ -14,7 +14,7 @@ export type SentPromptBlock = {
 const sentPromptHistoryBySession = new Map<string, SentPromptBlock[]>();
 
 export function promptWritesForKind(kind: EmbeddedTerminalKind, prompt: string): string[] {
-  return kind === "codex" ? [prompt, "\r"] : [`${prompt}\r`];
+  return kind === "codex" || kind === "grok" ? [prompt, "\r"] : [`${prompt}\r`];
 }
 
 export async function writePromptSequence(

@@ -134,7 +134,7 @@ export function CommandRoom({
     for (const session of visibleAgentSessions) {
       counts.set(session.provider, (counts.get(session.provider) ?? 0) + 1);
     }
-    return (["all", "codex", "opencode", "athena", "claude", "hermes"] as SessionProviderFilter[]).map((provider) => ({
+    return (["all", "codex", "opencode", "athena", "claude", "grok", "hermes"] as SessionProviderFilter[]).map((provider) => ({
       provider,
       label: provider === "all" ? "All" : providerLabel(provider),
       count: counts.get(provider) ?? 0,
@@ -462,7 +462,7 @@ export function CommandRoom({
             <div className="agentSessionsEmpty">
               <Code2 size={30} />
               <strong>No agent sessions found.</strong>
-              <span>Launch Codex, OpenCode, Athena Code, Claude, or Hermes from this workspace to track live and historical sessions here.</span>
+              <span>Launch Codex, OpenCode, Athena Code, Claude, Grok, or Hermes from this workspace to track live and historical sessions here.</span>
             </div>
           )}
         </div>
@@ -528,6 +528,8 @@ function NewLaunchMenu({
     { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <Users size={14} />, kind: "opencode", count: 4 },
     { label: "Claude", detail: "Spawn one Claude agent", icon: <ShieldCheck size={14} />, kind: "claude", count: 1 },
     { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ShieldCheck size={14} />, kind: "claude", count: 4 },
+    { label: "Grok", detail: "Spawn one Grok agent", icon: <Bot size={14} />, kind: "grok", count: 1 },
+    { label: "Grok Grid", detail: "Spawn four Grok panes", icon: <Layers3 size={14} />, kind: "grok", count: 4 },
   ];
 
   function launch(kind: EmbeddedTerminalKind, count: number) {

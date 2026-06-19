@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type AgentSkillTarget = "codex" | "claude" | "opencode";
+export type AgentSkillTarget = "codex" | "claude" | "opencode" | "grok";
 
 export type ManagedSkillInstallStatus =
   | "installed"
@@ -95,6 +95,7 @@ export function managedSkillTargets(homeDir: string): { target: AgentSkillTarget
     { target: "codex", destinationPath: path.join(homeDir, ".codex", "skills", ATHENA_SKILL_NAME) },
     { target: "claude", destinationPath: path.join(homeDir, ".claude", "skills", ATHENA_SKILL_NAME) },
     { target: "opencode", destinationPath: path.join(homeDir, ".config", "opencode", "skills", ATHENA_SKILL_NAME) },
+    { target: "grok", destinationPath: path.join(homeDir, ".grok", "skills", ATHENA_SKILL_NAME) },
   ];
 }
 

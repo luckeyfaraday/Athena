@@ -244,7 +244,7 @@ async def context_workspace_spawn_terminal(
 ) -> dict[str, Any]:
     """Low-level visible terminal spawner using Athena's Electron control server.
 
-    kind accepts shell, hermes, codex, opencode, claude, athena, or athena-code.
+    kind accepts shell, hermes, codex, opencode, claude, athena, athena-code, or grok.
     context_mode accepts: none, task, curated, immersive, immersive_curated.
     Manual/clean launches should use none. Immersive modes are explicit opt-in.
     Set open_workspace=true to add/select the target workspace before spawning.
@@ -587,6 +587,9 @@ def _terminal_kind_for_agent(agent_type: str) -> str:
         "athena": "athena",
         "athena-code": "athena",
         "athenacode": "athena",
+        "grok": "grok",
+        "grok-build": "grok",
+        "grokbuild": "grok",
     }
     if normalized not in aliases:
         raise ValueError(f"Unsupported agent type: {agent_type}")
@@ -627,7 +630,7 @@ def _normalize_batch_spawn_spec(spec: dict[str, Any]) -> dict[str, Any]:
     title = _string_or_none(spec.get("title"))
     session_label = _string_or_none(spec.get("session_label"))
     context = _string_or_none(spec.get("context")) or _string_or_none(spec.get("context_text"))
-    if session_label is None and kind in {"codex", "opencode", "claude", "athena"}:
+    if session_label is None and kind in {"codex", "opencode", "claude", "athena", "grok"}:
         session_label = "New"
     return {
         "kind": kind,
@@ -705,6 +708,7 @@ def _title_for_task(kind: str, task: str) -> str:
         "claude": "Claude",
         "hermes": "Hermes",
         "athena": "Athena Code",
+        "grok": "Grok",
     }.get(kind, "Agent")
     first_line = next((line.strip() for line in task.splitlines() if line.strip()), "")
     return f"{prefix}: {first_line[:48]}" if first_line else prefix

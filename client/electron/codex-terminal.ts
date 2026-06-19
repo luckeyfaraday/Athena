@@ -79,10 +79,12 @@ export async function startCodexTerminal(workspace: string, window: BrowserWindo
     ? { command: "powershell.exe", args: ["-NoLogo", "-NoExit", "-Command", "codex"] }
     : { command: "script", args: ["-qfec", "codex", "/dev/null"] };
 
+  const terminalEnv = sanitizedTerminalEnv();
   codexProcess = spawn(launch.command, launch.args, {
     cwd,
     env: {
-      ...sanitizedTerminalEnv(),
+      ...terminalEnv,
+      NPM_CONFIG_PREFIX: terminalEnv.CONTEXT_WORKSPACE_NPM_PREFIX,
       TERM: process.env.TERM || "xterm-256color",
       COLORTERM: process.env.COLORTERM || "truecolor",
     },
@@ -185,6 +187,7 @@ export async function openNativeCodexTerminal(workspace: string): Promise<Native
     const child = spawn(launch.command, launch.args, {
       cwd,
       detached: true,
+      env: sanitizedTerminalEnv(),
       stdio: "ignore",
       windowsHide: false,
     });
@@ -251,6 +254,7 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
       const child = spawn(launch.command, launch.args, {
         cwd,
         detached: true,
+        env: sanitizedTerminalEnv(),
         stdio: "ignore",
         windowsHide: false,
       });
@@ -296,12 +300,14 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
   const boundedPanes = Math.max(1, Math.min(panes, 8));
   const sessionName = `context-${Date.now().toString(36)}`;
   const scripts: string[] = [];
+  const terminalEnv = sanitizedTerminalEnv();
   for (let index = 0; index < boundedPanes; index += 1) {
     scripts.push(writeCodexLaunchScript(cwd));
   }
 
   const first = spawnSync("tmux", ["new-session", "-d", "-s", sessionName, "-c", cwd, "bash"], {
     cwd,
+    env: terminalEnv,
     encoding: "utf8",
   });
   if (first.status !== 0) {
@@ -320,29 +326,32 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
     return { ok: false, command: "tmux", pid: null, session, error };
   }
 
-  spawnSync("tmux", ["set-option", "-t", sessionName, "mouse", "on"], { cwd, encoding: "utf8" });
-  spawnSync("tmux", ["set-option", "-t", sessionName, "pane-border-status", "top"], { cwd, encoding: "utf8" });
+  spawnSync("tmux", ["set-option", "-t", sessionName, "mouse", "on"], { cwd, env: terminalEnv, encoding: "utf8" });
+  spawnSync("tmux", ["set-option", "-t", sessionName, "pane-border-status", "top"], { cwd, env: terminalEnv, encoding: "utf8" });
   spawnSync("tmux", ["set-option", "-t", sessionName, "pane-border-format", " #{pane_index} #{pane_current_command} "], {
     cwd,
+    env: terminalEnv,
     encoding: "utf8",
   });
   spawnSync("tmux", ["set-hook", "-t", sessionName, "client-resized", `select-layout -t ${sessionName}:0 tiled`], {
     cwd,
+    env: terminalEnv,
     encoding: "utf8",
   });
 
   for (let index = 1; index < boundedPanes; index += 1) {
-    spawnSync("tmux", ["split-window", "-t", sessionName, "-c", cwd, "bash"], { cwd, encoding: "utf8" });
+    spawnSync("tmux", ["split-window", "-t", sessionName, "-c", cwd, "bash"], { cwd, env: terminalEnv, encoding: "utf8" });
   }
-  spawnSync("tmux", ["select-layout", "-t", sessionName, "tiled"], { cwd, encoding: "utf8" });
+  spawnSync("tmux", ["select-layout", "-t", sessionName, "tiled"], { cwd, env: terminalEnv, encoding: "utf8" });
 
   for (let index = 0; index < scripts.length; index += 1) {
     spawnSync("tmux", ["send-keys", "-t", `${sessionName}:0.${index}`, `bash ${quoteShell(scripts[index])}`, "Enter"], {
       cwd,
+      env: terminalEnv,
       encoding: "utf8",
     });
   }
-  spawnSync("tmux", ["select-pane", "-t", `${sessionName}:0.0`], { cwd, encoding: "utf8" });
+  spawnSync("tmux", ["select-pane", "-t", `${sessionName}:0.0`], { cwd, env: terminalEnv, encoding: "utf8" });
 
   const launch = nativeTerminalLaunch(cwd, tmuxAttachScript(sessionName, cwd));
   if (!launch) {
@@ -364,6 +373,7 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
     const child = spawn(launch.command, launch.args, {
       cwd,
       detached: true,
+      env: terminalEnv,
       stdio: "ignore",
       windowsHide: false,
     });
@@ -409,14 +419,16 @@ function writeCodexLaunchScript(cwd: string): string {
     ? [
         `$workspace = ${quotePowerShell(cwd)}`,
         "Set-Location -LiteralPath $workspace",
+        "if ($env:CONTEXT_WORKSPACE_NPM_PREFIX) { $env:NPM_CONFIG_PREFIX = $env:CONTEXT_WORKSPACE_NPM_PREFIX } else { $env:NPM_CONFIG_PREFIX = Join-Path $HOME '.npm-global' }",
         "& codex --cd $workspace",
+        "Remove-Item Env:NPM_CONFIG_PREFIX -ErrorAction SilentlyContinue",
         "",
       ].join("\r\n")
     : [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         `cd ${quoteShell(cwd)}`,
-        `codex --cd ${quoteShell(cwd)}`,
+        'NPM_CONFIG_PREFIX="${CONTEXT_WORKSPACE_NPM_PREFIX:-$HOME/.npm-global}" codex --cd ' + quoteShell(cwd),
         "exec bash",
         "",
       ].join("\n");

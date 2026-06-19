@@ -55,6 +55,31 @@ function codexMcpPowerShellArray(mcp?: AgentMcpLaunch | null): string {
   return overrides.flatMap((override) => ["'-c'", quotePowerShell(override)]).join(", ");
 }
 
+function codexNpmPrefixBashCommand(): string {
+  return [
+    "unset npm_config_prefix NPM_CONFIG_PREFIX npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG",
+    'export NPM_CONFIG_PREFIX="${CONTEXT_WORKSPACE_NPM_PREFIX:-$HOME/.npm-global}"',
+    'case ":$PATH:" in *":$NPM_CONFIG_PREFIX/bin:"*) ;; *) export PATH="$NPM_CONFIG_PREFIX/bin:$PATH" ;; esac',
+  ].join("; ");
+}
+
+function codexNpmPrefixBashCleanup(): string {
+  return "unset NPM_CONFIG_PREFIX";
+}
+
+function codexNpmPrefixPowerShellCommand(): string {
+  return [
+    "Remove-Item Env:npm_config_prefix,Env:NPM_CONFIG_PREFIX,Env:npm_config_globalconfig,Env:NPM_CONFIG_GLOBALCONFIG -ErrorAction SilentlyContinue",
+    "if ($env:CONTEXT_WORKSPACE_NPM_PREFIX) { $env:NPM_CONFIG_PREFIX = $env:CONTEXT_WORKSPACE_NPM_PREFIX } else { $env:NPM_CONFIG_PREFIX = Join-Path $HOME '.npm-global' }",
+    "$npmGlobalBin = Join-Path $env:NPM_CONFIG_PREFIX 'bin'",
+    "if (($env:Path -split [IO.Path]::PathSeparator) -notcontains $npmGlobalBin) { $env:Path = $npmGlobalBin + [IO.Path]::PathSeparator + $env:Path }",
+  ].join("; ");
+}
+
+function codexNpmPrefixPowerShellCleanup(): string {
+  return "Remove-Item Env:NPM_CONFIG_PREFIX -ErrorAction SilentlyContinue";
+}
+
 export function terminalLaunch(
   kind: EmbeddedTerminalKind,
   cwd: string,
@@ -121,9 +146,11 @@ export function launchCommand(
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+      kind === "codex" ? codexNpmPrefixBashCommand() : "",
       `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId, model)}`.trimEnd(),
+      kind === "codex" ? codexNpmPrefixBashCleanup() : "",
       "exec bash -l",
-    ].join("; ");
+    ].filter(Boolean).join("; ");
   }
 
   return [
@@ -165,9 +192,11 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
     `cd ${quoteShell(cwd)}`,
     `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
     `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+    kind === "codex" ? codexNpmPrefixBashCommand() : "",
     agent.resumeArgs(cwd, resumeSessionId, "bash", mcp),
+    kind === "codex" ? codexNpmPrefixBashCleanup() : "",
     "exec bash -l",
-  ].join("; ");
+  ].filter(Boolean).join("; ");
 }
 
 export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcp?: AgentMcpLaunch | null): string {
@@ -179,13 +208,15 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
     kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
+    kind === "codex" ? codexNpmPrefixPowerShellCommand() : "",
     "Set-Location -LiteralPath $workspace",
     "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     agent.resumePowerShellCommand,
-  ].join("; ");
+    kind === "codex" ? codexNpmPrefixPowerShellCleanup() : "",
+  ].filter(Boolean).join("; ");
 }
 
 export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcp?: AgentMcpLaunch | null, newSessionId?: string | null, model?: string | null): string {
@@ -198,6 +229,7 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
     kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
+    kind === "codex" ? codexNpmPrefixPowerShellCommand() : "",
     // $modelArgs is spliced into every agent's argument array; @() when no model
     // was explicitly requested, so the agent CLI keeps its own default.
     model ? `$modelArgs = @('--model', ${quotePowerShell(model)})` : "$modelArgs = @()",
@@ -215,7 +247,8 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     // literal quotes inside a single argument. See agentConfig powerShellCommand.
     promptPath ? "$prompt = (Get-Content -LiteralPath $promptPath -Raw).Replace('\"', '\\\"')" : "",
     promptPath ? agent.powerShellCommand : agent.powerShellCommandWithoutPrompt,
-  ].join("; ");
+    kind === "codex" ? codexNpmPrefixPowerShellCleanup() : "",
+  ].filter(Boolean).join("; ");
 }
 
 export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {

@@ -15,6 +15,7 @@ export function sanitizedTerminalEnv(source: NodeJS.ProcessEnv = process.env): N
     delete env[key];
   }
   const prefix = npmGlobalPrefix(source);
+  env.CONTEXT_WORKSPACE_NPM_PREFIX = prefix;
   prependPathEntry(env, npmGlobalBinPath(prefix));
   return env;
 }

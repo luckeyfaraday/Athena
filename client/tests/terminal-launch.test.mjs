@@ -38,6 +38,8 @@ test("launchCommand cd's into the workspace and execs a login shell for plain sh
 
 test("launchCommand for an agent guards on command availability before launching", () => {
   const command = launchCommand("codex", "/home/dev/project", "/tmp/prompt.md");
+  assert.match(command, /NPM_CONFIG_PREFIX/);
+  assert.match(command, /unset npm_config_prefix npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG/);
   assert.match(command, /command -v 'codex'/);
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
@@ -59,6 +61,7 @@ test("launchResumeCommand wires the provider resume invocation with quoted ids",
   const command = launchResumeCommand("claude", "/home/dev/project", "sess-123");
   assert.match(command, /claude .*--resume 'sess-123'/);
   const codex = launchResumeCommand("codex", "/home/dev/project", "abc-1");
+  assert.match(codex, /NPM_CONFIG_PREFIX/);
   assert.match(codex, /codex -c shell_environment_policy.inherit=all resume --cd '\/home\/dev\/project' 'abc-1'/);
 });
 
@@ -168,6 +171,7 @@ test("agentConfig athena mirrors opencode's argument shape with the athena-code 
 test("PowerShell builders pass values through quotePowerShell, not raw interpolation", () => {
   const command = launchPowerShellCommand("codex", "C:\\Users\\dev\\proj", "C:\\tmp\\p.md", null);
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);
+  assert.match(command, /\$env:NPM_CONFIG_PREFIX/);
   assert.match(command, /Set-Location -LiteralPath \$workspace/);
   // Codex prompt is splatted as an array element ($prompt), never string-built.
   assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all'\) \+ \$mcpConfigArgs \+ \$modelArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);

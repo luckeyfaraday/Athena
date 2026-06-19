@@ -1,4 +1,4 @@
-"""Native agent session discovery for Codex, OpenCode, Athena Code, Claude Code, and Hermes."""
+"""Native agent session discovery for Codex, OpenCode, Athena Code, Claude Code, Hermes, and Grok."""
 
 from __future__ import annotations
 
@@ -13,9 +13,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 
 
-AgentSessionProvider = Literal["codex", "opencode", "athena", "claude", "hermes"]
+AgentSessionProvider = Literal["codex", "opencode", "athena", "claude", "hermes", "grok"]
 AgentSessionStatus = Literal["historical"]
 MAX_PROVIDER_ROWS = 1000
 
@@ -76,7 +77,7 @@ def list_native_agent_sessions(
     """
     workspace = Path(project_dir).expanduser().resolve() if project_dir is not None else None
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
-    providers = [provider] if provider else ["codex", "opencode", "athena", "claude", "hermes"]
+    providers = [provider] if provider else ["codex", "opencode", "athena", "claude", "hermes", "grok"]
 
     sessions: list[AgentSession] = []
     if "codex" in providers:
@@ -89,6 +90,8 @@ def list_native_agent_sessions(
         sessions.extend(_read_claude_sessions(workspace, home))
     if "hermes" in providers:
         sessions.extend(_read_hermes_sessions(workspace, home))
+    if "grok" in providers:
+        sessions.extend(_read_grok_sessions(workspace, home))
 
     matches = [_session for _session in _merge_sessions(sessions) if _matches_query(_session, query)]
     return matches[: max(1, min(limit, 500))]
@@ -132,6 +135,8 @@ def read_agent_session_transcript(
         markdown = _read_hermes_transcript(normalized_id, home)
     elif provider == "codex":
         markdown = _read_codex_transcript(normalized_id, home)
+    elif provider == "grok":
+        markdown = _read_grok_transcript(normalized_id, home)
     else:
         raise ValueError(f"Unsupported session provider: {provider}")
     if not markdown:
@@ -608,6 +613,137 @@ def _read_athena_transcript(session_id: str, home: Path) -> str:
         if body:
             lines.extend([heading, "", body, ""])
     return "\n".join(lines).strip() + "\n"
+
+
+def _grok_sessions_root(home: Path) -> Path:
+    return home / ".grok" / "sessions"
+
+
+def _read_grok_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
+    sessions_root = _grok_sessions_root(home)
+    if not sessions_root.is_dir():
+        return []
+    sessions: list[AgentSession] = []
+    for cwd_dir in sorted(sessions_root.iterdir()):
+        if not cwd_dir.is_dir():
+            continue
+        decoded_cwd = unquote(cwd_dir.name)
+        if workspace is not None and not _same_or_descendant_path(decoded_cwd, workspace):
+            continue
+        for session_dir in cwd_dir.iterdir():
+            if not session_dir.is_dir():
+                continue
+            session = _read_grok_session(session_dir, decoded_cwd)
+            if session is not None:
+                sessions.append(session)
+            if len(sessions) >= MAX_PROVIDER_ROWS:
+                return sessions
+    return sessions
+
+
+def _read_grok_session(session_dir: Path, fallback_workspace: str) -> AgentSession | None:
+    summary = _json_object(_read_text_file(session_dir / "summary.json")) or {}
+    info = summary.get("info")
+    info = info if isinstance(info, dict) else {}
+    session_id = _string_value(info.get("id")) or session_dir.name
+    if not session_id:
+        return None
+    session_workspace = _string_value(info.get("cwd")) or fallback_workspace
+    epoch = datetime.fromtimestamp(0, timezone.utc).isoformat().replace("+00:00", "Z")
+    created_at = _nullable_string(summary.get("created_at")) or epoch
+    updated_at = _nullable_string(summary.get("updated_at")) or created_at
+    title = (
+        _clean_session_title(_nullable_string(summary.get("session_summary")))
+        or _clean_session_title(_first_grok_user_message(session_dir / "chat_history.jsonl"))
+        or "Grok session"
+    )
+    return AgentSession(
+        id=session_id,
+        provider="grok",
+        title=title,
+        workspace=session_workspace,
+        branch=None,
+        model=_nullable_string(summary.get("current_model_id")),
+        agent="Grok",
+        created_at=created_at,
+        updated_at=updated_at,
+        status="historical",
+        terminal_id=None,
+        pid=None,
+        resume_command=f"grok --cwd {_quote_shell_arg(session_workspace)} -r {_quote_shell_arg(session_id)}",
+        metadata={},
+    )
+
+
+def _read_grok_transcript(session_id: str, home: Path) -> str:
+    sessions_root = _grok_sessions_root(home)
+    if not sessions_root.is_dir():
+        return ""
+    session_dir = next(
+        (path.parent for path in sessions_root.glob(f"*/{session_id}/chat_history.jsonl")),
+        None,
+    )
+    if session_dir is None:
+        return ""
+    summary = _json_object(_read_text_file(session_dir / "summary.json")) or {}
+    info = summary.get("info")
+    workspace = _string_value(info.get("cwd")) if isinstance(info, dict) else unquote(session_dir.parent.name)
+    lines = ["# Grok Session Transcript", "", f"- session: {session_id}"]
+    if workspace:
+        lines.append(f"- workspace: {workspace}")
+    lines.extend(["", "## Turns", ""])
+    for entry in _read_jsonl(session_dir / "chat_history.jsonl"):
+        if "synthetic_reason" in entry:
+            continue
+        role = _string_value(entry.get("type"))
+        if role not in ("user", "assistant"):
+            continue
+        body = _grok_message_text(entry.get("content")).strip()
+        if body:
+            lines.extend([f"### {role.title()}", "", body, ""])
+    return "\n".join(lines).strip() + "\n"
+
+
+def _first_grok_user_message(history_path: Path) -> str | None:
+    for entry in _read_jsonl(history_path):
+        # Skip injected system-reminders, which Grok records as synthetic user turns.
+        if entry.get("type") != "user" or "synthetic_reason" in entry:
+            continue
+        text = _grok_message_text(entry.get("content")).strip()
+        if text:
+            return text
+    return None
+
+
+def _grok_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            _string_value(block.get("text")) for block in content if isinstance(block, dict) and block.get("text")
+        )
+    return ""
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    raw = _read_text_file(path)
+    if not raw:
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        data = _json_object(line)
+        if data:
+            entries.append(data)
+    return entries
+
+
+def _read_text_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _opencode_transcript_header(row: tuple[Any, ...]) -> str:

@@ -617,6 +617,61 @@ def test_hermes_sessions_match_windows_style_workspace_mentions(tmp_path: Path, 
     assert [session.id for session in sessions] == ["windows_path"]
 
 
+def test_lists_grok_sessions_from_session_dirs(tmp_path: Path) -> None:
+    from urllib.parse import quote
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    other_workspace = tmp_path / "other"
+    workspace.mkdir()
+    other_workspace.mkdir()
+
+    def _write_grok_session(cwd: Path, session_id: str, *, summary: str, first_user: str) -> None:
+        session_dir = home / ".grok" / "sessions" / quote(str(cwd), safe="") / session_id
+        session_dir.mkdir(parents=True)
+        (session_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "info": {"id": session_id, "cwd": str(cwd)},
+                    "session_summary": summary,
+                    "created_at": "2026-06-10T10:00:00Z",
+                    "updated_at": "2026-06-10T10:05:00Z",
+                    "current_model_id": "grok-build",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (session_dir / "chat_history.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "system", "content": "system prompt"}),
+                    json.dumps({"type": "user", "content": [{"type": "text", "text": "ignored reminder"}], "synthetic_reason": "skill"}),
+                    json.dumps({"type": "user", "content": [{"type": "text", "text": first_user}]}),
+                    json.dumps({"type": "assistant", "content": [{"type": "text", "text": "Wired the Grok provider."}]}),
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    _write_grok_session(workspace, "grok-session-1", summary="", first_user="Add Grok as a coding agent")
+    _write_grok_session(other_workspace, "grok-other", summary="Other workspace", first_user="Different project")
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="grok")
+    transcript = read_agent_session_transcript("grok", "grok-session-1", home_dir=home)
+
+    assert [session.id for session in sessions] == ["grok-session-1"]
+    assert sessions[0].provider == "grok"
+    # session_summary is empty, so the title falls back to the first real user turn.
+    assert sessions[0].title == "Add Grok as a coding agent"
+    assert sessions[0].model == "grok-build"
+    assert sessions[0].agent == "Grok"
+    assert sessions[0].resume_command == f'grok --cwd "{workspace}" -r "grok-session-1"'
+    assert "# Grok Session Transcript" in transcript
+    assert "Add Grok as a coding agent" in transcript
+    assert "Wired the Grok provider." in transcript
+    assert "ignored reminder" not in transcript
+
+
 def test_formats_empty_and_populated_summary(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

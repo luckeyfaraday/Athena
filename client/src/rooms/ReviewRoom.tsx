@@ -158,7 +158,7 @@ export function ReviewRoom({
     for (const source of handoffSources) {
       counts.set(source.provider, (counts.get(source.provider) ?? 0) + 1);
     }
-    return (["all", "codex", "opencode", "athena", "claude", "hermes", "shell"] as (HandoffSourceProvider | "all")[])
+    return (["all", "codex", "opencode", "athena", "claude", "grok", "hermes", "shell"] as (HandoffSourceProvider | "all")[])
       .filter((provider) => provider === "all" || (counts.get(provider) ?? 0) > 0)
       .map((provider) => ({
         provider,
@@ -444,6 +444,9 @@ export function ReviewRoom({
               </button>
               <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("athena")} disabled={Boolean(handoffLaunching)}>
                 <ScrollText size={14} /> {handoffLaunching === "athena" ? "Launching" : "Start Athena Code"}
+              </button>
+              <button type="button" className="ghostButton" onClick={() => void startFreshFromHandoff("grok")} disabled={Boolean(handoffLaunching)}>
+                <Bot size={14} /> {handoffLaunching === "grok" ? "Launching" : "Start Grok"}
               </button>
             </div>
           </div>

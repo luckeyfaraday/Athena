@@ -139,6 +139,7 @@ export function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
   if (kind === "opencode") return ["OpenCode Builder", "OpenCode Reviewer", "OpenCode Scout", "OpenCode Fixer"];
   if (kind === "claude") return ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"];
   if (kind === "athena") return ["Athena Builder", "Athena Reviewer", "Athena Scout", "Athena Fixer"];
+  if (kind === "grok") return ["Grok Builder", "Grok Reviewer", "Grok Scout", "Grok Fixer"];
   return ["Shell"];
 }
 
@@ -147,6 +148,7 @@ export function providerLabel(provider: AgentSession["provider"]): string {
   if (provider === "opencode") return "OpenCode";
   if (provider === "athena") return "Athena Code";
   if (provider === "claude") return "Claude";
+  if (provider === "grok") return "Grok";
   return "Codex";
 }
 

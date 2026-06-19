@@ -100,7 +100,7 @@ type CloseWorkspaceRequest = {
   workspace?: string;
 };
 
-const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude", "athena"]);
+const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes", "codex", "opencode", "claude", "athena", "grok"]);
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
@@ -359,7 +359,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
           throw error;
         });
         sessions.push(session);
-        if ((payload.kind === "opencode" || payload.kind === "athena") && index < payload.count - 1) await delay(650);
+        if ((payload.kind === "opencode" || payload.kind === "athena" || payload.kind === "grok") && index < payload.count - 1) await delay(650);
       }
       sendJson(response, 200, { sessions });
       return;
@@ -483,6 +483,9 @@ function embeddedTerminalKindValue(value: unknown): EmbeddedTerminalKind {
     athena: "athena",
     "athena-code": "athena",
     athenacode: "athena",
+    grok: "grok",
+    "grok-build": "grok",
+    grokbuild: "grok",
   };
   const kind = aliases[normalized];
   if (!kind || !SUPPORTED_TERMINAL_KINDS.has(kind)) {
@@ -540,7 +543,9 @@ function terminalGridTitle(kind: EmbeddedTerminalKind, index: number): string {
         ? ["Claude Builder", "Claude Reviewer", "Claude Scout", "Claude Fixer"]
         : kind === "athena"
           ? ["Athena Builder", "Athena Reviewer", "Athena Scout", "Athena Fixer"]
-          : [];
+          : kind === "grok"
+            ? ["Grok Builder", "Grok Reviewer", "Grok Scout", "Grok Fixer"]
+            : [];
   return titles[index] ?? `${kind}-${index + 1}`;
 }
 

@@ -539,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
     ses = sub.add_parser("sessions", help="Native agent sessions.").add_subparsers(dest="sub", required=True)
     p = leaf(ses, "list", help="List native sessions for the project.")
     p.add_argument("--all", action="store_true", help="All projects, grouped by workspace.")
-    p.add_argument("--provider", default=None, help="codex | claude | opencode | hermes")
+    p.add_argument("--provider", default=None, help="codex | claude | opencode | athena | hermes | grok")
     p.add_argument("--query", default="")
     p.add_argument("--limit", type=int, default=100)
     p.set_defaults(func=cmd_sessions_list)

@@ -200,7 +200,6 @@ _TERMINAL_STATUSES = {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED
 
 def _normalize_agent_type(agent_type: str) -> str:
     normalized = agent_type.strip().lower()
-    if normalized not in {"codex", "opencode", "claude"}:
+    if normalized not in {"codex", "opencode", "claude", "grok"}:
         raise ValueError(f"Unsupported agent type: {agent_type!r}")
     return normalized
-

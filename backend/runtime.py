@@ -14,7 +14,7 @@ from .runs import RunRegistry
 class RuntimeLimits:
     max_global: int = 4
     max_per_project: int = 2
-    max_per_agent_type: dict[str, int] = field(default_factory=lambda: {"codex": 2})
+    max_per_agent_type: dict[str, int] = field(default_factory=lambda: {"codex": 2, "grok": 2})
     default_timeout_seconds: float | None = 600
 
 
@@ -45,7 +45,7 @@ def check_runtime_limits(
 
 def adapter_statuses(adapters: dict[str, AgentAdapter]) -> dict[str, dict[str, object]]:
     statuses = {}
-    for agent_type in ("codex", "opencode", "claude"):
+    for agent_type in ("codex", "opencode", "claude", "grok"):
         adapter = adapters.get(agent_type)
         executable = getattr(adapter, "executable", agent_type) if adapter is not None else agent_type
         command_path = shutil.which(str(executable))

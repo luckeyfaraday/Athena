@@ -1,10 +1,10 @@
 import type { EmbeddedTerminalKind, EmbeddedTerminalSpawnOptions } from "./electron";
 
-export type HandoffAgentKind = Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude" | "athena">;
+export type HandoffAgentKind = Extract<EmbeddedTerminalKind, "codex" | "opencode" | "claude" | "athena" | "grok">;
 
 export function handoffLaunchOptions(kind: HandoffAgentKind, markdown: string): EmbeddedTerminalSpawnOptions {
   const label =
-    kind === "opencode" ? "OpenCode" : kind === "claude" ? "Claude" : kind === "athena" ? "Athena Code" : "Codex";
+    kind === "opencode" ? "OpenCode" : kind === "claude" ? "Claude" : kind === "athena" ? "Athena Code" : kind === "grok" ? "Grok" : "Codex";
   return {
     kind,
     title: `${label} Handoff`,

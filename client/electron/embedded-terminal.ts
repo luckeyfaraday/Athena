@@ -73,7 +73,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena";
+export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena" | "grok";
 
 export type EmbeddedTerminalSession = {
   id: string;
@@ -177,6 +177,9 @@ const CODEX_SESSION_DISCOVERY_ATTEMPTS = 20;
 const CODEX_SESSION_DISCOVERY_INTERVAL_MS = 750;
 const OPENCODE_SESSION_DISCOVERY_ATTEMPTS = 20;
 const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
+// Grok stamps the session dir at creation; allow a little slack so a dir written
+// just before our spawn timestamp (clock skew / startup latency) still matches.
+const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
 const pendingOutput = new Map<string, string>();
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
@@ -529,6 +532,7 @@ function classifyAgentProcess(command: string): EmbeddedTerminalKind | null {
   if (/\bathena-code(\s|$)/.test(lower) || lower.includes("/athena-code ")) return "athena";
   if (/\bclaude(\s|$)/.test(lower) || lower.includes("/claude ")) return "claude";
   if (/\bcodex(\s|$)/.test(lower) || lower.includes("/codex ")) return "codex";
+  if (/\bgrok(\s|$)/.test(lower) || lower.includes("/grok ")) return "grok";
   if (/\bopencode(\s|$)/.test(lower) || lower.includes("/opencode ")) return "opencode";
   if (/\bhermes(\s|$)/.test(lower) || lower.includes("/hermes") || lower.includes("hermes_cli")) return "hermes";
   return null;
@@ -1118,7 +1122,7 @@ function isRestorableTerminal(value: unknown): value is RestorableTerminal {
     && typeof item.title === "string"
     && typeof item.createdAt === "string"
     && typeof item.kind === "string"
-    && ["shell", "hermes", "codex", "opencode", "claude", "athena"].includes(item.kind)
+    && ["shell", "hermes", "codex", "opencode", "claude", "athena", "grok"].includes(item.kind)
     && (item.sessionLabel == null || typeof item.sessionLabel === "string")
     && (item.providerSessionId == null || typeof item.providerSessionId === "string")
     && (item.resumeSessionId == null || typeof item.resumeSessionId === "string");
@@ -1264,6 +1268,10 @@ function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | 
     // the backend (i.e. Hermes itself), so its memory/ask tools would be circular.
     // Hermes also registers MCP servers persistently via `hermes mcp add` rather
     // than through an ephemeral per-launch flag, and bypasses the agentConfig path.
+    //
+    // Grok has no per-launch MCP flag or config env var; it reads persistent
+    // `.grok/settings.json` (`mcpServers`) from the project, so it stays unwired
+    // here and picks up context_workspace from that file when present.
   } catch {
     // Non-fatal: agent launches without MCP wiring if config generation fails.
   }
@@ -1348,6 +1356,7 @@ function defaultTitle(kind: EmbeddedTerminalKind): string {
   if (kind === "opencode") return "OpenCode";
   if (kind === "claude") return "Claude";
   if (kind === "athena") return "Athena Code";
+  if (kind === "grok") return "Grok";
   return "Shell";
 }
 
@@ -1362,7 +1371,51 @@ function maybeDiscoverProviderSessionId(terminalId: string, workspace: string, c
   if (!entry || entry.session.providerSessionId) return;
   if (entry.session.kind === "claude") void discoverClaudeSessionId(terminalId, workspace, createdAt);
   else if (entry.session.kind === "codex") void discoverCodexSessionId(terminalId, workspace, createdAt);
+  else if (entry.session.kind === "grok") void discoverGrokSessionId(terminalId, workspace, createdAt);
   else if (isOpenCodeKind(entry.session.kind)) void discoverOpenCodeSessionId(terminalId, workspace, createdAt);
+}
+
+// Grok writes one directory per session under ~/.grok/sessions/<urlencoded-cwd>/<id>,
+// so the freshest session dir created after the pane spawned is this pane's session.
+// Ids already bound to other live panes are excluded so co-located Grok panes don't
+// claim each other's session.
+async function discoverGrokSessionId(terminalId: string, workspace: string, createdAt: string): Promise<void> {
+  const startedAtMs = Date.parse(createdAt);
+  const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
+  const sessionsDir = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(path.resolve(workspace)));
+
+  for (let attempt = 0; attempt < CODEX_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+    const entry = terminals.get(terminalId);
+    if (!entry || entry.session.kind !== "grok" || entry.session.providerSessionId || entry.session.status !== "running") return;
+    const sessionId = grokSessionIdForWorkspace(sessionsDir, spawnedAtMs, attachedProviderSessionIds(terminalId));
+    if (sessionId) {
+      attachProviderSessionId(terminalId, sessionId);
+      return;
+    }
+    await delay(CODEX_SESSION_DISCOVERY_INTERVAL_MS);
+  }
+}
+
+function grokSessionIdForWorkspace(sessionsDir: string, spawnedAtMs: number, exclude: Set<string>): string | null {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let best: { id: string; mtimeMs: number } | null = null;
+  for (const dirent of entries) {
+    if (!dirent.isDirectory() || exclude.has(dirent.name)) continue;
+    let mtimeMs: number;
+    try {
+      mtimeMs = fs.statSync(path.join(sessionsDir, dirent.name)).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtimeMs + GROK_SESSION_DISCOVERY_SLACK_MS < spawnedAtMs) continue;
+    if (!best || mtimeMs > best.mtimeMs) best = { id: dirent.name, mtimeMs };
+  }
+  return best?.id ?? null;
 }
 
 // Athena Code is an OpenCode fork that keeps OpenCode's session storage, so
@@ -1514,7 +1567,7 @@ function stringProperty(value: Record<string, unknown> | null, key: string): str
 }
 
 function isAgentKind(kind: EmbeddedTerminalKind): boolean {
-  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes" || kind === "athena";
+  return kind === "codex" || kind === "opencode" || kind === "claude" || kind === "hermes" || kind === "athena" || kind === "grok";
 }
 
 function isOpenCodeKind(kind: EmbeddedTerminalKind): boolean {
@@ -1522,7 +1575,7 @@ function isOpenCodeKind(kind: EmbeddedTerminalKind): boolean {
 }
 
 function isSessionDiscoveryKind(kind: EmbeddedTerminalKind): boolean {
-  return kind === "claude" || kind === "codex" || isOpenCodeKind(kind);
+  return kind === "claude" || kind === "codex" || kind === "grok" || isOpenCodeKind(kind);
 }
 
 function emit(channel: string, payload: unknown): void {

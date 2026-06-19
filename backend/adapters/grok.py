@@ -10,7 +10,7 @@ from backend.runs import Run
 class GrokAdapter:
     agent_type = "grok"
 
-    def __init__(self, *, executable: str = "grok", output_format: str = "text") -> None:
+    def __init__(self, *, executable: str = "grok", output_format: str = "plain") -> None:
         self.executable = executable
         self.output_format = output_format
 

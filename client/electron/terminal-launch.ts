@@ -214,6 +214,7 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
+    ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     agent.resumePowerShellCommand,
     kind === "codex" ? codexNpmPrefixPowerShellCleanup() : "",
   ].filter(Boolean).join("; ");
@@ -240,6 +241,7 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
+    ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     // Windows PowerShell 5.1 wraps space-containing native args in quotes but does NOT escape
     // embedded double-quotes, so a multi-line prompt containing `"` (e.g. JSON examples) gets
     // shattered into multiple argv tokens when agent launchers (codex.ps1 / claude npm shims)
@@ -341,6 +343,45 @@ export function agentConfig(kind: EmbeddedTerminalKind): AgentConfig {
     resumeArgs: (cwd, sessionId, _shell, mcp) =>
       `codex -c shell_environment_policy.inherit=all${codexMcpBashArgs(mcp)} resume --cd ${quoteShell(cwd)} ${quoteShell(sessionId)}`,
   };
+}
+
+export function repairClaudeBinaryPowerShell(): string {
+  // Recover from an interrupted Claude Code auto-update on Windows. The updater
+  // renames the running bin/claude.exe to claude.exe.old.<timestamp> (Windows
+  // locks a running binary, so it must be moved aside before the replacement is
+  // written) and then drops in the new exe. If that second step fails, bin/ is
+  // left with only the backup and no claude.exe. Get-Command still resolves the
+  // npm shim (claude.ps1 / claude.cmd), so the "not installed or not on PATH"
+  // guard above passes -- but launching the shim then dies with
+  // CommandNotFoundException because it forwards to the missing bin/claude.exe.
+  // Restore the newest backup so the pane launches instead of failing on every
+  // attempt until the user repairs the install by hand.
+  return [
+    "if ($resolvedAgent.Path) {",
+    "  $claudeBinDirs = @()",
+    "  $claudeShimDir = Split-Path -Parent $resolvedAgent.Path",
+    // The shim lives at the npm prefix root; the exe lives under the package's
+    // bin/. Also try the shim dir itself (Get-Command may resolve the exe
+    // directly) and the default Windows npm global prefix.
+    "  $claudeBinDirs += (Join-Path $claudeShimDir 'node_modules\\@anthropic-ai\\claude-code\\bin')",
+    "  $claudeBinDirs += $claudeShimDir",
+    "  if ($env:APPDATA) { $claudeBinDirs += (Join-Path $env:APPDATA 'npm\\node_modules\\@anthropic-ai\\claude-code\\bin') }",
+    "  foreach ($claudeBinDir in ($claudeBinDirs | Select-Object -Unique)) {",
+    "    $claudeExe = Join-Path $claudeBinDir 'claude.exe'",
+    "    if ((Test-Path -LiteralPath $claudeBinDir) -and -not (Test-Path -LiteralPath $claudeExe)) {",
+    "      $claudeBackup = Get-ChildItem -LiteralPath $claudeBinDir -Filter 'claude.exe.old.*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1",
+    "      if ($claudeBackup) {",
+    "        try {",
+    "          Copy-Item -LiteralPath $claudeBackup.FullName -Destination $claudeExe -Force -ErrorAction Stop",
+    "          Write-Host \"[Context Workspace] Restored claude.exe from $($claudeBackup.Name) after an interrupted auto-update.\" -ForegroundColor Yellow",
+    "        } catch {",
+    "          Write-Host \"[Context Workspace] Could not restore claude.exe after an interrupted auto-update: $_\" -ForegroundColor Red",
+    "        }",
+    "      }",
+    "    }",
+    "  }",
+    "}",
+  ].join("\n");
 }
 
 function selectOpenCodeBaselinePowerShell(): string {

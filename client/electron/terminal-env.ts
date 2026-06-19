@@ -4,7 +4,6 @@ import path from "node:path";
 
 const NVM_INCOMPATIBLE_NPM_ENV = [
   "npm_config_prefix",
-  "NPM_CONFIG_PREFIX",
   "npm_config_globalconfig",
   "NPM_CONFIG_GLOBALCONFIG",
 ];
@@ -15,6 +14,7 @@ export function sanitizedTerminalEnv(source: NodeJS.ProcessEnv = process.env): N
     delete env[key];
   }
   const prefix = npmGlobalPrefix(source);
+  env.NPM_CONFIG_PREFIX = prefix;
   prependPathEntry(env, npmGlobalBinPath(prefix));
   return env;
 }

@@ -185,6 +185,7 @@ export async function openNativeCodexTerminal(workspace: string): Promise<Native
     const child = spawn(launch.command, launch.args, {
       cwd,
       detached: true,
+      env: sanitizedTerminalEnv(),
       stdio: "ignore",
       windowsHide: false,
     });
@@ -251,6 +252,7 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
       const child = spawn(launch.command, launch.args, {
         cwd,
         detached: true,
+        env: sanitizedTerminalEnv(),
         stdio: "ignore",
         windowsHide: false,
       });
@@ -296,12 +298,14 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
   const boundedPanes = Math.max(1, Math.min(panes, 8));
   const sessionName = `context-${Date.now().toString(36)}`;
   const scripts: string[] = [];
+  const terminalEnv = sanitizedTerminalEnv();
   for (let index = 0; index < boundedPanes; index += 1) {
     scripts.push(writeCodexLaunchScript(cwd));
   }
 
   const first = spawnSync("tmux", ["new-session", "-d", "-s", sessionName, "-c", cwd, "bash"], {
     cwd,
+    env: terminalEnv,
     encoding: "utf8",
   });
   if (first.status !== 0) {
@@ -320,29 +324,32 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
     return { ok: false, command: "tmux", pid: null, session, error };
   }
 
-  spawnSync("tmux", ["set-option", "-t", sessionName, "mouse", "on"], { cwd, encoding: "utf8" });
-  spawnSync("tmux", ["set-option", "-t", sessionName, "pane-border-status", "top"], { cwd, encoding: "utf8" });
+  spawnSync("tmux", ["set-option", "-t", sessionName, "mouse", "on"], { cwd, env: terminalEnv, encoding: "utf8" });
+  spawnSync("tmux", ["set-option", "-t", sessionName, "pane-border-status", "top"], { cwd, env: terminalEnv, encoding: "utf8" });
   spawnSync("tmux", ["set-option", "-t", sessionName, "pane-border-format", " #{pane_index} #{pane_current_command} "], {
     cwd,
+    env: terminalEnv,
     encoding: "utf8",
   });
   spawnSync("tmux", ["set-hook", "-t", sessionName, "client-resized", `select-layout -t ${sessionName}:0 tiled`], {
     cwd,
+    env: terminalEnv,
     encoding: "utf8",
   });
 
   for (let index = 1; index < boundedPanes; index += 1) {
-    spawnSync("tmux", ["split-window", "-t", sessionName, "-c", cwd, "bash"], { cwd, encoding: "utf8" });
+    spawnSync("tmux", ["split-window", "-t", sessionName, "-c", cwd, "bash"], { cwd, env: terminalEnv, encoding: "utf8" });
   }
-  spawnSync("tmux", ["select-layout", "-t", sessionName, "tiled"], { cwd, encoding: "utf8" });
+  spawnSync("tmux", ["select-layout", "-t", sessionName, "tiled"], { cwd, env: terminalEnv, encoding: "utf8" });
 
   for (let index = 0; index < scripts.length; index += 1) {
     spawnSync("tmux", ["send-keys", "-t", `${sessionName}:0.${index}`, `bash ${quoteShell(scripts[index])}`, "Enter"], {
       cwd,
+      env: terminalEnv,
       encoding: "utf8",
     });
   }
-  spawnSync("tmux", ["select-pane", "-t", `${sessionName}:0.0`], { cwd, encoding: "utf8" });
+  spawnSync("tmux", ["select-pane", "-t", `${sessionName}:0.0`], { cwd, env: terminalEnv, encoding: "utf8" });
 
   const launch = nativeTerminalLaunch(cwd, tmuxAttachScript(sessionName, cwd));
   if (!launch) {
@@ -364,6 +371,7 @@ export async function openNativeCodexGrid(workspace: string, panes = 4): Promise
     const child = spawn(launch.command, launch.args, {
       cwd,
       detached: true,
+      env: terminalEnv,
       stdio: "ignore",
       windowsHide: false,
     });

@@ -21,18 +21,20 @@ test("terminal env strips lowercase npm values that make nvm warn", () => {
 
   assert.equal(env.PATH, [npmGlobalBinPath(prefix), "/bin"].join(path.delimiter));
   assert.equal("npm_config_prefix" in env, false);
-  assert.equal(env.NPM_CONFIG_PREFIX, prefix);
+  assert.equal("NPM_CONFIG_PREFIX" in env, false);
+  assert.equal(env.CONTEXT_WORKSPACE_NPM_PREFIX, prefix);
   assert.equal("npm_config_globalconfig" in env, false);
   assert.equal("NPM_CONFIG_GLOBALCONFIG" in env, false);
 });
 
-test("terminal env sets user npm global prefix and prepends bin path", () => {
+test("terminal env preserves npm prefix under an nvm-safe name and prepends bin path", () => {
   const env = sanitizedTerminalEnv({
     PATH: "/bin",
   });
 
   const prefix = path.join(os.homedir(), ".npm-global");
-  assert.equal(env.NPM_CONFIG_PREFIX, prefix);
+  assert.equal("NPM_CONFIG_PREFIX" in env, false);
+  assert.equal(env.CONTEXT_WORKSPACE_NPM_PREFIX, prefix);
   assert.equal(env.PATH?.split(path.delimiter).at(0), npmGlobalBinPath(prefix));
 });
 
@@ -53,7 +55,8 @@ test("terminal env preserves Windows-style Path key", () => {
     NPM_CONFIG_PREFIX: prefix,
   });
 
-  assert.equal(env.NPM_CONFIG_PREFIX, prefix);
+  assert.equal("NPM_CONFIG_PREFIX" in env, false);
+  assert.equal(env.CONTEXT_WORKSPACE_NPM_PREFIX, prefix);
   assert.equal(env.Path, [npmGlobalBinPath(prefix), "C:\\Windows\\System32"].join(path.delimiter));
   assert.equal("PATH" in env, false);
 });

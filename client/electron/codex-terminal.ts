@@ -79,10 +79,12 @@ export async function startCodexTerminal(workspace: string, window: BrowserWindo
     ? { command: "powershell.exe", args: ["-NoLogo", "-NoExit", "-Command", "codex"] }
     : { command: "script", args: ["-qfec", "codex", "/dev/null"] };
 
+  const terminalEnv = sanitizedTerminalEnv();
   codexProcess = spawn(launch.command, launch.args, {
     cwd,
     env: {
-      ...sanitizedTerminalEnv(),
+      ...terminalEnv,
+      NPM_CONFIG_PREFIX: terminalEnv.CONTEXT_WORKSPACE_NPM_PREFIX,
       TERM: process.env.TERM || "xterm-256color",
       COLORTERM: process.env.COLORTERM || "truecolor",
     },
@@ -417,14 +419,16 @@ function writeCodexLaunchScript(cwd: string): string {
     ? [
         `$workspace = ${quotePowerShell(cwd)}`,
         "Set-Location -LiteralPath $workspace",
+        "if ($env:CONTEXT_WORKSPACE_NPM_PREFIX) { $env:NPM_CONFIG_PREFIX = $env:CONTEXT_WORKSPACE_NPM_PREFIX } else { $env:NPM_CONFIG_PREFIX = Join-Path $HOME '.npm-global' }",
         "& codex --cd $workspace",
+        "Remove-Item Env:NPM_CONFIG_PREFIX -ErrorAction SilentlyContinue",
         "",
       ].join("\r\n")
     : [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         `cd ${quoteShell(cwd)}`,
-        `codex --cd ${quoteShell(cwd)}`,
+        'NPM_CONFIG_PREFIX="${CONTEXT_WORKSPACE_NPM_PREFIX:-$HOME/.npm-global}" codex --cd ' + quoteShell(cwd),
         "exec bash",
         "",
       ].join("\n");

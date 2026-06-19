@@ -39,7 +39,8 @@ test("launchCommand cd's into the workspace and execs a login shell for plain sh
 test("launchCommand for an agent guards on command availability before launching", () => {
   const command = launchCommand("codex", "/home/dev/project", "/tmp/prompt.md");
   assert.match(command, /NPM_CONFIG_PREFIX/);
-  assert.match(command, /unset npm_config_prefix npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG/);
+  assert.match(command, /unset npm_config_prefix NPM_CONFIG_PREFIX npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG/);
+  assert.match(command, /unset NPM_CONFIG_PREFIX; exec bash -l/);
   assert.match(command, /command -v 'codex'/);
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });

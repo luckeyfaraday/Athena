@@ -145,10 +145,11 @@ export type WorkspaceApi = {
   closeWindow: () => Promise<void>;
 };
 
-function createIpcSubscription<T>(channel: string) {
+function createIpcSubscription<T>(channel: string, afterDispatch?: (payload: T) => void) {
   const callbacks = new Set<(payload: T) => void>();
   const listener = (_event: Electron.IpcRendererEvent, payload: T) => {
     for (const callback of callbacks) callback(payload);
+    afterDispatch?.(payload);
   };
   return (callback: (payload: T) => void) => {
     const wasEmpty = callbacks.size === 0;
@@ -161,7 +162,10 @@ function createIpcSubscription<T>(channel: string) {
   };
 }
 
-const onEmbeddedTerminalData = createIpcSubscription<{ id: string; data: string }>("embedded-terminal:data");
+const onEmbeddedTerminalData = createIpcSubscription<{ id: string; data: string; sequence: number }>(
+  "embedded-terminal:data",
+  (payload) => ipcRenderer.send("embeddedTerminal:dataAck", payload.id, payload.sequence),
+);
 const onEmbeddedTerminalExit = createIpcSubscription<{ id: string; exitCode: number | null }>("embedded-terminal:exit");
 const onEmbeddedTerminalSession = createIpcSubscription<EmbeddedTerminalSession>("embedded-terminal:session");
 const onCodexTerminalData = createIpcSubscription<string>("codex-terminal:data");

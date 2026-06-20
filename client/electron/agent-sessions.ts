@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
 import { querySqlite, type SqliteValue } from "./sqlite.js";
+import { mapWithConcurrency, readFilePrefix } from "./file-prefix.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
 
@@ -31,7 +32,10 @@ const CACHE_TTL_MS = 30_000;
 const MAX_PROVIDER_ROWS = 1000;
 const MAX_JSONL_SCAN_DIRS = 160;
 const MAX_JSONL_SCAN_FILES = 1200;
+const SESSION_FILE_PREFIX_MAX_BYTES = 512_000;
+const SESSION_FILE_SCAN_CONCURRENCY = 8;
 const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
+let codexMetadataCache: { expiresAt: number; promise: Promise<Record<string, string>[]> } | null = null;
 
 export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {
   const resolvedWorkspace = path.resolve(workspace);
@@ -148,11 +152,8 @@ async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
 }
 
 async function readCodexJsonlMetadata(workspace: string): Promise<Map<string, Record<string, string>>> {
-  const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
   const byId = new Map<string, Record<string, string>>();
-  if (!fs.existsSync(sessionsDir)) return byId;
-  const files = await recentJsonlFiles(sessionsDir, 400);
-  const results = await Promise.all(files.map((filePath) => readCodexJsonlFileMetadata(filePath)));
+  const results = await cachedCodexJsonlMetadata();
   for (const metadata of results) {
     const id = metadata.session_id;
     const cwd = metadata.cwd;
@@ -160,6 +161,23 @@ async function readCodexJsonlMetadata(workspace: string): Promise<Map<string, Re
     byId.set(id, metadata);
   }
   return byId;
+}
+
+function cachedCodexJsonlMetadata(): Promise<Record<string, string>[]> {
+  if (codexMetadataCache && codexMetadataCache.expiresAt > Date.now()) return codexMetadataCache.promise;
+  const promise = scanCodexJsonlMetadata();
+  codexMetadataCache = { expiresAt: Date.now() + CACHE_TTL_MS, promise };
+  void promise.catch(() => {
+    if (codexMetadataCache?.promise === promise) codexMetadataCache = null;
+  });
+  return promise;
+}
+
+async function scanCodexJsonlMetadata(): Promise<Record<string, string>[]> {
+  const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
+  if (!fs.existsSync(sessionsDir)) return [];
+  const files = await recentJsonlFiles(sessionsDir, 400);
+  return mapWithConcurrency(files, SESSION_FILE_SCAN_CONCURRENCY, readCodexJsonlFileMetadata);
 }
 
 async function recentJsonlFiles(root: string, limit: number): Promise<string[]> {
@@ -201,7 +219,7 @@ async function readCodexJsonlFileMetadata(filePath: string): Promise<Record<stri
   const metadata: Record<string, string> = { jsonl_path: filePath };
   let lines: string[];
   try {
-    lines = (await fs.promises.readFile(filePath, "utf8")).split(/\r?\n/).filter(Boolean).slice(0, 240);
+    lines = (await readFilePrefix(filePath, SESSION_FILE_PREFIX_MAX_BYTES)).split(/\r?\n/).filter(Boolean).slice(0, 240);
   } catch {
     return metadata;
   }
@@ -419,7 +437,7 @@ function decodeGrokCwd(dirName: string): string | null {
 }
 
 async function firstGrokUserMessage(historyPath: string): Promise<string | null> {
-  const raw = await readFileSafe(historyPath);
+  const raw = await readFilePrefix(historyPath, SESSION_FILE_PREFIX_MAX_BYTES).catch(() => null);
   if (!raw) return null;
   for (const line of raw.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -467,8 +485,10 @@ async function readClaudeSessions(workspace: string): Promise<AgentSession[]> {
         seenFiles.add(filePath);
         return true;
       });
-    const results = await Promise.all(
-      candidateFiles.map((filePath) => readClaudeSessionFile(filePath, workspace, { allowMissingCwd: true })),
+    const results = await mapWithConcurrency(
+      candidateFiles,
+      SESSION_FILE_SCAN_CONCURRENCY,
+      (filePath) => readClaudeSessionFile(filePath, workspace, { allowMissingCwd: true }),
     );
     sessions.push(...results.filter((s): s is AgentSession => s !== null));
   }
@@ -478,8 +498,10 @@ async function readClaudeSessions(workspace: string): Promise<AgentSession[]> {
       seenFiles.add(filePath);
       return true;
     });
-  const recentResults = await Promise.all(
-    recentFiles.map((filePath) => readClaudeSessionFile(filePath, workspace, { allowMissingCwd: false })),
+  const recentResults = await mapWithConcurrency(
+    recentFiles,
+    SESSION_FILE_SCAN_CONCURRENCY,
+    (filePath) => readClaudeSessionFile(filePath, workspace, { allowMissingCwd: false }),
   );
   sessions.push(...recentResults.filter((s): s is AgentSession => s !== null));
   return sessions
@@ -492,7 +514,7 @@ async function readClaudeSessionFile(filePath: string, workspace: string, option
   let lines: string[];
   try {
     stat = await fs.promises.stat(filePath);
-    lines = (await fs.promises.readFile(filePath, "utf8")).split("\n").filter(Boolean).slice(0, 120);
+    lines = (await readFilePrefix(filePath, SESSION_FILE_PREFIX_MAX_BYTES)).split("\n").filter(Boolean).slice(0, 120);
   } catch {
     return null;
   }

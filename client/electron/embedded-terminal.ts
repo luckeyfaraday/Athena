@@ -58,6 +58,7 @@ import {
   type SessionFileCandidate,
 } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
+import { readFilePrefix } from "./file-prefix.js";
 import { rawInputPreview } from "./terminal-input.js";
 import {
   clearTerminalActivity,
@@ -65,6 +66,10 @@ import {
   recordTerminalInputActivity,
   recordTerminalOutputActivity,
 } from "./terminal-activity.js";
+import {
+  DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
+  appendBoundedTerminalOutput,
+} from "./terminal-buffer.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -169,6 +174,7 @@ export function hasPendingEmbeddedTerminalRestoreAttempts(): boolean {
 const terminals = new Map<string, ManagedTerminal>();
 const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
+const MAX_PENDING_OUTPUT_CHARS = DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS;
 const PTY_FLUSH_INTERVAL_MS = 16;
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 1000;
 const CLAUDE_SESSION_DISCOVERY_ATTEMPTS = 20;
@@ -181,6 +187,8 @@ const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 // just before our spawn timestamp (clock skew / startup latency) still matches.
 const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
 const pendingOutput = new Map<string, string>();
+const inFlightOutput = new Map<string, number>();
+let nextOutputSequence = 1;
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
 let eventLoopLagMs = 0;
@@ -904,8 +912,10 @@ export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminal
   clearQueueDrain(id);
   terminals.delete(id);
   clearTerminalActivity(id);
+  notifyTerminalExit(id, null);
   removeRestoreEntry(id);
   emit("embedded-terminal:exit", { id, exitCode: null });
+  clearTerminalOutputState(id);
   return { ...entry.session };
 }
 
@@ -936,6 +946,7 @@ function installPtyHostListeners(): void {
     terminals.delete(id);
     clearTerminalActivity(id);
     if (!appQuitting) removeRestoreEntry(id);
+    clearTerminalOutputState(id);
   });
   ptyHost.on("error", ({ id, error }) => {
     if (!id) {
@@ -980,8 +991,21 @@ function installPtyHostListeners(): void {
       terminals.delete(id);
       clearTerminalActivity(id);
       if (!appQuitting) removeRestoreEntry(id);
+      clearTerminalOutputState(id);
     }
   });
+}
+
+function clearTerminalOutputState(id: string): void {
+  outputBuffers.delete(id);
+  pendingOutput.delete(id);
+  inFlightOutput.delete(id);
+  dataListeners.delete(id);
+  exitListeners.delete(id);
+  if (pendingOutput.size === 0 && outputFlushTimer) {
+    clearTimeout(outputFlushTimer);
+    outputFlushTimer = null;
+  }
 }
 
 function restoreFilePath(): string {
@@ -1137,7 +1161,7 @@ function queueOutput(id: string, data: string): void {
   updatePerformanceRates();
   perfCounters.ptyChunks += 1;
   perfCounters.ptyBytes += Buffer.byteLength(data);
-  pendingOutput.set(id, `${pendingOutput.get(id) ?? ""}${data}`);
+  pendingOutput.set(id, appendBoundedTerminalOutput(pendingOutput.get(id) ?? "", data, MAX_PENDING_OUTPUT_CHARS));
   if (outputFlushTimer) return;
   outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
 }
@@ -1151,18 +1175,26 @@ function flushOutput(id?: string): void {
 
   const entries = id ? [[id, pendingOutput.get(id) ?? ""] as const] : Array.from(pendingOutput.entries());
   for (const [terminalId, data] of entries) {
-    if (!data) continue;
+    if (!data || inFlightOutput.has(terminalId)) continue;
     pendingOutput.delete(terminalId);
+    const sequence = nextOutputSequence++;
+    inFlightOutput.set(terminalId, sequence);
     perfCounters.ipcBatches += 1;
     perfCounters.ipcBytes += Buffer.byteLength(data);
     perfCounters.lastBatchAt = new Date().toISOString();
-    emit("embedded-terminal:data", { id: terminalId, data });
+    emit("embedded-terminal:data", { id: terminalId, data, sequence });
   }
 
   if (!id) return;
   if (pendingOutput.size > 0 && !outputFlushTimer) {
     outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
   }
+}
+
+export function acknowledgeEmbeddedTerminalOutput(id: string, sequence: number): void {
+  if (inFlightOutput.get(id) !== sequence) return;
+  inFlightOutput.delete(id);
+  if (pendingOutput.has(id)) flushOutput(id);
 }
 
 function roundRate(value: number): number {
@@ -1519,7 +1551,7 @@ async function claudeSessionIdForWorkspace(
 
 async function claudeSessionIdFromFile(filePath: string, fallback: string): Promise<string | null> {
   try {
-    const lines = (await fs.promises.readFile(filePath, "utf8")).split("\n").filter(Boolean).slice(0, 20);
+    const lines = (await readFilePrefix(filePath)).split("\n").filter(Boolean).slice(0, 20);
     for (const line of lines) {
       const entry = parseJsonObject(line);
       const sessionId = stringProperty(entry, "sessionId");

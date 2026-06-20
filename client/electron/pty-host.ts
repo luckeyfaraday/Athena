@@ -1,5 +1,6 @@
 import * as pty from "node-pty";
 import type { PtyHostMessage, PtyHostRequest, PtyHostSpawnRequest } from "./pty-host-protocol.js";
+import { DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS, appendBoundedTerminalOutput } from "./terminal-buffer.js";
 import { PTY_WRITE_CHUNK_DELAY_MS, PTY_WRITE_CHUNK_SIZE, chunkPtyWrite } from "./pty-write.js";
 
 const terminals = new Map<string, pty.IPty>();
@@ -8,7 +9,7 @@ const pendingOutput = new Map<string, string>();
 // never interleave with a later write to the same PTY (see enqueueWrite).
 const writeChains = new Map<string, Promise<void>>();
 const FLUSH_INTERVAL_MS = 16;
-const MAX_BATCH_CHARS = 64_000;
+const MAX_BATCH_CHARS = DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS;
 let flushTimer: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 
@@ -55,7 +56,7 @@ function spawnTerminal(payload: PtyHostSpawnRequest): number {
 }
 
 function queueOutput(id: string, data: string): void {
-  const next = (pendingOutput.get(id) ?? "") + data;
+  const next = appendBoundedTerminalOutput(pendingOutput.get(id) ?? "", data, MAX_BATCH_CHARS);
   if (next.length >= MAX_BATCH_CHARS) {
     pendingOutput.set(id, next);
     flushOutput(id);

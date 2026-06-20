@@ -186,6 +186,8 @@ const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 // just before our spawn timestamp (clock skew / startup latency) still matches.
 const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
 const pendingOutput = new Map<string, string>();
+const inFlightOutput = new Map<string, number>();
+let nextOutputSequence = 1;
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
 let eventLoopLagMs = 0;
@@ -996,6 +998,7 @@ function installPtyHostListeners(): void {
 function clearTerminalOutputState(id: string): void {
   outputBuffers.delete(id);
   pendingOutput.delete(id);
+  inFlightOutput.delete(id);
   dataListeners.delete(id);
   exitListeners.delete(id);
   if (pendingOutput.size === 0 && outputFlushTimer) {
@@ -1171,18 +1174,26 @@ function flushOutput(id?: string): void {
 
   const entries = id ? [[id, pendingOutput.get(id) ?? ""] as const] : Array.from(pendingOutput.entries());
   for (const [terminalId, data] of entries) {
-    if (!data) continue;
+    if (!data || inFlightOutput.has(terminalId)) continue;
     pendingOutput.delete(terminalId);
+    const sequence = nextOutputSequence++;
+    inFlightOutput.set(terminalId, sequence);
     perfCounters.ipcBatches += 1;
     perfCounters.ipcBytes += Buffer.byteLength(data);
     perfCounters.lastBatchAt = new Date().toISOString();
-    emit("embedded-terminal:data", { id: terminalId, data });
+    emit("embedded-terminal:data", { id: terminalId, data, sequence });
   }
 
   if (!id) return;
   if (pendingOutput.size > 0 && !outputFlushTimer) {
     outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
   }
+}
+
+export function acknowledgeEmbeddedTerminalOutput(id: string, sequence: number): void {
+  if (inFlightOutput.get(id) !== sequence) return;
+  inFlightOutput.delete(id);
+  if (pendingOutput.has(id)) flushOutput(id);
 }
 
 function roundRate(value: number): number {

@@ -23,6 +23,7 @@ import {
   type NativeTerminalSession,
 } from "./codex-terminal.js";
 import {
+  acknowledgeEmbeddedTerminalOutput,
   clearSavedEmbeddedTerminalRestores,
   getEmbeddedTerminalBuffer,
   getPerformanceDiagnostics,
@@ -47,6 +48,11 @@ import type { AgentMessage } from "./agent-messages.js";
 
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
+  ipcMain.on("embeddedTerminal:dataAck", (_event, id: string, sequence: number) => {
+    if (typeof id === "string" && Number.isSafeInteger(sequence)) {
+      acknowledgeEmbeddedTerminalOutput(id, sequence);
+    }
+  });
   const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
     ipcMain.handle(channel, async (event, ...args) => {
       recordIpcBreadcrumb(channel, "start", args);

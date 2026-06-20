@@ -9,6 +9,8 @@ type Props = {
   active?: boolean;
 };
 
+const MAX_PENDING_XTERM_OUTPUT_CHARS = 64_000;
+
 export function EmbeddedTerminal({ session, active = true }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -49,12 +51,37 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current, lastResizeRef);
     if (activeRef.current) terminal.focus();
 
+    let disposed = false;
+    let writeInFlight = false;
+    let pendingWrite = "";
+    let refreshAfterWrite = false;
+    const drainWrites = () => {
+      if (disposed || writeInFlight || !pendingWrite) return;
+      const data = pendingWrite;
+      pendingWrite = "";
+      writeInFlight = true;
+      terminal.write(data, () => {
+        writeInFlight = false;
+        if (refreshAfterWrite && !pendingWrite) {
+          refreshAfterWrite = false;
+          refreshTerminal(terminal);
+        }
+        drainWrites();
+      });
+    };
+    const enqueueWrite = (data: string, refresh = false) => {
+      const combined = `${pendingWrite}${data}`;
+      pendingWrite = combined.length > MAX_PENDING_XTERM_OUTPUT_CHARS
+        ? combined.slice(-MAX_PENDING_XTERM_OUTPUT_CHARS)
+        : combined;
+      refreshAfterWrite ||= refresh;
+      drainWrites();
+    };
+
     void desktop.getEmbeddedTerminalBuffer(session.id)
       .then((buffer) => {
         if (!buffer || terminalRef.current !== terminal) return;
-        terminal.write(buffer, () => {
-          refreshTerminal(terminal);
-        });
+        enqueueWrite(buffer, true);
       })
       .catch(() => undefined);
 
@@ -63,7 +90,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     });
 
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
-      if (payload.id === session.id) terminal.write(payload.data);
+      if (payload.id === session.id) enqueueWrite(payload.data);
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       if (payload.id === session.id) terminal.writeln(`\r\n\x1b[33m[process exited: ${payload.exitCode ?? "unknown"}]\x1b[0m`);
@@ -81,6 +108,8 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-theme-loaded"] });
 
     return () => {
+      disposed = true;
+      pendingWrite = "";
       observer.disconnect();
       themeObserver.disconnect();
       removeData();

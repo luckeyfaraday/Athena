@@ -70,6 +70,7 @@ import {
   DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
   appendBoundedTerminalOutput,
 } from "./terminal-buffer.js";
+import { OutputAckGate } from "./terminal-output-ack.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -187,8 +188,7 @@ const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 // just before our spawn timestamp (clock skew / startup latency) still matches.
 const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
 const pendingOutput = new Map<string, string>();
-const inFlightOutput = new Map<string, number>();
-let nextOutputSequence = 1;
+const outputAckGate = new OutputAckGate();
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
 let eventLoopLagMs = 0;
@@ -999,7 +999,7 @@ function installPtyHostListeners(): void {
 function clearTerminalOutputState(id: string): void {
   outputBuffers.delete(id);
   pendingOutput.delete(id);
-  inFlightOutput.delete(id);
+  outputAckGate.clear(id);
   dataListeners.delete(id);
   exitListeners.delete(id);
   if (pendingOutput.size === 0 && outputFlushTimer) {
@@ -1175,10 +1175,9 @@ function flushOutput(id?: string): void {
 
   const entries = id ? [[id, pendingOutput.get(id) ?? ""] as const] : Array.from(pendingOutput.entries());
   for (const [terminalId, data] of entries) {
-    if (!data || inFlightOutput.has(terminalId)) continue;
+    if (!data || !outputAckGate.canSend(terminalId)) continue;
     pendingOutput.delete(terminalId);
-    const sequence = nextOutputSequence++;
-    inFlightOutput.set(terminalId, sequence);
+    const sequence = outputAckGate.markSent(terminalId);
     perfCounters.ipcBatches += 1;
     perfCounters.ipcBytes += Buffer.byteLength(data);
     perfCounters.lastBatchAt = new Date().toISOString();
@@ -1192,8 +1191,7 @@ function flushOutput(id?: string): void {
 }
 
 export function acknowledgeEmbeddedTerminalOutput(id: string, sequence: number): void {
-  if (inFlightOutput.get(id) !== sequence) return;
-  inFlightOutput.delete(id);
+  if (!outputAckGate.acknowledge(id, sequence)) return;
   if (pendingOutput.has(id)) flushOutput(id);
 }
 

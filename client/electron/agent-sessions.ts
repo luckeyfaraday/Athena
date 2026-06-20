@@ -36,7 +36,6 @@ const MAX_JSONL_SCAN_FILES = 1200;
 const SESSION_FILE_PREFIX_MAX_BYTES = 512_000;
 const SESSION_FILE_SCAN_CONCURRENCY = 8;
 const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
-let codexMetadataCache: { expiresAt: number; promise: Promise<Record<string, string>[]> } | null = null;
 
 export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {
   const resolvedWorkspace = path.resolve(workspace);
@@ -164,15 +163,9 @@ async function readCodexJsonlMetadata(workspace: string): Promise<Map<string, Re
   return byId;
 }
 
-function cachedCodexJsonlMetadata(): Promise<Record<string, string>[]> {
-  if (codexMetadataCache && codexMetadataCache.expiresAt > Date.now()) return codexMetadataCache.promise;
-  const promise = scanCodexJsonlMetadata();
-  codexMetadataCache = { expiresAt: Date.now() + CACHE_TTL_MS, promise };
-  void promise.catch(() => {
-    if (codexMetadataCache?.promise === promise) codexMetadataCache = null;
-  });
-  return promise;
-}
+// Scan the workspace-independent ~/.codex/sessions corpus once per CACHE_TTL_MS
+// and share it across workspaces, mirroring the Hermes scan dedup.
+const cachedCodexJsonlMetadata = memoizeAsyncWithTtl(CACHE_TTL_MS, scanCodexJsonlMetadata);
 
 async function scanCodexJsonlMetadata(): Promise<Record<string, string>[]> {
   const sessionsDir = path.join(os.homedir(), ".codex", "sessions");

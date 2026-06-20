@@ -58,6 +58,7 @@ import {
   type SessionFileCandidate,
 } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
+import { readFilePrefix } from "./file-prefix.js";
 import { rawInputPreview } from "./terminal-input.js";
 import {
   clearTerminalActivity,
@@ -1550,7 +1551,7 @@ async function claudeSessionIdForWorkspace(
 
 async function claudeSessionIdFromFile(filePath: string, fallback: string): Promise<string | null> {
   try {
-    const lines = (await fs.promises.readFile(filePath, "utf8")).split("\n").filter(Boolean).slice(0, 20);
+    const lines = (await readFilePrefix(filePath)).split("\n").filter(Boolean).slice(0, 20);
     for (const line of lines) {
       const entry = parseJsonObject(line);
       const sessionId = stringProperty(entry, "sessionId");

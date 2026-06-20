@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
 import { querySqlite, type SqliteValue } from "./sqlite.js";
+import { readFilePrefix } from "./file-prefix.js";
 
 export type RestorableTerminal = {
   id: string;
@@ -211,7 +212,7 @@ async function recentJsonlFiles(root: string, limit: number): Promise<string[]> 
 }
 
 async function readCodexJsonlMetadata(filePath: string): Promise<{ sessionId: string | null; cwd: string | null }> {
-  const contents = await fs.promises.readFile(filePath, "utf8");
+  const contents = await readFilePrefix(filePath);
   let sessionId: string | null = null;
   let cwd: string | null = null;
   for (const line of contents.split("\n").slice(0, 240)) {

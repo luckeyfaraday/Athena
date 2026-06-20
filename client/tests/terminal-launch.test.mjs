@@ -8,6 +8,7 @@ import {
   launchPowerShellCommand,
   launchResumeCommand,
   launchResumePowerShellCommand,
+  repairClaudeBinaryPowerShell,
   terminalLaunch,
 } from "../dist-electron/terminal-launch.js";
 import { quoteShell } from "../dist-electron/platform.js";
@@ -149,6 +150,33 @@ test("agentConfig codex injects MCP servers as quoted -c overrides", () => {
   );
   // Without MCP wiring the codex command is byte-for-byte the legacy launch.
   assert.equal(codex.args("/ws", "/tmp/p.md", "bash"), `-c shell_environment_policy.inherit=all --cd '/ws' -- "$(cat '/tmp/p.md')"`);
+});
+
+test("PowerShell claude builders restore claude.exe after an interrupted auto-update", () => {
+  // The npm shim (claude.ps1/.cmd) still resolves via Get-Command even when the
+  // auto-updater left bin/ with only claude.exe.old.<ts>, so the launch must
+  // restore the newest backup before invoking the shim. Both fresh and resume
+  // paths need the repair; the other agents must not get it.
+  for (const command of [
+    launchPowerShellCommand("claude", "C:\\ws", null, null, "abc-123"),
+    launchResumePowerShellCommand("claude", "C:\\ws", "sess-1", null),
+  ]) {
+    assert.match(command, /node_modules\\@anthropic-ai\\claude-code\\bin/);
+    assert.match(command, /Get-ChildItem -LiteralPath \$claudeBinDir -Filter 'claude\.exe\.old\.\*'/);
+    assert.match(command, /Copy-Item -LiteralPath \$claudeBackup\.FullName -Destination \$claudeExe -Force/);
+  }
+
+  // Repair is claude-only: codex/opencode launches never reference the backup.
+  const codex = launchPowerShellCommand("codex", "C:\\ws", null, null);
+  assert.doesNotMatch(codex, /claude\.exe\.old/);
+});
+
+test("repairClaudeBinaryPowerShell only restores when the exe is missing but a backup exists", () => {
+  const snippet = repairClaudeBinaryPowerShell();
+  // Guarded on a missing exe so a healthy install is left untouched.
+  assert.match(snippet, /-not \(Test-Path -LiteralPath \$claudeExe\)/);
+  // Picks the newest backup deterministically.
+  assert.match(snippet, /Sort-Object LastWriteTime -Descending \| Select-Object -First 1/);
 });
 
 test("agentConfig opencode collapses prompt whitespace and quotes the path", () => {

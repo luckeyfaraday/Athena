@@ -613,6 +613,7 @@ function readJsonBody(request: IncomingMessage): Promise<unknown> {
 }
 
 const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
+const SSE_MAX_BACKLOG_BYTES = 1_000_000;
 
 /**
  * Stream a terminal's live output as Server-Sent Events. The current rolling
@@ -640,6 +641,12 @@ function streamEmbeddedTerminal(
   response.write(": athena-control stream\n\n");
 
   const send = (event: string, payloadBase64: string): void => {
+    if (closed) return;
+    if (response.writableLength > SSE_MAX_BACKLOG_BYTES) {
+      cleanup();
+      response.destroy(new Error("Terminal stream backpressure exceeded."));
+      return;
+    }
     response.write(`event: ${event}\ndata: ${payloadBase64}\n\n`);
   };
 

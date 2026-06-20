@@ -7,6 +7,7 @@ import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
 import { querySqlite, type SqliteValue } from "./sqlite.js";
 import { mapWithConcurrency, readFilePrefix } from "./file-prefix.js";
+import { memoizeAsyncWithTtl } from "./ttl-cache.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
 
@@ -567,13 +568,42 @@ async function readClaudeSessionFile(filePath: string, workspace: string, option
   };
 }
 
+// The Hermes session corpus lives in a single, workspace-independent directory
+// (~/.hermes plus its state.db) and is only narrowed to a workspace by the final
+// match. Each cached entry therefore carries a workspace-agnostic session
+// template alongside the metadata needed to test workspace membership; the only
+// per-workspace field is `workspace`, applied when the entry is selected.
+type HermesScanEntry = {
+  session: AgentSession;
+  metadata: HermesSessionFileMetadata | null;
+  manifestEntry: HermesManifestEntry | undefined;
+};
+
+// Scan the global corpus once per CACHE_TTL_MS and share it across workspaces.
+// Without this, a multi-workspace review reran the entire scan — re-reading and
+// re-decoding every session file — once per open workspace, multiplying peak
+// heap by the workspace count.
+const cachedHermesScan = memoizeAsyncWithTtl(CACHE_TTL_MS, scanHermesSessions);
+
 async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
+  const entries = await cachedHermesScan();
+  const matched: AgentSession[] = [];
+  for (const entry of entries) {
+    if (!hermesSessionMatchesWorkspace(entry.metadata, entry.manifestEntry, workspace)) continue;
+    matched.push({ ...entry.session, workspace });
+  }
+  return matched
+    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+    .slice(0, 100);
+}
+
+async function scanHermesSessions(): Promise<HermesScanEntry[]> {
   const hermesDir = await resolveHermesDir();
   if (!hermesDir) return [];
   const dbPath = path.join(hermesDir, "state.db");
   const sessionsDir = path.join(hermesDir, "sessions");
   const manifest = await readHermesManifest(path.join(sessionsDir, "sessions.json"));
-  const sessionsById = new Map<string, AgentSession>();
+  const entries = new Map<string, HermesScanEntry>();
 
   if (fs.existsSync(dbPath)) {
     const rows = await querySqlite(dbPath, [
@@ -587,61 +617,68 @@ async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
       if (!id) continue;
       const metadata = await readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
       const manifestEntry = manifest.get(id);
-      if (!hermesSessionMatchesWorkspace(metadata, manifestEntry, workspace)) continue;
       const agent = hermesAgentLabel(nullableString(row[1]), manifestEntry, metadata);
       const createdAt = fromEpoch(row[3]);
       const updatedAt = row[4] ? fromEpoch(row[4]) : metadata?.updatedAt ?? manifestEntry?.updatedAt ?? createdAt;
-      sessionsById.set(id, {
-        id,
-        provider: "hermes",
-        title: cleanSessionTitle(nullableString(row[6]) || metadata?.title || manifestEntry?.title || null) || "Hermes session",
-        workspace,
-        branch: null,
-        model: nullableString(row[2]) || metadata?.model || null,
-        agent,
-        createdAt: metadata?.createdAt || manifestEntry?.createdAt || createdAt,
-        updatedAt,
-        status: "historical",
-        terminalId: null,
-        pid: null,
-        resumeCommand: `hermes --resume ${quoteShellArg(id)}`,
-        metadata: {},
+      entries.set(id, {
+        metadata,
+        manifestEntry,
+        session: {
+          id,
+          provider: "hermes",
+          title: cleanSessionTitle(nullableString(row[6]) || metadata?.title || manifestEntry?.title || null) || "Hermes session",
+          workspace: "",
+          branch: null,
+          model: nullableString(row[2]) || metadata?.model || null,
+          agent,
+          createdAt: metadata?.createdAt || manifestEntry?.createdAt || createdAt,
+          updatedAt,
+          status: "historical",
+          terminalId: null,
+          pid: null,
+          resumeCommand: `hermes --resume ${quoteShellArg(id)}`,
+          metadata: {},
+        },
       });
     }
   }
 
-  if (sessionsById.size === 0 && fs.existsSync(sessionsDir)) {
+  // Fallback for installs without a session database: enumerate the on-disk
+  // session files directly. Mirrors the previous per-workspace fallback, hoisted
+  // to the shared scan (so it triggers when the database yields nothing at all).
+  if (entries.size === 0 && fs.existsSync(sessionsDir)) {
     for (const name of await safeReadDir(sessionsDir)) {
       const match = name.match(/^session_(.+)\.json$/);
-      if (!match || sessionsById.has(match[1])) continue;
+      if (!match || entries.has(match[1])) continue;
       const filePath = path.join(sessionsDir, name);
       const metadata = await readHermesSessionFile(filePath);
       if (!metadata) continue;
       const stat = await fs.promises.stat(filePath);
       const manifestEntry = manifest.get(match[1]);
-      if (!hermesSessionMatchesWorkspace(metadata, manifestEntry, workspace)) continue;
-      sessionsById.set(match[1], {
-        id: match[1],
-        provider: "hermes",
-        title: cleanSessionTitle(metadata.title || manifestEntry?.title || null) || "Hermes session",
-        workspace,
-        branch: null,
-        model: metadata.model,
-        agent: hermesAgentLabel(metadata.platform, manifestEntry, metadata),
-        createdAt: metadata.createdAt || manifestEntry?.createdAt || stat.birthtime.toISOString(),
-        updatedAt: metadata.updatedAt || manifestEntry?.updatedAt || stat.mtime.toISOString(),
-        status: "historical",
-        terminalId: null,
-        pid: null,
-        resumeCommand: `hermes --resume ${quoteShellArg(match[1])}`,
-        metadata: {},
+      entries.set(match[1], {
+        metadata,
+        manifestEntry,
+        session: {
+          id: match[1],
+          provider: "hermes",
+          title: cleanSessionTitle(metadata.title || manifestEntry?.title || null) || "Hermes session",
+          workspace: "",
+          branch: null,
+          model: metadata.model,
+          agent: hermesAgentLabel(metadata.platform, manifestEntry, metadata),
+          createdAt: metadata.createdAt || manifestEntry?.createdAt || stat.birthtime.toISOString(),
+          updatedAt: metadata.updatedAt || manifestEntry?.updatedAt || stat.mtime.toISOString(),
+          status: "historical",
+          terminalId: null,
+          pid: null,
+          resumeCommand: `hermes --resume ${quoteShellArg(match[1])}`,
+          metadata: {},
+        },
       });
     }
   }
 
-  return Array.from(sessionsById.values())
-    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
-    .slice(0, 100);
+  return Array.from(entries.values());
 }
 
 async function resolveHermesDir(): Promise<string | null> {

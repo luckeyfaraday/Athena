@@ -78,7 +78,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       drainWrites();
     };
 
-    void desktop.getEmbeddedTerminalBuffer(session.id)
+    void desktop.attachEmbeddedTerminalBuffer(session.id)
       .then((buffer) => {
         if (!buffer || terminalRef.current !== terminal) return;
         enqueueWrite(buffer, true);

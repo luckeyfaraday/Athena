@@ -213,6 +213,7 @@ type WorkspaceApi = {
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
   renameEmbeddedTerminal: (id: string, title: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
+  attachEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   listAgentMessages: (workspace?: string, limit?: number) => Promise<AgentMessage[]>;
   sendAgentMessage: (request: SendAgentMessageRequest) => Promise<SendAgentMessageResult>;
@@ -295,6 +296,7 @@ const browserFallback: WorkspaceApi = {
     return { ...(await this.spawnEmbeddedTerminal("/preview")), id, title };
   },
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
+  async attachEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async listAgentMessages() { return []; },
   async sendAgentMessage(request: SendAgentMessageRequest) {

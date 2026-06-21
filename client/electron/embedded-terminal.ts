@@ -70,6 +70,7 @@ import {
   DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
   appendBoundedTerminalOutput,
 } from "./terminal-buffer.js";
+import { OutputAckGate } from "./terminal-output-ack.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -187,9 +188,9 @@ const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 // just before our spawn timestamp (clock skew / startup latency) still matches.
 const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
 const pendingOutput = new Map<string, string>();
-const inFlightOutput = new Map<string, number>();
-let nextOutputSequence = 1;
+const outputAckGate = new OutputAckGate();
 let outputFlushTimer: NodeJS.Timeout | null = null;
+let outputFlushTimerDueAt = 0;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
 let eventLoopLagMs = 0;
 let maxEventLoopLagMs = 0;
@@ -247,6 +248,14 @@ export function listEmbeddedAgentMessages(workspace?: string | null, limit?: num
 
 export function getEmbeddedTerminalBuffer(id: string): string {
   return outputBuffers.get(id) ?? "";
+}
+
+export function attachEmbeddedTerminalBuffer(id: string): string {
+  const buffer = getEmbeddedTerminalBuffer(id);
+  pendingOutput.delete(id);
+  outputAckGate.clear(id);
+  if (pendingOutput.size === 0) clearOutputFlushTimer();
+  return buffer;
 }
 
 type TerminalDataListener = (chunk: string) => void;
@@ -999,13 +1008,10 @@ function installPtyHostListeners(): void {
 function clearTerminalOutputState(id: string): void {
   outputBuffers.delete(id);
   pendingOutput.delete(id);
-  inFlightOutput.delete(id);
+  outputAckGate.clear(id);
   dataListeners.delete(id);
   exitListeners.delete(id);
-  if (pendingOutput.size === 0 && outputFlushTimer) {
-    clearTimeout(outputFlushTimer);
-    outputFlushTimer = null;
-  }
+  if (pendingOutput.size === 0) clearOutputFlushTimer();
 }
 
 function restoreFilePath(): string {
@@ -1162,38 +1168,54 @@ function queueOutput(id: string, data: string): void {
   perfCounters.ptyChunks += 1;
   perfCounters.ptyBytes += Buffer.byteLength(data);
   pendingOutput.set(id, appendBoundedTerminalOutput(pendingOutput.get(id) ?? "", data, MAX_PENDING_OUTPUT_CHARS));
-  if (outputFlushTimer) return;
-  outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
+  scheduleOutputFlush(PTY_FLUSH_INTERVAL_MS);
+}
+
+function clearOutputFlushTimer(): void {
+  if (outputFlushTimer) clearTimeout(outputFlushTimer);
+  outputFlushTimer = null;
+  outputFlushTimerDueAt = 0;
+}
+
+function scheduleOutputFlush(delayMs: number): void {
+  const delay = Math.max(0, Math.floor(delayMs));
+  const dueAt = Date.now() + delay;
+  if (outputFlushTimer && outputFlushTimerDueAt <= dueAt) return;
+  clearOutputFlushTimer();
+  outputFlushTimerDueAt = dueAt;
+  outputFlushTimer = setTimeout(() => flushOutput(), delay);
 }
 
 function flushOutput(id?: string): void {
   updatePerformanceRates();
-  if (outputFlushTimer) {
-    clearTimeout(outputFlushTimer);
-    outputFlushTimer = null;
-  }
+  clearOutputFlushTimer();
 
+  const now = Date.now();
+  let retryDelayMs: number | null = null;
   const entries = id ? [[id, pendingOutput.get(id) ?? ""] as const] : Array.from(pendingOutput.entries());
   for (const [terminalId, data] of entries) {
-    if (!data || inFlightOutput.has(terminalId)) continue;
+    if (!data) continue;
+    if (!outputAckGate.canSend(terminalId, now)) {
+      const delay = outputAckGate.retryDelayMs(terminalId, now);
+      retryDelayMs = Math.min(retryDelayMs ?? Infinity, delay ?? PTY_FLUSH_INTERVAL_MS);
+      continue;
+    }
     pendingOutput.delete(terminalId);
-    const sequence = nextOutputSequence++;
-    inFlightOutput.set(terminalId, sequence);
+    const sequence = outputAckGate.markSent(terminalId, now);
     perfCounters.ipcBatches += 1;
     perfCounters.ipcBytes += Buffer.byteLength(data);
     perfCounters.lastBatchAt = new Date().toISOString();
     emit("embedded-terminal:data", { id: terminalId, data, sequence });
   }
 
-  if (!id) return;
-  if (pendingOutput.size > 0 && !outputFlushTimer) {
-    outputFlushTimer = setTimeout(() => flushOutput(), PTY_FLUSH_INTERVAL_MS);
+  if (pendingOutput.size > 0) {
+    const hasUnprocessedPending = Boolean(id && Array.from(pendingOutput.keys()).some((terminalId) => terminalId !== id));
+    scheduleOutputFlush(hasUnprocessedPending ? PTY_FLUSH_INTERVAL_MS : retryDelayMs ?? PTY_FLUSH_INTERVAL_MS);
   }
 }
 
 export function acknowledgeEmbeddedTerminalOutput(id: string, sequence: number): void {
-  if (inFlightOutput.get(id) !== sequence) return;
-  inFlightOutput.delete(id);
+  if (!outputAckGate.acknowledge(id, sequence)) return;
   if (pendingOutput.has(id)) flushOutput(id);
 }
 

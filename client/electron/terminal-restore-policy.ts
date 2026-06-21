@@ -178,7 +178,11 @@ export async function openCodeSessionExists(dbPaths: string[], sessionId: string
 // here makes restore probe the wrong directory and silently launch a fresh
 // session instead of resuming the saved one (see issue #173).
 function encodeClaudeProjectPath(workspace: string): string {
-  return path.resolve(workspace).replace(/[^A-Za-z0-9]/g, "-");
+  return encodeResolvedClaudeProjectPath(path.resolve(workspace));
+}
+
+export function encodeResolvedClaudeProjectPath(resolvedWorkspace: string): string {
+  return resolvedWorkspace.replace(/[^A-Za-z0-9]/g, "-");
 }
 
 // Kept as an extra candidate so sessions saved under Athena's older (incorrect)

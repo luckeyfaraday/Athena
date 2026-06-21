@@ -88,7 +88,6 @@ test("restore uses provider session id when resume session id is missing", () =>
 test("claude project path candidates include current and legacy encodings", () => {
   const projectsDir = path.join(path.sep, "home", "dev", ".claude", "projects");
   const project = path.join(path.sep, "home", "dev", "My Project");
-  const dottedProject = path.join(path.sep, "home", "dev", "project.name");
   assert.deepEqual(
     claudeProjectPathCandidates(projectsDir, project),
     [
@@ -96,13 +95,37 @@ test("claude project path candidates include current and legacy encodings", () =
       path.join(projectsDir, legacyClaudeEncoding(project)),
     ],
   );
+});
 
-  assert.deepEqual(
-    claudeProjectPathCandidates(projectsDir, dottedProject),
-    [
-      path.join(projectsDir, currentClaudeEncoding(dottedProject)),
-    ],
-  );
+// Regression for issue #173: the primary encoding must match Claude Code's real
+// cwd algorithm (replace every non-alphanumeric char with "-") rather than the
+// old encoder that stripped ":" and collapsed/kept "."/separator runs. These
+// use literal expected names (not a re-implemented encoder) so the candidate is
+// pinned to the directory Claude actually creates on disk.
+test("claude project path candidates match Claude's real on-disk encoding", () => {
+  const projectsDir = path.join(path.sep, "home", "dev", ".claude", "projects");
+  const encodedHead = (workspace) =>
+    path.basename(claudeProjectPathCandidates(projectsDir, workspace)[0]);
+
+  // "." must become "-" (e.g. domain-named dirs like example.com), not be kept.
+  assert.equal(encodedHead("/home/dev/example.com"), "-home-dev-example-com");
+
+  // A ":" anywhere must become "-" (the Windows drive-letter case generalised),
+  // not be stripped. Old encoder produced "-home-dev-weirddir".
+  assert.equal(encodedHead("/home/dev/weird:dir"), "-home-dev-weird-dir");
+
+  // Adjacent separators must NOT be collapsed: each char maps one-to-one.
+  // Old encoder collapsed the run to a single "-": "-home-dev-foo-bar".
+  assert.equal(encodedHead("/home/dev/foo - bar"), "-home-dev-foo---bar");
+});
+
+// The headline symptom from issue #173: a Windows drive-letter path. The encoder
+// uses the platform's path.resolve, so assert the transformation under win32
+// semantics to lock the directory Claude creates on Windows ("C:\\" -> "C--").
+test("claude encoding turns a Windows drive-letter colon into a double dash", () => {
+  const winEncoding = (workspace) =>
+    path.win32.resolve(workspace).replace(/[^A-Za-z0-9]/g, "-");
+  assert.equal(winEncoding("C:\\Users\\dev\\Project"), "C--Users-dev-Project");
 });
 
 test("codex session discovery reads native jsonl metadata for the selected workspace", async () => {
@@ -301,8 +324,9 @@ async function createOpenCodeDb(dbPath, rows) {
   await execFileAsync("python3", ["-c", script, dbPath, JSON.stringify(rows)]);
 }
 
+// Mirror Claude Code's real cwd encoding: every non-alphanumeric char -> "-".
 function currentClaudeEncoding(workspace) {
-  return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
+  return path.resolve(workspace).replace(/[^A-Za-z0-9]/g, "-");
 }
 
 function legacyClaudeEncoding(workspace) {

@@ -171,10 +171,18 @@ export async function openCodeSessionExists(dbPaths: string[], sessionId: string
   return sawQueryFailure;
 }
 
+// Mirror Claude Code's own cwd -> ~/.claude/projects/<dir> encoding exactly:
+// every non-alphanumeric character maps one-to-one to "-". So a drive-letter
+// colon plus separator becomes a double dash ("C:\\Users" -> "C--Users"), a
+// "." becomes "-", and adjacent separators are NOT collapsed. Any divergence
+// here makes restore probe the wrong directory and silently launch a fresh
+// session instead of resuming the saved one (see issue #173).
 function encodeClaudeProjectPath(workspace: string): string {
-  return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
+  return path.resolve(workspace).replace(/[^A-Za-z0-9]/g, "-");
 }
 
+// Kept as an extra candidate so sessions saved under Athena's older (incorrect)
+// encoding still resolve. New sessions always use encodeClaudeProjectPath.
 function legacyEncodeClaudeProjectPath(workspace: string): string {
   return path.resolve(workspace).replace(/:/g, "").replace(/[\\/]/g, "-");
 }

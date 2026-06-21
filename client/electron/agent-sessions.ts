@@ -8,6 +8,7 @@ import { normalizeComparablePath } from "./platform.js";
 import { querySqlite, type SqliteValue } from "./sqlite.js";
 import { mapWithConcurrency, readFilePrefix } from "./file-prefix.js";
 import { memoizeAsyncWithTtl } from "./ttl-cache.js";
+import { claudeProjectPathCandidates } from "./terminal-restore-policy.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
 
@@ -940,21 +941,6 @@ function cleanSessionTitle(value: string | null): string {
 
 function quoteShellArg(value: string): string {
   return `"${value.replace(/(["\\$`])/g, "\\$1")}"`;
-}
-
-function claudeProjectPathCandidates(projectsDir: string, workspace: string): string[] {
-  return Array.from(new Set([
-    path.join(projectsDir, encodeClaudeProjectPath(workspace)),
-    path.join(projectsDir, legacyEncodeClaudeProjectPath(workspace)),
-  ]));
-}
-
-function encodeClaudeProjectPath(workspace: string): string {
-  return path.resolve(workspace).replace(/:/g, "").replace(/[^A-Za-z0-9.]+/g, "-");
-}
-
-function legacyEncodeClaudeProjectPath(workspace: string): string {
-  return path.resolve(workspace).replace(/:/g, "").replace(/[\\/]/g, "-");
 }
 
 async function safeReadDir(dir: string): Promise<string[]> {

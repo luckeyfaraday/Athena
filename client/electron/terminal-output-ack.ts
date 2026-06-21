@@ -33,6 +33,13 @@ export class OutputAckGate {
     return now - inFlight.sentAt >= this.ackTimeoutMs;
   }
 
+  /** Milliseconds until a blocked terminal should be retried, or null if unblocked. */
+  retryDelayMs(id: string, now: number = Date.now()): number | null {
+    const inFlight = this.inFlight.get(id);
+    if (!inFlight) return null;
+    return Math.max(0, this.ackTimeoutMs - (now - inFlight.sentAt));
+  }
+
   /** Record that a batch was just sent; returns its sequence number. */
   markSent(id: string, now: number = Date.now()): number {
     const sequence = this.nextSequence++;

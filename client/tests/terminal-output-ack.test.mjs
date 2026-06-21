@@ -30,7 +30,22 @@ test("treats an unacknowledged batch as lost after the timeout so output recover
   const gate = new OutputAckGate(2000);
   gate.markSent("t", 0);
   assert.equal(gate.canSend("t", 1999), false, "still waiting within the timeout");
-  assert.equal(gate.canSend("t", 2000), true, "re-sends once the ack window elapses");
+  assert.equal(gate.canSend("t", 2000), true, "allows another send once the ack window elapses");
+});
+
+test("reports the remaining retry delay for a blocked batch", () => {
+  const gate = new OutputAckGate(2000);
+  gate.markSent("t", 1000);
+  assert.equal(gate.retryDelayMs("t", 1500), 1500);
+  assert.equal(gate.retryDelayMs("t", 2999), 1);
+  assert.equal(gate.retryDelayMs("t", 3000), 0);
+});
+
+test("reports no retry delay after the batch is cleared", () => {
+  const gate = new OutputAckGate(2000);
+  const sequence = gate.markSent("t", 0);
+  assert.equal(gate.acknowledge("t", sequence), true);
+  assert.equal(gate.retryDelayMs("t", 100), null);
 });
 
 test("a late ack for a re-sent batch does not clear the fresh batch", () => {

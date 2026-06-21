@@ -24,6 +24,7 @@ import {
 } from "./codex-terminal.js";
 import {
   acknowledgeEmbeddedTerminalOutput,
+  attachEmbeddedTerminalBuffer,
   clearSavedEmbeddedTerminalRestores,
   getEmbeddedTerminalBuffer,
   getPerformanceDiagnostics,
@@ -145,6 +146,7 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("embeddedTerminal:restore", (_event, allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> =>
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
+  handle("embeddedTerminal:attachBuffer", (_event, id: string): string => attachEmbeddedTerminalBuffer(id));
   handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
   handle("agentMessages:list", (_event, workspace?: string, limit?: number): AgentMessage[] => listEmbeddedAgentMessages(workspace, limit));
   handle("agentMessages:send", (_event, request: SendAgentMessageRequest): Promise<SendAgentMessageResult> => sendAgentMessage({ ...request, source: "ui" }));

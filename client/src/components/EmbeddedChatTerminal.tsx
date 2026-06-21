@@ -34,7 +34,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
 
   useEffect(() => {
     let mounted = true;
-    void desktop.getEmbeddedTerminalBuffer(session.id)
+    void desktop.attachEmbeddedTerminalBuffer(session.id)
       .then((nextBuffer) => {
         if (mounted) setBuffer(capChatBuffer(nextBuffer));
       })

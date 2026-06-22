@@ -464,6 +464,10 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .workspaceAddButton:hover {
   color: var(--text);
 }
+.workspaceTabActions {
+  display: inline-flex;
+  align-items: center;
+}
 .workspaceAddButton {
   padding: 0 8px;
   display: inline-flex;
@@ -472,6 +476,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   border-left: 1px solid var(--line);
   font-size: 10px;
   font-weight: 800;
+  white-space: nowrap;
 }
 .workspaceContextMenu {
   position: fixed;

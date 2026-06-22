@@ -112,14 +112,16 @@ export function WorkspaceTabs({
           </button>
         </div>
       )}
-      <button type="button" className="workspaceAddButton" onClick={() => void onAdd()} title="Add workspace">
-        <FolderOpen size={13} /> Add
-      </button>
-      {onCreate && (
-        <button type="button" className="workspaceAddButton" onClick={() => void onCreate()} title="Create new folder and add it as a workspace">
-          <FolderPlus size={13} /> New folder
+      <div className="workspaceTabActions">
+        <button type="button" className="workspaceAddButton" onClick={() => void onAdd()} title="Add workspace">
+          <FolderOpen size={13} /> Add
         </button>
-      )}
+        {onCreate && (
+          <button type="button" className="workspaceAddButton" onClick={() => void onCreate()} title="Create new folder and add it as a workspace">
+            <FolderPlus size={13} /> New folder
+          </button>
+        )}
+      </div>
     </div>
   );
 }

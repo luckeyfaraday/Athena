@@ -1,11 +1,8 @@
 import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot,
-  BrainCircuit,
   ChevronDown,
   Code2,
   FileText,
-  Layers3,
   Maximize2,
   Minimize2,
   Pencil,
@@ -13,11 +10,10 @@ import {
   RefreshCw,
   ScrollText,
   Send,
-  ShieldCheck,
   TerminalSquare,
   Trash2,
-  Users,
 } from "lucide-react";
+import { AthenaIcon, ClaudeIcon, GrokIcon, HermesIcon, OpenAIIcon, OpenCodeIcon } from "../components/BrandIcons";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
 import { EmbeddedChatTerminal } from "../components/EmbeddedChatTerminal";
 import { EmbeddedTerminal } from "../components/EmbeddedTerminal";
@@ -519,17 +515,17 @@ function NewLaunchMenu({
   const disabled = !workspace;
   const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number }> = [
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
-    { label: "Hermes", detail: "Spawn Hermes", icon: <BrainCircuit size={14} />, kind: "hermes", count: 1 },
-    { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <Code2 size={14} />, kind: "athena", count: 1 },
-    { label: "Athena Code Grid", detail: "Spawn four Athena Code panes", icon: <Layers3 size={14} />, kind: "athena", count: 4 },
-    { label: "Codex", detail: "Spawn one Codex agent", icon: <Bot size={14} />, kind: "codex", count: 1 },
-    { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <Layers3 size={14} />, kind: "codex", count: 4 },
-    { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <Bot size={14} />, kind: "opencode", count: 1 },
-    { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <Users size={14} />, kind: "opencode", count: 4 },
-    { label: "Claude", detail: "Spawn one Claude agent", icon: <ShieldCheck size={14} />, kind: "claude", count: 1 },
-    { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ShieldCheck size={14} />, kind: "claude", count: 4 },
-    { label: "Grok", detail: "Spawn one Grok agent", icon: <Bot size={14} />, kind: "grok", count: 1 },
-    { label: "Grok Grid", detail: "Spawn four Grok panes", icon: <Layers3 size={14} />, kind: "grok", count: 4 },
+    { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
+    { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
+    { label: "Athena Code Grid", detail: "Spawn four Athena Code panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
+    { label: "Codex", detail: "Spawn one Codex agent", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1 },
+    { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <OpenAIIcon size={14} />, kind: "codex", count: 4 },
+    { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1 },
+    { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 4 },
+    { label: "Claude", detail: "Spawn one Claude agent", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1 },
+    { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ClaudeIcon size={14} />, kind: "claude", count: 4 },
+    { label: "Grok", detail: "Spawn one Grok agent", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
+    { label: "Grok Grid", detail: "Spawn four Grok panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
   ];
 
   function launch(kind: EmbeddedTerminalKind, count: number) {

@@ -2,6 +2,7 @@ import { DragEvent, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ILink, type ITheme } from "@xterm/xterm";
 import { desktop, type EmbeddedTerminalSession } from "../electron";
+import { terminalUsesMouseWheelProtocol } from "../embedded-scroll";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = {
@@ -107,9 +108,16 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-theme-loaded"] });
 
+    const stopWheelPropagation = (event: WheelEvent) => {
+      if (!terminalUsesMouseWheelProtocol(container)) return;
+      event.stopPropagation();
+    };
+    container.addEventListener("wheel", stopWheelPropagation);
+
     return () => {
       disposed = true;
       pendingWrite = "";
+      container.removeEventListener("wheel", stopWheelPropagation);
       observer.disconnect();
       themeObserver.disconnect();
       removeData();

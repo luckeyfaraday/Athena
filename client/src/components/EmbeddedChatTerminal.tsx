@@ -8,6 +8,7 @@ import {
   type SentPromptBlock,
   writePromptSequence,
 } from "../chat-mode";
+import { isNearScrollBottom } from "../embedded-scroll";
 
 type Props = {
   session: EmbeddedTerminalSession;
@@ -26,6 +27,7 @@ type ChatBlock = {
 
 export function EmbeddedChatTerminal({ session }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
   const dragDepthRef = useRef(0);
   const [buffer, setBuffer] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -56,12 +58,13 @@ export function EmbeddedChatTerminal({ session }: Props) {
     };
   }, [session.id]);
 
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [buffer]);
-
   const outputBlocks = useMemo(() => terminalTextToBlocks(buffer, session, sentPrompts), [buffer, session, sentPrompts]);
   const chatBlocks = useMemo(() => interleaveChatTurns(outputBlocks, sentPrompts).slice(-12), [outputBlocks, sentPrompts]);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [buffer, chatBlocks]);
 
   async function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,6 +72,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
     if (!trimmed || session.status !== "running") return;
     const marker = buffer.length;
     setPrompt("");
+    stickToBottomRef.current = true;
     setSentPrompts(recordChatPromptForSession(session.id, trimmed, marker));
     await writePromptToSession(session, trimmed);
   }
@@ -77,6 +81,12 @@ export function EmbeddedChatTerminal({ session }: Props) {
     setSentPrompts(promptHistoryForSession(session));
     return subscribeChatPromptHistory(session.id, () => setSentPrompts(promptHistoryForSession(session)));
   }, [session.id]);
+
+  function handleTranscriptScroll() {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottomRef.current = isNearScrollBottom(el);
+  }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) return;
@@ -132,7 +142,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
         <strong>{session.status === "running" ? "Running" : "Exited"}</strong>
         <em>{session.kind}{session.pid ? ` · PID ${session.pid}` : ""}</em>
       </div>
-      <div className="embeddedChatTranscript" ref={scrollRef}>
+      <div className="embeddedChatTranscript" ref={scrollRef} onScroll={handleTranscriptScroll}>
         {chatBlocks.length ? (
           chatBlocks.map((block) => (
             <article key={block.id} className={`chatBubble ${block.role}`}>

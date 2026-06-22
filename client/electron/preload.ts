@@ -139,6 +139,7 @@ export type WorkspaceApi = {
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalState) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
+  createWorkspaceFolder: () => Promise<WorkspacePath | null>;
   onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
   onWorkspaceClose: (callback: (payload: { workspace: WorkspacePath }) => void) => () => void;
   minimizeWindow: () => Promise<void>;
@@ -218,6 +219,7 @@ const api: WorkspaceApi = {
   onCodexTerminalData,
   onCodexTerminalState,
   selectWorkspace: () => ipcRenderer.invoke("dialog:selectWorkspace"),
+  createWorkspaceFolder: () => ipcRenderer.invoke("dialog:createWorkspaceFolder"),
   onWorkspaceOpen,
   onWorkspaceClose,
   minimizeWindow: () => ipcRenderer.invoke("window:minimize"),

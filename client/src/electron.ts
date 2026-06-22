@@ -232,6 +232,7 @@ type WorkspaceApi = {
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalStatus) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
+  createWorkspaceFolder: () => Promise<WorkspacePath | null>;
   minimizeWindow: () => Promise<void>;
   toggleMaximizeWindow: () => Promise<boolean>;
   closeWindow: () => Promise<void>;
@@ -376,6 +377,7 @@ const browserFallback: WorkspaceApi = {
   onCodexTerminalData() { return () => undefined; },
   onCodexTerminalState() { return () => undefined; },
   async selectWorkspace() { return fallbackWorkspacePath(); },
+  async createWorkspaceFolder() { return null; },
   async minimizeWindow() { return undefined; },
   async toggleMaximizeWindow() { return false; },
   async closeWindow() { return undefined; },

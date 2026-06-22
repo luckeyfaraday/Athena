@@ -693,6 +693,15 @@ export function App() {
     }
   }
 
+  async function createWorkspace() {
+    try {
+      const created = await desktop.createWorkspaceFolder();
+      if (created) activateWorkspace(created);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   function activateWorkspace(nextWorkspace: WorkspacePath, options: { restoreTerminals?: boolean } = {}) {
     setWorkspacePath(nextWorkspace);
     setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
@@ -1138,6 +1147,7 @@ export function App() {
               onSelect={activateWorkspace}
               onClose={closeWorkspaceTab}
               onAdd={selectWorkspace}
+              onCreate={createWorkspace}
               onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
             />
 
@@ -1151,6 +1161,7 @@ export function App() {
                 onSelect={activateWorkspace}
                 onClose={closeWorkspaceTab}
                 onAdd={selectWorkspace}
+                onCreate={createWorkspace}
                 onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
               />
             )}

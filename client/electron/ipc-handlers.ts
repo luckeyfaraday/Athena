@@ -172,6 +172,17 @@ export function registerIpcHandlers(appRoot: string): void {
     const selected = result.canceled ? null : result.filePaths[0] ?? null;
     return selected ? toWorkspacePath(selected) : null;
   });
+  handle("dialog:createWorkspaceFolder", async (): Promise<WorkspacePath | null> => {
+    const result = await dialog.showSaveDialog({
+      title: "Create workspace folder",
+      buttonLabel: "Create",
+      properties: ["createDirectory"],
+    });
+    const target = result.canceled ? null : result.filePath ?? null;
+    if (!target) return null;
+    fs.mkdirSync(target, { recursive: true });
+    return toWorkspacePath(target);
+  });
 }
 
 function recordIpcBreadcrumb(channel: string, phase: "start" | "ok" | "error", args: unknown[], error?: string): void {

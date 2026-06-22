@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import nousHermesMarkup from "../assets/nous-hermes.svg?raw";
 
 // Monochrome brand marks for the native-terminal launcher. Each renders with
 // `currentColor` so it inherits the surrounding text color (white on the dark
@@ -50,6 +51,20 @@ export function OpenCodeIcon(props: BrandIconProps) {
 
 export function GrokIcon(props: BrandIconProps) {
   return <FilledMark {...props} path={X_PATH} label="Grok" />;
+}
+
+// Nous Research "Hermes" mark — the detailed multi-path logo (lobehub/lobe-icons)
+// inlined so its `currentColor` fills inherit the menu text color. The source SVG
+// sizes itself in `em`, so the wrapper's font-size drives the rendered dimensions.
+export function HermesIcon({ size = 14 }: BrandIconProps) {
+  return (
+    <span
+      role="img"
+      aria-label="Hermes"
+      style={{ display: "inline-flex", fontSize: size, lineHeight: 0 }}
+      dangerouslySetInnerHTML={{ __html: nousHermesMarkup }}
+    />
+  );
 }
 
 export function AthenaIcon({ size = 14, ...rest }: BrandIconProps) {

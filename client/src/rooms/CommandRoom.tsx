@@ -1,6 +1,5 @@
 import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BrainCircuit,
   ChevronDown,
   Code2,
   FileText,
@@ -14,7 +13,7 @@ import {
   TerminalSquare,
   Trash2,
 } from "lucide-react";
-import { AthenaIcon, ClaudeIcon, GrokIcon, OpenAIIcon, OpenCodeIcon } from "../components/BrandIcons";
+import { AthenaIcon, ClaudeIcon, GrokIcon, HermesIcon, OpenAIIcon, OpenCodeIcon } from "../components/BrandIcons";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
 import { EmbeddedChatTerminal } from "../components/EmbeddedChatTerminal";
 import { EmbeddedTerminal } from "../components/EmbeddedTerminal";
@@ -516,7 +515,7 @@ function NewLaunchMenu({
   const disabled = !workspace;
   const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number }> = [
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
-    { label: "Hermes", detail: "Spawn Hermes", icon: <BrainCircuit size={14} />, kind: "hermes", count: 1 },
+    { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
     { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
     { label: "Athena Code Grid", detail: "Spawn four Athena Code panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
     { label: "Codex", detail: "Spawn one Codex agent", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1 },

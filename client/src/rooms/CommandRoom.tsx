@@ -27,7 +27,7 @@ import {
   terminalPaneMeta,
   writeDeletedAgentSessions,
 } from "../session-utils";
-import { sameWorkspacePath } from "../workspace-utils";
+import { normalizeWorkspaceKey, sameWorkspacePath } from "../workspace-utils";
 
 type PaneDragState = {
   id: string;
@@ -75,7 +75,7 @@ export function CommandRoom({
   onViewAgentTranscript: (session: AgentSession) => Promise<string>;
   emptyMark: ReactNode;
 }) {
-  const [paneOrder, setPaneOrder] = useState<string[]>([]);
+  const [paneOrderByWorkspace, setPaneOrderByWorkspace] = useState<Record<string, string[]>>({});
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
   const [broadcastPrompt, setBroadcastPrompt] = useState("");
   const [broadcasting, setBroadcasting] = useState(false);
@@ -84,24 +84,32 @@ export function CommandRoom({
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+  const [activeTerminalPaneByWorkspace, setActiveTerminalPaneByWorkspace] = useState<Record<string, string>>({});
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
   const newMenuRef = useRef<HTMLDivElement | null>(null);
+  const workspaceOrderKey = normalizeWorkspaceKey(workspace || "none");
+  const sessionIds = sessions.map((session) => session.id);
+  const sessionSignature = sessionIds.join("|");
+  const paneOrder = paneOrderByWorkspace[workspaceOrderKey] ?? sessionIds;
+  const activeTerminalPaneId = activeTerminalPaneByWorkspace[workspaceOrderKey] ?? null;
 
   useEffect(() => {
-    setPaneOrder((current) => {
-      const sessionIds = sessions.map((session) => session.id);
-      const known = current.filter((id) => sessionIds.includes(id));
+    setPaneOrderByWorkspace((current) => {
+      const existing = current[workspaceOrderKey] ?? [];
+      const known = existing.filter((id) => sessionIds.includes(id));
       const added = sessionIds.filter((id) => !known.includes(id));
-      return [...known, ...added];
+      const nextOrder = [...known, ...added];
+      if (arraysEqual(existing, nextOrder)) return current;
+      return { ...current, [workspaceOrderKey]: nextOrder };
     });
-  }, [sessions]);
+  }, [sessionSignature, workspaceOrderKey]);
 
   useEffect(() => {
     if (layoutResetNonce === 0 || sessions.length === 0) return;
-    setPaneOrder(sessions.map((session) => session.id));
-  }, [layoutResetNonce, sessions]);
+    setPaneOrderByWorkspace((current) => ({ ...current, [workspaceOrderKey]: sessionIds }));
+  }, [layoutResetNonce, sessionSignature, workspaceOrderKey]);
 
   useEffect(() => {
     const sessionIds = new Set(sessions.map((session) => session.id));
@@ -118,6 +126,7 @@ export function CommandRoom({
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
   const visibleSessions = orderedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace));
+  const visibleSessionKey = visibleSessions.map((session) => session.id).join("|");
   const activeMaximizedPaneId = maximizedPaneId && visibleSessions.some((session) => session.id === maximizedPaneId)
     ? maximizedPaneId
     : null;
@@ -147,6 +156,21 @@ export function CommandRoom({
   useEffect(() => {
     setDeletedSessionKeys(readDeletedAgentSessions(workspace));
   }, [workspace]);
+
+  useEffect(() => {
+    setActiveTerminalPaneByWorkspace((current) => {
+      const activeTerminalPaneId = current[workspaceOrderKey];
+      if (activeTerminalPaneId && visibleSessions.some((session) => session.id === activeTerminalPaneId)) return current;
+      const nextActiveTerminalPaneId = visibleSessions[0]?.id ?? "";
+      if (activeTerminalPaneId === nextActiveTerminalPaneId) return current;
+      if (!nextActiveTerminalPaneId) {
+        const next = { ...current };
+        delete next[workspaceOrderKey];
+        return next;
+      }
+      return { ...current, [workspaceOrderKey]: nextActiveTerminalPaneId };
+    });
+  }, [visibleSessionKey, workspaceOrderKey]);
 
   useEffect(() => {
     if (!newMenuOpen) return;
@@ -186,16 +210,36 @@ export function CommandRoom({
     setMaximizedPaneId((current) => current === sessionId ? null : sessionId);
   }
 
+  function revealTerminalPane(sessionId: string) {
+    setActiveTab("terminals");
+    setActiveTerminalPaneForWorkspace(workspaceOrderKey, sessionId);
+    setCollapsedPaneIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    setMaximizedPaneId((current) => current && current !== sessionId ? sessionId : current);
+    window.setTimeout(() => scrollTerminalPaneIntoView(sessionId), 0);
+  }
+
+  function setActiveTerminalPaneForWorkspace(workspaceKey: string, sessionId: string) {
+    setActiveTerminalPaneByWorkspace((current) => (
+      current[workspaceKey] === sessionId ? current : { ...current, [workspaceKey]: sessionId }
+    ));
+  }
+
   function movePaneToSlot(sourceSessionId: string, targetSessionId: string) {
     if (sourceSessionId === targetSessionId) return;
-    setPaneOrder((current) => {
-      const sourceIndex = current.indexOf(sourceSessionId);
-      const targetIndex = current.indexOf(targetSessionId);
+    setPaneOrderByWorkspace((current) => {
+      const existing = current[workspaceOrderKey] ?? sessionIds;
+      const sourceIndex = existing.indexOf(sourceSessionId);
+      const targetIndex = existing.indexOf(targetSessionId);
       if (sourceIndex < 0 || targetIndex < 0) return current;
-      const next = [...current];
+      const next = [...existing];
       next[sourceIndex] = targetSessionId;
       next[targetIndex] = sourceSessionId;
-      return next;
+      return { ...current, [workspaceOrderKey]: next };
     });
   }
 
@@ -330,8 +374,11 @@ export function CommandRoom({
                 dragState?.targetId === session.id ? "dropTarget" : "",
                 collapsedPaneIds.has(session.id) ? "collapsed" : "",
                 activeMaximizedPaneId === session.id ? "maximized" : "",
+                activeTerminalPaneId === session.id ? "activeTerminalPane" : "",
               ].filter(Boolean).join(" ")}
               aria-hidden={!displayed}
+              aria-label={`${session.title} terminal pane`}
+              onPointerDownCapture={() => setActiveTerminalPaneForWorkspace(workspaceOrderKey, session.id)}
               style={
                 dragState?.id === session.id
                   ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
@@ -427,7 +474,9 @@ export function CommandRoom({
               <span className={`agentSessionStatus ${session.status}`}>{session.status}</span>
               <div className="agentSessionActions">
                 {session.terminalId && (
-                  <button type="button" onClick={() => setActiveTab("terminals")}>
+                  <button type="button" onClick={() => {
+                    if (session.terminalId) revealTerminalPane(session.terminalId);
+                  }}>
                     <TerminalSquare size={13} /> Focus
                   </button>
                 )}
@@ -561,6 +610,16 @@ function NewLaunchMenu({
       )}
     </div>
   );
+}
+
+function scrollTerminalPaneIntoView(sessionId: string): void {
+  const pane = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-id]"))
+    .find((item) => item.dataset.paneId === sessionId);
+  pane?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function arraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
 function nearestPaneDropTarget(clientX: number, clientY: number, sourceSessionId: string): string | null {

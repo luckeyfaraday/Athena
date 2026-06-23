@@ -2861,3 +2861,62 @@ button:disabled { cursor: not-allowed; opacity: .36; }
   .broadcastComposer > span { display: none; }
   .broadcastComposer .primaryButton { width: 100%; }
 }
+
+/* Focus mode needs stronger navigation state than the dashboard chrome. */
+.workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs {
+  border-color: var(--line-strong);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs .workspaceTab.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs .workspaceTab.active > button:first-child {
+  color: var(--text);
+}
+.commandRoom.focused .commandRoomTabs {
+  align-self: stretch;
+  margin: 8px;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+.commandRoom.focused .commandRoomTabs button {
+  min-width: 112px;
+  justify-content: center;
+  color: var(--text-2);
+}
+.commandRoom.focused .commandRoomTabs button.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+.commandRoom.focused .commandRoomTabs button.active span {
+  background: rgba(0, 0, 0, .18);
+  color: inherit;
+}
+.commandRoom.focused .commandRoomTabs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.slotPane.activeTerminalPane {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px var(--accent-glow),
+    0 0 0 3px var(--accent-soft);
+}
+.slotPane.activeTerminalPane .terminalChrome {
+  border-bottom-color: var(--accent);
+  background:
+    linear-gradient(90deg, var(--accent-soft), transparent 62%),
+    var(--surface-2);
+}
+.slotPane.activeTerminalPane .terminalChrome strong {
+  color: var(--text);
+}
+.slotPane.activeTerminalPane .paneInstanceBadge {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}

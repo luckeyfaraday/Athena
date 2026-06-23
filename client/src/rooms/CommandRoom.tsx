@@ -84,6 +84,7 @@ export function CommandRoom({
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
+  const [activeTerminalPaneId, setActiveTerminalPaneId] = useState<string | null>(null);
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
@@ -118,6 +119,7 @@ export function CommandRoom({
     .map((id) => sessions.find((session) => session.id === id))
     .filter((session): session is EmbeddedTerminalSession => Boolean(session));
   const visibleSessions = orderedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace));
+  const visibleSessionKey = visibleSessions.map((session) => session.id).join("|");
   const activeMaximizedPaneId = maximizedPaneId && visibleSessions.some((session) => session.id === maximizedPaneId)
     ? maximizedPaneId
     : null;
@@ -147,6 +149,13 @@ export function CommandRoom({
   useEffect(() => {
     setDeletedSessionKeys(readDeletedAgentSessions(workspace));
   }, [workspace]);
+
+  useEffect(() => {
+    setActiveTerminalPaneId((current) => {
+      if (current && visibleSessions.some((session) => session.id === current)) return current;
+      return visibleSessions[0]?.id ?? null;
+    });
+  }, [visibleSessionKey]);
 
   useEffect(() => {
     if (!newMenuOpen) return;
@@ -184,6 +193,19 @@ export function CommandRoom({
       return next;
     });
     setMaximizedPaneId((current) => current === sessionId ? null : sessionId);
+  }
+
+  function revealTerminalPane(sessionId: string) {
+    setActiveTab("terminals");
+    setActiveTerminalPaneId(sessionId);
+    setCollapsedPaneIds((current) => {
+      if (!current.has(sessionId)) return current;
+      const next = new Set(current);
+      next.delete(sessionId);
+      return next;
+    });
+    setMaximizedPaneId((current) => current && current !== sessionId ? sessionId : current);
+    window.setTimeout(() => scrollTerminalPaneIntoView(sessionId), 0);
   }
 
   function movePaneToSlot(sourceSessionId: string, targetSessionId: string) {
@@ -330,8 +352,11 @@ export function CommandRoom({
                 dragState?.targetId === session.id ? "dropTarget" : "",
                 collapsedPaneIds.has(session.id) ? "collapsed" : "",
                 activeMaximizedPaneId === session.id ? "maximized" : "",
+                activeTerminalPaneId === session.id ? "activeTerminalPane" : "",
               ].filter(Boolean).join(" ")}
               aria-hidden={!displayed}
+              aria-label={`${session.title} terminal pane`}
+              onPointerDownCapture={() => setActiveTerminalPaneId(session.id)}
               style={
                 dragState?.id === session.id
                   ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
@@ -427,7 +452,9 @@ export function CommandRoom({
               <span className={`agentSessionStatus ${session.status}`}>{session.status}</span>
               <div className="agentSessionActions">
                 {session.terminalId && (
-                  <button type="button" onClick={() => setActiveTab("terminals")}>
+                  <button type="button" onClick={() => {
+                    if (session.terminalId) revealTerminalPane(session.terminalId);
+                  }}>
                     <TerminalSquare size={13} /> Focus
                   </button>
                 )}
@@ -561,6 +588,12 @@ function NewLaunchMenu({
       )}
     </div>
   );
+}
+
+function scrollTerminalPaneIntoView(sessionId: string): void {
+  const pane = Array.from(document.querySelectorAll<HTMLElement>("[data-pane-id]"))
+    .find((item) => item.dataset.paneId === sessionId);
+  pane?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 function nearestPaneDropTarget(clientX: number, clientY: number, sourceSessionId: string): string | null {

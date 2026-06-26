@@ -41,7 +41,7 @@ test("launchCommand for an agent guards on command availability before launching
   const command = launchCommand("codex", "/home/dev/project", "/tmp/prompt.md");
   assert.match(command, /NPM_CONFIG_PREFIX/);
   assert.match(command, /unset npm_config_prefix NPM_CONFIG_PREFIX npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG/);
-  assert.match(command, /unset NPM_CONFIG_PREFIX; exec bash -l/);
+  assert.doesNotMatch(command, /unset NPM_CONFIG_PREFIX; exec bash -l/);
   assert.match(command, /command -v 'codex'/);
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
@@ -64,6 +64,7 @@ test("launchResumeCommand wires the provider resume invocation with quoted ids",
   assert.match(command, /claude .*--resume 'sess-123'/);
   const codex = launchResumeCommand("codex", "/home/dev/project", "abc-1");
   assert.match(codex, /NPM_CONFIG_PREFIX/);
+  assert.doesNotMatch(codex, /unset NPM_CONFIG_PREFIX; exec bash -l/);
   assert.match(codex, /codex -c shell_environment_policy.inherit=all resume --cd '\/home\/dev\/project' 'abc-1'/);
 });
 
@@ -219,6 +220,7 @@ test("PowerShell builders pass values through quotePowerShell, not raw interpola
   const command = launchPowerShellCommand("codex", "C:\\Users\\dev\\proj", "C:\\tmp\\p.md", null);
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);
   assert.match(command, /\$env:NPM_CONFIG_PREFIX/);
+  assert.doesNotMatch(command, /Remove-Item Env:NPM_CONFIG_PREFIX/);
   assert.match(command, /Set-Location -LiteralPath \$workspace/);
   // Codex prompt is splatted as an array element ($prompt), never string-built.
   assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all'\) \+ \$mcpConfigArgs \+ \$modelArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);
@@ -251,6 +253,12 @@ test("PowerShell resume builder quotes the session id", () => {
   const command = launchResumePowerShellCommand("claude", "C:\\ws", "sess'9", null);
   // quotePowerShell doubles single quotes: ' -> ''
   assert.match(command, /\$sessionId = 'sess''9'/);
+});
+
+test("PowerShell codex resume keeps the npm prefix available after Codex exits", () => {
+  const command = launchResumePowerShellCommand("codex", "C:\\ws", "abc123");
+  assert.match(command, /\$env:NPM_CONFIG_PREFIX/);
+  assert.doesNotMatch(command, /Remove-Item Env:NPM_CONFIG_PREFIX/);
 });
 
 test("agentConfig args omit --model unless a model is explicitly requested", () => {

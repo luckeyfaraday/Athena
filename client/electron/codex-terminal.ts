@@ -421,14 +421,15 @@ function writeCodexLaunchScript(cwd: string): string {
         "Set-Location -LiteralPath $workspace",
         "if ($env:CONTEXT_WORKSPACE_NPM_PREFIX) { $env:NPM_CONFIG_PREFIX = $env:CONTEXT_WORKSPACE_NPM_PREFIX } else { $env:NPM_CONFIG_PREFIX = Join-Path $HOME '.npm-global' }",
         "& codex --cd $workspace",
-        "Remove-Item Env:NPM_CONFIG_PREFIX -ErrorAction SilentlyContinue",
         "",
       ].join("\r\n")
     : [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         `cd ${quoteShell(cwd)}`,
-        'NPM_CONFIG_PREFIX="${CONTEXT_WORKSPACE_NPM_PREFIX:-$HOME/.npm-global}" codex --cd ' + quoteShell(cwd),
+        'export NPM_CONFIG_PREFIX="${CONTEXT_WORKSPACE_NPM_PREFIX:-$HOME/.npm-global}"',
+        'case ":$PATH:" in *":$NPM_CONFIG_PREFIX/bin:"*) ;; *) export PATH="$NPM_CONFIG_PREFIX/bin:$PATH" ;; esac',
+        "codex --cd " + quoteShell(cwd),
         "exec bash",
         "",
       ].join("\n");

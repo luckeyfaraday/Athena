@@ -63,10 +63,6 @@ function codexNpmPrefixBashCommand(): string {
   ].join("; ");
 }
 
-function codexNpmPrefixBashCleanup(): string {
-  return "unset NPM_CONFIG_PREFIX";
-}
-
 function codexNpmPrefixPowerShellCommand(): string {
   return [
     "Remove-Item Env:npm_config_prefix,Env:NPM_CONFIG_PREFIX,Env:npm_config_globalconfig,Env:NPM_CONFIG_GLOBALCONFIG -ErrorAction SilentlyContinue",
@@ -74,10 +70,6 @@ function codexNpmPrefixPowerShellCommand(): string {
     "$npmGlobalBin = Join-Path $env:NPM_CONFIG_PREFIX 'bin'",
     "if (($env:Path -split [IO.Path]::PathSeparator) -notcontains $npmGlobalBin) { $env:Path = $npmGlobalBin + [IO.Path]::PathSeparator + $env:Path }",
   ].join("; ");
-}
-
-function codexNpmPrefixPowerShellCleanup(): string {
-  return "Remove-Item Env:NPM_CONFIG_PREFIX -ErrorAction SilentlyContinue";
 }
 
 export function terminalLaunch(
@@ -148,7 +140,6 @@ export function launchCommand(
       `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
       kind === "codex" ? codexNpmPrefixBashCommand() : "",
       `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId, model)}`.trimEnd(),
-      kind === "codex" ? codexNpmPrefixBashCleanup() : "",
       "exec bash -l",
     ].filter(Boolean).join("; ");
   }
@@ -194,7 +185,6 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
     `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
     kind === "codex" ? codexNpmPrefixBashCommand() : "",
     agent.resumeArgs(cwd, resumeSessionId, "bash", mcp),
-    kind === "codex" ? codexNpmPrefixBashCleanup() : "",
     "exec bash -l",
   ].filter(Boolean).join("; ");
 }
@@ -216,7 +206,6 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     agent.resumePowerShellCommand,
-    kind === "codex" ? codexNpmPrefixPowerShellCleanup() : "",
   ].filter(Boolean).join("; ");
 }
 
@@ -249,7 +238,6 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     // literal quotes inside a single argument. See agentConfig powerShellCommand.
     promptPath ? "$prompt = (Get-Content -LiteralPath $promptPath -Raw).Replace('\"', '\\\"')" : "",
     promptPath ? agent.powerShellCommand : agent.powerShellCommandWithoutPrompt,
-    kind === "codex" ? codexNpmPrefixPowerShellCleanup() : "",
   ].filter(Boolean).join("; ");
 }
 

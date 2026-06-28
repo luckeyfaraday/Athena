@@ -16,8 +16,14 @@ test("classifies task completion as update attention", () => {
   assert.equal(classifyTerminalAttention("Opened PR #57"), "update");
 });
 
+test("classifies attention cues inside large terminal chunks", () => {
+  const largeChunk = `${"transforming modules...\n".repeat(300)}Waiting for approval to run command${"\nrendering chunks...".repeat(300)}`;
+  assert.equal(classifyTerminalAttention(largeChunk), "action");
+});
+
 test("ignores ordinary output", () => {
   assert.equal(classifyTerminalAttention("transforming modules..."), null);
+  assert.equal(classifyTerminalAttention("transforming modules...\n".repeat(1000)), null);
 });
 
 test("merge preserves action priority and caps count", () => {

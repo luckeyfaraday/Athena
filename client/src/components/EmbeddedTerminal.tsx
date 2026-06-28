@@ -30,7 +30,10 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     if (!container) return;
 
     const terminal = new Terminal({
-      cursorBlink: true,
+      // Blinking cursors keep xterm repainting even when output is idle. Athena
+      // disables GPU compositing on Linux by default, so avoid that continuous
+      // software-render cost across every visible terminal pane.
+      cursorBlink: false,
       cursorStyle: "block",
       fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, monospace",
       fontSize: 10,
@@ -90,8 +93,8 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       void desktop.writeEmbeddedTerminal(session.id, data).catch(() => undefined);
     });
 
-    const removeData = desktop.onEmbeddedTerminalData((payload) => {
-      if (payload.id === session.id) enqueueWrite(payload.data);
+    const removeData = desktop.onEmbeddedTerminalDataFor(session.id, (payload) => {
+      enqueueWrite(payload.data);
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       if (payload.id === session.id) terminal.writeln(`\r\n\x1b[33m[process exited: ${payload.exitCode ?? "unknown"}]\x1b[0m`);

@@ -227,6 +227,7 @@ type WorkspaceApi = {
   onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
   onWorkspaceClose: (callback: (payload: { workspace: WorkspacePath }) => void) => () => void;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
+  onEmbeddedTerminalDataFor: (id: string, callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
@@ -372,6 +373,7 @@ const browserFallback: WorkspaceApi = {
   onWorkspaceOpen() { return () => undefined; },
   onWorkspaceClose() { return () => undefined; },
   onEmbeddedTerminalData() { return () => undefined; },
+  onEmbeddedTerminalDataFor() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },
   onCodexTerminalData() { return () => undefined; },

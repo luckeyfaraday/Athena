@@ -17,6 +17,7 @@ type Props = {
 const MAX_CHAT_BUFFER_CHARS = 80_000;
 const MAX_OUTPUT_CHARS = 14_000;
 const MAX_OUTPUT_BLOCKS = 8;
+const CHAT_OUTPUT_FLUSH_MS = 32;
 
 type ChatBlock = {
   id: string;
@@ -36,23 +37,43 @@ export function EmbeddedChatTerminal({ session }: Props) {
 
   useEffect(() => {
     let mounted = true;
+    let pendingData = "";
+    let flushTimer = 0;
+    const flushPendingData = () => {
+      flushTimer = 0;
+      if (!mounted || !pendingData) return;
+      const data = pendingData;
+      pendingData = "";
+      setBuffer((current) => capChatBuffer(`${current}${data}`));
+    };
+    const scheduleFlush = () => {
+      if (flushTimer) return;
+      flushTimer = window.setTimeout(flushPendingData, CHAT_OUTPUT_FLUSH_MS);
+    };
+    const enqueueOutput = (data: string) => {
+      pendingData = capChatBuffer(`${pendingData}${data}`);
+      scheduleFlush();
+    };
     void desktop.attachEmbeddedTerminalBuffer(session.id)
       .then((nextBuffer) => {
         if (mounted) setBuffer(capChatBuffer(nextBuffer));
       })
       .catch(() => undefined);
 
-    const removeData = desktop.onEmbeddedTerminalData((payload) => {
-      if (payload.id === session.id) setBuffer((current) => capChatBuffer(`${current}${payload.data}`));
+    const removeData = desktop.onEmbeddedTerminalDataFor(session.id, (payload) => {
+      enqueueOutput(payload.data);
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       if (payload.id === session.id) {
+        flushPendingData();
         setBuffer((current) => capChatBuffer(`${current}\n[process exited: ${payload.exitCode ?? "unknown"}]\n`));
       }
     });
 
     return () => {
       mounted = false;
+      if (flushTimer) window.clearTimeout(flushTimer);
+      pendingData = "";
       removeData();
       removeExit();
     };

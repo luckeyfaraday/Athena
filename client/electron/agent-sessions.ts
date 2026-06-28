@@ -63,11 +63,11 @@ function mergeLiveSessions(historical: AgentSession[], liveTerminals: EmbeddedTe
   const resolvedWorkspace = path.resolve(workspace);
   const live = liveTerminals
     .filter((session) => isAgentKind(session.kind) && samePath(session.workspace, resolvedWorkspace))
-    .map(liveTerminalSession);
+    .map(liveTerminalAgentSession);
   return mergeSessions([...live, ...historical]);
 }
 
-function liveTerminalSession(session: EmbeddedTerminalSession): AgentSession {
+export function liveTerminalAgentSession(session: EmbeddedTerminalSession): AgentSession {
   const provider = session.kind as AgentSessionProvider;
   const providerSessionId = session.providerSessionId?.trim();
   return {
@@ -79,7 +79,7 @@ function liveTerminalSession(session: EmbeddedTerminalSession): AgentSession {
     model: null,
     agent: null,
     createdAt: session.createdAt,
-    updatedAt: new Date().toISOString(),
+    updatedAt: session.createdAt,
     status: session.status === "running" ? "running" : "exited",
     terminalId: session.id,
     pid: session.pid,

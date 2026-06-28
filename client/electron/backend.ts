@@ -146,10 +146,21 @@ export async function checkBackendHealth(): Promise<BackendState> {
       lastError: healthy ? null : `Backend health returned HTTP ${statusCode}.`,
     };
   } catch (error) {
-    state = { ...state, healthy: false, lastError: String(error) };
+    // While the process is alive but not yet serving, ECONNREFUSED just means
+    // uvicorn hasn't finished booting. That is expected on every launch, so do
+    // not surface it as a user-facing error. A genuine failure shows up via the
+    // exit/error handlers or the waitForHealth timeout message instead.
+    const stillBooting = state.running && isStartupConnectionError(error);
+    state = { ...state, healthy: false, lastError: stillBooting ? null : String(error) };
   }
   writeBackendDiscovery();
   return getBackendState();
+}
+
+function isStartupConnectionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "ECONNREFUSED" || code === "ECONNRESET") return true;
+  return /ECONNREFUSED|ECONNRESET|socket hang up/i.test(String(error));
 }
 
 async function waitForHealth(baseUrl: string): Promise<BackendState> {

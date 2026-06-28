@@ -55,6 +55,22 @@ function codexMcpPowerShellArray(mcp?: AgentMcpLaunch | null): string {
   return overrides.flatMap((override) => ["'-c'", quotePowerShell(override)]).join(", ");
 }
 
+// nvm installs each Node version's bin -- and the global CLIs linked into it
+// (codex, claude, opencode, ...) -- under ~/.nvm/versions/node/<v>/bin, and puts
+// it on PATH from an init snippet in ~/.bashrc. We launch agents with `bash -lc`,
+// a login *non-interactive* shell, which sources ~/.profile but NOT ~/.bashrc
+// (the stock ~/.bashrc returns early when non-interactive). So nvm never loads
+// and the agent looks "not installed or not on PATH" even though it runs fine in
+// a normal interactive terminal. Load nvm's default Node here, before the
+// command-v check, so PATH matches what the user sees. No-op without nvm; the
+// `--no-use` flag keeps sourcing cheap, then `nvm use` selects the default.
+function nvmLoadBashCommand(): string {
+  return [
+    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+    'if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh" --no-use >/dev/null 2>&1; nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1; fi',
+  ].join("; ");
+}
+
 function codexNpmPrefixBashCommand(): string {
   return [
     "unset npm_config_prefix NPM_CONFIG_PREFIX npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG",
@@ -123,6 +139,7 @@ export function launchCommand(
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
+      nvmLoadBashCommand(),
       "printf '\\033[36m[Context Workspace] Hermes ready.\\033[0m\\n'",
       "if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31mhermes is not installed or not on PATH.\\033[0m\\n'; exec bash -l; fi",
       "hermes",
@@ -134,6 +151,7 @@ export function launchCommand(
     const agent = agentConfig(kind);
     return [
       `cd ${quoteShell(cwd)}`,
+      nvmLoadBashCommand(),
       promptPath
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
@@ -172,6 +190,7 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
   if (kind === "hermes") {
     return [
       `cd ${quoteShell(cwd)}`,
+      nvmLoadBashCommand(),
       `printf '\\033[36m[Context Workspace] Resuming Hermes session: %s\\033[0m\\n' ${quoteShell(resumeSessionId)}`,
       "if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31mhermes is not installed or not on PATH.\\033[0m\\n'; exec bash -l; fi",
       `hermes --resume ${quoteShell(resumeSessionId)}`,
@@ -181,6 +200,7 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
   const agent = agentConfig(kind);
   return [
     `cd ${quoteShell(cwd)}`,
+    nvmLoadBashCommand(),
     `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
     `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
     kind === "codex" ? codexNpmPrefixBashCommand() : "",

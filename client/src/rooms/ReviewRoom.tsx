@@ -602,8 +602,7 @@ function SessionInspector({
       if (!pending) return;
       setBuffer((current) => tailBuffer(`${current}${pending}`, inspectorBufferTailChars));
     };
-    const removeData = desktop.onEmbeddedTerminalData((payload) => {
-      if (payload.id !== terminalId) return;
+    const removeData = desktop.onEmbeddedTerminalDataFor(terminalId, (payload) => {
       pendingBufferRef.current += payload.data;
       if (flushTimerRef.current === null) {
         flushTimerRef.current = window.setTimeout(flushPending, inspectorBufferFlushMs);

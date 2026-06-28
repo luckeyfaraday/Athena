@@ -416,7 +416,7 @@ export function CommandRoom({
                   <Pencil size={13} />
                 </button>
               </div>
-              {!collapsedPaneIds.has(session.id) && (
+              {displayed && !collapsedPaneIds.has(session.id) && (
                 interfaceMode === "chat"
                   ? <EmbeddedChatTerminal session={session} />
                   : <EmbeddedTerminal session={session} active={displayed} />

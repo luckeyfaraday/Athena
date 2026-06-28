@@ -8,7 +8,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus, type RecallStatus } from "./api";
+import { BackendClient, type BackendStatus, type ElectronControlStatus } from "./api";
 import { desktop, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
@@ -20,6 +20,16 @@ import { SettingsRoom } from "./rooms/SettingsRoom";
 import { SwarmRoom, type AgentRole } from "./rooms/SwarmRoom";
 import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
 import { roomRouteById, type ActiveRoom } from "./routes";
+import {
+  emptyLoadState,
+  sameAgentMessages,
+  sameAgentSessions,
+  sameBackendStatus,
+  sameElectronControlStatus,
+  sameLoadState,
+  samePerformanceDiagnostics,
+  type LoadState,
+} from "./app-state";
 import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
 import { handoffLaunchOptions, type HandoffAgentKind } from "./handoff-launch";
@@ -38,28 +48,15 @@ import {
 } from "./session-utils";
 import { normalizeWorkspaceKey, sameWorkspacePath, workspaceDisplayName, workspaceKey } from "./workspace-utils";
 
-type LoadState = {
-  hermes: HermesStatus | null;
-  recall: RecallStatus | null;
-  adapters: Record<string, AdapterStatus>;
-  memory: string[];
-};
-
 type InterfaceMode = "terminal" | "chat";
 type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
-
-const emptyLoadState: LoadState = {
-  hermes: null,
-  recall: null,
-  adapters: {},
-  memory: [],
-};
 
 const workspaceStorageKey = "context-workspace:lastWorkspace";
 const workspaceListStorageKey = "context-workspace:workspaces";
 const interfaceModeStorageKey = "context-workspace:interfaceMode";
 const uiThemeStorageKey = "context-workspace:uiTheme";
 const terminalFocusStorageKey = "context-workspace:terminalFocus";
+const appRefreshIntervalMs = 15_000;
 const nativeSessionRefreshIntervalMs = 60_000;
 const uiThemeStyleElementId = "athena-selected-ui-theme";
 const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
@@ -254,6 +251,7 @@ export function App() {
   const agentSessionsLastRefreshAt = useRef<Map<string, number>>(new Map());
   const activeWorkspaceRef = useRef("");
   const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
+  const embeddedSessionWorkspaceKeysRef = useRef<Map<string, string>>(new Map());
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
   const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const startupAttempted = useRef(false);
@@ -280,10 +278,8 @@ export function App() {
   }
 
   function markWorkspaceAttention(sessionId: string, kind: WorkspaceAttentionKind) {
-    const session = embeddedSessionsRef.current.find((item) => item.id === sessionId);
-    if (!session) return;
-    const key = normalizeWorkspaceKey(session.workspace);
-    if (!key || key === normalizeWorkspaceKey(activeWorkspaceRef.current)) return;
+    const key = workspaceAttentionKeyForSession(sessionId);
+    if (!key) return;
     const throttleKey = `${sessionId}:${kind}`;
     const now = Date.now();
     if (now - (lastWorkspaceAttentionAt.current.get(throttleKey) ?? 0) < 30_000) return;
@@ -293,6 +289,12 @@ export function App() {
       ...current,
       [key]: mergeWorkspaceAttention(current[key], kind),
     }));
+  }
+
+  function workspaceAttentionKeyForSession(sessionId: string): string | null {
+    const key = embeddedSessionWorkspaceKeysRef.current.get(sessionId);
+    if (!key || key === normalizeWorkspaceKey(activeWorkspaceRef.current)) return null;
+    return key;
   }
 
   function setTerminalFocus(focused: boolean) {
@@ -332,7 +334,7 @@ export function App() {
     backendRefreshInFlight.current = true;
     try {
       const status = await desktop.checkBackendHealth();
-      setBackend(status);
+      setBackend((current) => sameBackendStatus(current, status) ? current : status);
       return status;
     } finally {
       backendRefreshInFlight.current = false;
@@ -342,7 +344,7 @@ export function App() {
   const refreshElectronControl = useCallback(async () => {
     try {
       const status = await desktop.checkControlHealth();
-      setElectronControl(status);
+      setElectronControl((current) => sameElectronControlStatus(current, status) ? current : status);
       return status;
     } catch (err) {
       const status = {
@@ -351,7 +353,7 @@ export function App() {
         running: false,
         lastError: String(err),
       };
-      setElectronControl(status);
+      setElectronControl((current) => sameElectronControlStatus(current, status) ? current : status);
       return status;
     }
   }, []);
@@ -384,7 +386,11 @@ export function App() {
     try {
       const renames = sameWorkspacePath(requestedWorkspace, workspace) ? sessionRenames : readRenamedSessions(requestedWorkspace);
       const sessions = applyAgentSessionRenames(await desktop.listAgentSessions(requestedWorkspace), renames);
-      setAgentSessionsByWorkspace((current) => ({ ...current, [requestedWorkspaceKey]: sessions }));
+      setAgentSessionsByWorkspace((current) => (
+        sameAgentSessions(current[requestedWorkspaceKey] ?? [], sessions)
+          ? current
+          : { ...current, [requestedWorkspaceKey]: sessions }
+      ));
     } catch (err) {
       if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) setError(String(err));
     } finally {
@@ -399,21 +405,23 @@ export function App() {
 
   const refreshPerformanceDiagnostics = useCallback(async () => {
     try {
-      setPerformanceDiagnostics(await desktop.getPerformanceDiagnostics());
+      const nextDiagnostics = await desktop.getPerformanceDiagnostics();
+      setPerformanceDiagnostics((current) => samePerformanceDiagnostics(current, nextDiagnostics) ? current : nextDiagnostics);
     } catch {
-      setPerformanceDiagnostics(null);
+      setPerformanceDiagnostics((current) => samePerformanceDiagnostics(current, null) ? current : null);
     }
   }, []);
 
   const refreshAgentMessages = useCallback(async () => {
     if (!workspace) {
-      setAgentMessages([]);
+      setAgentMessages((current) => sameAgentMessages(current, []) ? current : []);
       return;
     }
     try {
-      setAgentMessages(await desktop.listAgentMessages(workspace, 100));
+      const nextMessages = await desktop.listAgentMessages(workspace, 100);
+      setAgentMessages((current) => sameAgentMessages(current, nextMessages) ? current : nextMessages);
     } catch {
-      setAgentMessages([]);
+      setAgentMessages((current) => sameAgentMessages(current, []) ? current : []);
     }
   }, [workspace]);
 
@@ -427,7 +435,8 @@ export function App() {
         client.adapters(),
         workspace ? client.projectMemory(workspace, 30) : client.recentMemory(30),
       ]);
-      setState({ hermes, recall, adapters, memory });
+      const nextState = { hermes, recall, adapters, memory };
+      setState((current) => sameLoadState(current, nextState) ? current : nextState);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -567,6 +576,9 @@ export function App() {
 
   useEffect(() => {
     embeddedSessionsRef.current = embeddedSessions;
+    embeddedSessionWorkspaceKeysRef.current = new Map(
+      embeddedSessions.map((session) => [session.id, normalizeWorkspaceKey(session.workspace)]),
+    );
   }, [embeddedSessions]);
 
   useEffect(() => {
@@ -598,6 +610,7 @@ export function App() {
       closeWorkspaceTab(closedWorkspace);
     });
     const removeData = desktop.onEmbeddedTerminalData((payload) => {
+      if (!workspaceAttentionKeyForSession(payload.id)) return;
       const kind = classifyTerminalAttention(payload.data);
       if (kind) markWorkspaceAttention(payload.id, kind);
     });
@@ -628,7 +641,7 @@ export function App() {
       }
       if (activeRoom === "settings") void refreshPerformanceDiagnostics();
       if (activeRoom === "swarm") void refreshAgentMessages();
-    }, 8000);
+    }, appRefreshIntervalMs);
     return () => window.clearInterval(timer);
   }, [activeRoom, refreshBackend, refreshData, refreshElectronControl, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics, refreshAgentMessages]);
 

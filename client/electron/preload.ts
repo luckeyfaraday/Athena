@@ -134,6 +134,7 @@ export type WorkspaceApi = {
   openPath: (path: string) => Promise<boolean>;
   playAttentionSound: () => Promise<void>;
   onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
+  onEmbeddedTerminalDataFor: (id: string, callback: (payload: { id: string; data: string }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
@@ -164,10 +165,64 @@ function createIpcSubscription<T>(channel: string, afterDispatch?: (payload: T) 
   };
 }
 
-const onEmbeddedTerminalData = createIpcSubscription<{ id: string; data: string; sequence: number }>(
-  "embedded-terminal:data",
-  (payload) => ipcRenderer.send("embeddedTerminal:dataAck", payload.id, payload.sequence),
-);
+type EmbeddedTerminalDataPayload = { id: string; data: string; sequence: number };
+
+const embeddedTerminalDataCallbacks = new Set<(payload: EmbeddedTerminalDataPayload) => void>();
+const embeddedTerminalDataCallbacksById = new Map<string, Set<(payload: EmbeddedTerminalDataPayload) => void>>();
+let embeddedTerminalDataListenerInstalled = false;
+
+const embeddedTerminalDataListener = (_event: Electron.IpcRendererEvent, payload: EmbeddedTerminalDataPayload) => {
+  for (const callback of embeddedTerminalDataCallbacks) callback(payload);
+  const idCallbacks = embeddedTerminalDataCallbacksById.get(payload.id);
+  if (idCallbacks) {
+    for (const callback of idCallbacks) callback(payload);
+  }
+  ipcRenderer.send("embeddedTerminal:dataAck", payload.id, payload.sequence);
+};
+
+function embeddedTerminalDataSubscriberCount(): number {
+  let count = embeddedTerminalDataCallbacks.size;
+  for (const callbacks of embeddedTerminalDataCallbacksById.values()) count += callbacks.size;
+  return count;
+}
+
+function updateEmbeddedTerminalDataListener(): void {
+  const hasSubscribers = embeddedTerminalDataSubscriberCount() > 0;
+  if (hasSubscribers && !embeddedTerminalDataListenerInstalled) {
+    ipcRenderer.on("embedded-terminal:data", embeddedTerminalDataListener);
+    embeddedTerminalDataListenerInstalled = true;
+  } else if (!hasSubscribers && embeddedTerminalDataListenerInstalled) {
+    ipcRenderer.removeListener("embedded-terminal:data", embeddedTerminalDataListener);
+    embeddedTerminalDataListenerInstalled = false;
+  }
+}
+
+function onEmbeddedTerminalData(callback: (payload: EmbeddedTerminalDataPayload) => void) {
+  embeddedTerminalDataCallbacks.add(callback);
+  updateEmbeddedTerminalDataListener();
+  return () => {
+    embeddedTerminalDataCallbacks.delete(callback);
+    updateEmbeddedTerminalDataListener();
+  };
+}
+
+function onEmbeddedTerminalDataFor(id: string, callback: (payload: EmbeddedTerminalDataPayload) => void) {
+  let callbacks = embeddedTerminalDataCallbacksById.get(id);
+  if (!callbacks) {
+    callbacks = new Set();
+    embeddedTerminalDataCallbacksById.set(id, callbacks);
+  }
+  callbacks.add(callback);
+  updateEmbeddedTerminalDataListener();
+  return () => {
+    const current = embeddedTerminalDataCallbacksById.get(id);
+    if (current) {
+      current.delete(callback);
+      if (current.size === 0) embeddedTerminalDataCallbacksById.delete(id);
+    }
+    updateEmbeddedTerminalDataListener();
+  };
+}
 const onEmbeddedTerminalExit = createIpcSubscription<{ id: string; exitCode: number | null }>("embedded-terminal:exit");
 const onEmbeddedTerminalSession = createIpcSubscription<EmbeddedTerminalSession>("embedded-terminal:session");
 const onCodexTerminalData = createIpcSubscription<string>("codex-terminal:data");
@@ -214,6 +269,7 @@ const api: WorkspaceApi = {
   openPath: (path) => ipcRenderer.invoke("shell:openPath", path),
   playAttentionSound: () => ipcRenderer.invoke("shell:beep"),
   onEmbeddedTerminalData,
+  onEmbeddedTerminalDataFor,
   onEmbeddedTerminalExit,
   onEmbeddedTerminalSession,
   onCodexTerminalData,

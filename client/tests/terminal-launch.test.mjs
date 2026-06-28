@@ -46,6 +46,27 @@ test("launchCommand for an agent guards on command availability before launching
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
 
+test("launchCommand loads nvm before the command-availability guard", () => {
+  // Agents installed via nvm (codex/claude/...) live under a node version bin
+  // that only lands on PATH when ~/.bashrc runs. `bash -lc` is login but NOT
+  // interactive, so ~/.bashrc returns early and nvm never loads. We must source
+  // nvm ourselves, and crucially BEFORE the `command -v` check, or the guard
+  // false-negatives and the pane dies with "not installed or not on PATH".
+  const command = launchCommand("codex", "/home/dev/project", null);
+  const nvmIndex = command.indexOf('$NVM_DIR/nvm.sh');
+  const guardIndex = command.indexOf("command -v 'codex'");
+  assert.ok(nvmIndex >= 0, "expected nvm load in the launch command");
+  assert.ok(guardIndex >= 0, "expected the command -v guard");
+  assert.ok(nvmIndex < guardIndex, "nvm must load before the command -v guard");
+});
+
+test("launchResumeCommand loads nvm before the command-availability guard", () => {
+  const command = launchResumeCommand("codex", "/home/dev/project", "abc-123");
+  const nvmIndex = command.indexOf('$NVM_DIR/nvm.sh');
+  const guardIndex = command.indexOf("command -v 'codex'");
+  assert.ok(nvmIndex >= 0 && guardIndex >= 0 && nvmIndex < guardIndex);
+});
+
 test("launchCommand treats Athena Code as a PATH-installed agent like the others", () => {
   const command = launchCommand("athena", "/home/dev/project", null);
   assert.match(command, /command -v 'athena-code'/);

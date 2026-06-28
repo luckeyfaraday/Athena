@@ -9,6 +9,7 @@ import { checkControlHealth, getControlState, restartControlServer, type Control
 import type { CodexTerminalState } from "./codex-terminal.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { clearTerminalRestorePause, readAthenaLaunchState, type AthenaLaunchState } from "./launch-state.js";
+import { checkMemoryPressure, formatBytes } from "./memory-guard.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { getPreferences, removePreference, setPreference } from "./preferences.js";
 import {
@@ -46,6 +47,47 @@ import {
   type SendAgentMessageResult,
 } from "./embedded-terminal.js";
 import type { AgentMessage } from "./agent-messages.js";
+
+// Heavyweight agents (Claude/Codex/Athena Code/OpenCode/Grok) each pull hundreds
+// of MiB plus their own MCP server; launching one onto a memory-starved machine
+// freezes the whole desktop via swap thrashing. Warn before the user adds the
+// pane that tips the box over. Plain shells are cheap, so they are never guarded.
+// This runs only on user-initiated spawns, not on session restore (which reuses
+// spawnEmbeddedTerminal directly and must not pop a dialog per restored pane).
+async function guardAgentLaunchMemory(options?: EmbeddedTerminalSpawnOptions): Promise<void> {
+  const kind: EmbeddedTerminalKind = options?.kind ?? "shell";
+  if (kind === "shell") return;
+  const status = checkMemoryPressure();
+  if (status.level === "ok") return;
+
+  const available = formatBytes(status.availableBytes);
+  if (status.level === "warn") {
+    console.warn(`Launching ${kind} with low free memory (${available} available).`);
+    return;
+  }
+
+  console.error(`Launching ${kind} with critically low memory (${available} available).`);
+  const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const messageBox = {
+    type: "warning" as const,
+    title: "Low memory",
+    message: "Your machine is almost out of memory.",
+    detail:
+      `Only ${available} of memory is free. Launching another agent now is likely to freeze Athena `
+      + "and your whole desktop while the system swaps.\n\n"
+      + "Close some running agents or apps first, or launch anyway at your own risk.",
+    buttons: ["Cancel", "Launch anyway"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  };
+  const { response } = window
+    ? await dialog.showMessageBox(window, messageBox)
+    : await dialog.showMessageBox(messageBox);
+  if (response === 0) {
+    throw new Error("Launch cancelled: not enough free memory. Close some agents and try again.");
+  }
+}
 
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
@@ -153,8 +195,10 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("performance:diagnostics", (): Promise<PerformanceDiagnostics> => getPerformanceDiagnostics());
   handle(
     "embeddedTerminal:spawn",
-    (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> =>
-      spawnEmbeddedTerminal(workspace, options),
+    async (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> => {
+      await guardAgentLaunchMemory(options);
+      return spawnEmbeddedTerminal(workspace, options);
+    },
   );
   handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> => writeEmbeddedTerminal(id, data));
   handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession => renameEmbeddedTerminal(id, title));

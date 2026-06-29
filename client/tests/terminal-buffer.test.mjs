@@ -3,11 +3,13 @@ import test from "node:test";
 
 import {
   DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
+  DEFAULT_TERMINAL_REPLAY_MAX_CHARS,
   TERMINAL_OUTPUT_TRUNCATED_NOTICE,
   appendBoundedTerminalOutput,
   boundedTerminalBufferMaxChars,
   formatTerminalBuffer,
   terminalBufferTail,
+  terminalReplayBufferTail,
 } from "../dist-electron/terminal-buffer.js";
 
 test("terminal buffer max chars uses default and clamps bounds", () => {
@@ -29,6 +31,20 @@ test("format terminal buffer reports returned char count and limit", () => {
     chars: 4,
     max_chars: 4,
   });
+});
+
+test("terminal replay buffer defaults to the smaller renderer replay cap", () => {
+  const output = "x".repeat(DEFAULT_TERMINAL_REPLAY_MAX_CHARS + 5);
+
+  assert.equal(terminalReplayBufferTail(output).length, DEFAULT_TERMINAL_REPLAY_MAX_CHARS);
+  assert.equal(terminalReplayBufferTail(output), output.slice(-DEFAULT_TERMINAL_REPLAY_MAX_CHARS));
+});
+
+test("terminal replay buffer accepts explicit bounded caps", () => {
+  const output = "abcdef".repeat(1000);
+
+  assert.equal(terminalReplayBufferTail(output, 200_000), output);
+  assert.equal(terminalReplayBufferTail(output, 10), output.slice(-1_000));
 });
 
 test("pending terminal output is capped to the newest text", () => {

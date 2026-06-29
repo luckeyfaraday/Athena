@@ -4,6 +4,7 @@
 export const DEFAULT_TERMINAL_BUFFER_MAX_CHARS = 40_000;
 export const MIN_TERMINAL_BUFFER_MAX_CHARS = 1_000;
 export const MAX_TERMINAL_BUFFER_MAX_CHARS = 200_000;
+export const DEFAULT_TERMINAL_REPLAY_MAX_CHARS = DEFAULT_TERMINAL_BUFFER_MAX_CHARS;
 export const DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS = 64_000;
 export const TERMINAL_OUTPUT_TRUNCATED_NOTICE = "\r\n\x1b[33m[Athena truncated terminal output backlog]\x1b[0m\r\n";
 
@@ -13,7 +14,7 @@ export type TerminalBufferResult = {
   max_chars: number;
 };
 
-export function boundedTerminalBufferMaxChars(value: string | null): number {
+export function boundedTerminalBufferMaxChars(value: string | number | null | undefined): number {
   const parsed = Number(value ?? DEFAULT_TERMINAL_BUFFER_MAX_CHARS);
   if (!Number.isFinite(parsed)) return DEFAULT_TERMINAL_BUFFER_MAX_CHARS;
   return Math.max(
@@ -24,6 +25,13 @@ export function boundedTerminalBufferMaxChars(value: string | null): number {
 
 export function terminalBufferTail(value: string, maxChars: number): string {
   return value.length > maxChars ? value.slice(-maxChars) : value;
+}
+
+export function terminalReplayBufferTail(
+  value: string,
+  maxChars: string | number | null | undefined = DEFAULT_TERMINAL_REPLAY_MAX_CHARS,
+): string {
+  return terminalBufferTail(value, boundedTerminalBufferMaxChars(maxChars));
 }
 
 export function formatTerminalBuffer(value: string, maxChars: number): TerminalBufferResult {

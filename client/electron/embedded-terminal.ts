@@ -69,6 +69,7 @@ import {
 import {
   DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
   appendBoundedTerminalOutput,
+  terminalReplayBufferTail,
 } from "./terminal-buffer.js";
 import { OutputAckGate } from "./terminal-output-ack.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
@@ -250,8 +251,8 @@ export function getEmbeddedTerminalBuffer(id: string): string {
   return outputBuffers.get(id) ?? "";
 }
 
-export function attachEmbeddedTerminalBuffer(id: string): string {
-  const buffer = getEmbeddedTerminalBuffer(id);
+export function attachEmbeddedTerminalBuffer(id: string, maxChars?: number | null): string {
+  const buffer = terminalReplayBufferTail(getEmbeddedTerminalBuffer(id), maxChars);
   pendingOutput.delete(id);
   outputAckGate.clear(id);
   if (pendingOutput.size === 0) clearOutputFlushTimer();

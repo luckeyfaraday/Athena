@@ -14,7 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { AthenaIcon, ClaudeIcon, GrokIcon, HermesIcon, OpenAIIcon, OpenCodeIcon } from "../components/BrandIcons";
-import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
+import type { AgentContextMode, AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
 import { EmbeddedChatTerminal } from "../components/EmbeddedChatTerminal";
 import { EmbeddedTerminal } from "../components/EmbeddedTerminal";
 import {
@@ -47,6 +47,7 @@ export function CommandRoom({
   agentSessions,
   busy,
   focused,
+  recallAvailable,
   layoutResetNonce,
   interfaceMode,
   onFocusChange,
@@ -66,10 +67,11 @@ export function CommandRoom({
   agentSessions: AgentSession[];
   busy: boolean;
   focused: boolean;
+  recallAvailable: boolean;
   layoutResetNonce: number;
   interfaceMode: "terminal" | "chat";
   onFocusChange: (focused: boolean) => void;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number, contextMode?: AgentContextMode) => Promise<void>;
   onClose: (id: string) => Promise<void>;
   onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
   onResumeSession: (session: AgentSession) => Promise<void>;
@@ -416,6 +418,7 @@ export function CommandRoom({
             open={newMenuOpen}
             workspace={workspace}
             menuRef={newMenuRef}
+            recallAvailable={recallAvailable}
             onOpenChange={setNewMenuOpen}
             onLaunch={onLaunch}
           />
@@ -658,17 +661,19 @@ function NewLaunchMenu({
   open,
   workspace,
   menuRef,
+  recallAvailable,
   onOpenChange,
   onLaunch,
 }: {
   open: boolean;
   workspace: string;
   menuRef: RefObject<HTMLDivElement | null>;
+  recallAvailable: boolean;
   onOpenChange: (open: boolean) => void;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number, contextMode?: AgentContextMode) => Promise<void>;
 }) {
   const disabled = !workspace;
-  const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number }> = [
+  const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number; contextMode?: AgentContextMode; disabled?: boolean }> = [
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
     { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
     { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
@@ -682,10 +687,17 @@ function NewLaunchMenu({
     { label: "Grok", detail: "Spawn one Grok agent", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
     { label: "Grok Grid", detail: "Spawn four Grok panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
   ];
+  const recallActions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number; contextMode: AgentContextMode; disabled?: boolean }> = [
+    { label: "Athena Code + Recall", detail: "Use workspace recall", icon: <AthenaIcon size={14} />, kind: "athena", count: 1, contextMode: "immersive", disabled: !recallAvailable },
+    { label: "Codex + Recall", detail: "Use workspace recall", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1, contextMode: "immersive", disabled: !recallAvailable },
+    { label: "OpenCode + Recall", detail: "Use workspace recall", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1, contextMode: "immersive", disabled: !recallAvailable },
+    { label: "Claude + Recall", detail: "Use workspace recall", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1, contextMode: "immersive", disabled: !recallAvailable },
+    { label: "Grok + Recall", detail: "Use workspace recall", icon: <GrokIcon size={14} />, kind: "grok", count: 1, contextMode: "immersive", disabled: !recallAvailable },
+  ];
 
-  function launch(kind: EmbeddedTerminalKind, count: number) {
+  function launch(kind: EmbeddedTerminalKind, count: number, contextMode?: AgentContextMode) {
     onOpenChange(false);
-    void onLaunch(kind, count);
+    void onLaunch(kind, count, contextMode);
   }
 
   return (
@@ -704,11 +716,21 @@ function NewLaunchMenu({
         <div className="newMenuPanel" role="menu">
           <span className="newMenuSection">Native terminals</span>
           {actions.map((action) => (
-            <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count)}>
+            <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count, action.contextMode)} disabled={action.disabled}>
               <span>{action.icon}</span>
               <span>
                 <strong>{action.label}</strong>
                 <small>{action.detail}</small>
+              </span>
+            </button>
+          ))}
+          <span className="newMenuSection">Recall launches</span>
+          {recallActions.map((action) => (
+            <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count, action.contextMode)} disabled={action.disabled}>
+              <span>{action.icon}</span>
+              <span>
+                <strong>{action.label}</strong>
+                <small>{action.disabled ? "No recall cache" : action.detail}</small>
               </span>
             </button>
           ))}

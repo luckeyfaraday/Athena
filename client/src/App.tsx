@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { BackendClient, type BackendStatus, type ElectronControlStatus } from "./api";
-import { desktop, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type GraphicsPreference, type GraphicsRuntimeStatus, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
+import { desktop, type AgentContextMode, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type GraphicsPreference, type GraphicsRuntimeStatus, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -70,6 +70,10 @@ const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ defaul
   "mono-light": () => import("./themes/mono-light.css?raw"),
   "mono-dark": () => import("./themes/mono-dark.css?raw"),
 };
+
+function isRecallLaunchKind(kind: EmbeddedTerminalKind): kind is Exclude<EmbeddedTerminalKind, "shell" | "hermes"> {
+  return kind !== "shell" && kind !== "hermes";
+}
 
 function storedWorkspaceValue(): string | null {
   return storedValue(workspaceStorageKey);
@@ -824,7 +828,7 @@ export function App() {
     }
   }
 
-  async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1) {
+  async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1, contextMode?: AgentContextMode) {
     if (!workspace || busy) return;
     setBusy(true);
     setError(null);
@@ -832,16 +836,24 @@ export function App() {
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
         kind,
-        title: titles[index] ?? `${kind}-${index + 1}`,
+        title: contextMode === "immersive" && count === 1 && isRecallLaunchKind(kind)
+          ? `${providerLabel(kind)} Recall`
+          : titles[index] ?? `${kind}-${index + 1}`,
         cols: 96,
         rows: 28,
-        sessionLabel: kind === "shell" || kind === "hermes" ? undefined : "New",
+        sessionLabel: kind === "shell" || kind === "hermes" ? undefined : contextMode === "immersive" ? "Recall" : "New",
+        contextMode,
       }));
       const created = await desktop.spawnEmbeddedTerminals(workspace, launchOptions);
       setEmbeddedSessions((current) => count > 1
         ? [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]
         : appendEmbeddedSessions(current, created));
       if (count > 1) setLayoutResetNonce((value) => value + 1);
+      const launchSucceeded = created.length === count && created.every((session) => session.status === "running");
+      if (launchSucceeded && contextMode === "immersive" && client && state.recall?.exists && isRecallLaunchKind(kind)) {
+        const result = await client.markRecallUsed(workspace, kind);
+        setState((current) => ({ ...current, recall: result.recall }));
+      }
     } catch (err) {
       setError(String(err));
     } finally {
@@ -1184,6 +1196,7 @@ export function App() {
                 agentSessions={agentSessions}
                 busy={busy}
                 focused={terminalFocus}
+                recallAvailable={Boolean(state.recall?.exists)}
                 layoutResetNonce={layoutResetNonce}
                 interfaceMode={interfaceMode}
                 onFocusChange={setTerminalFocus}

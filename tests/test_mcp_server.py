@@ -386,6 +386,27 @@ def test_spawn_terminals_batch_defaults_context_from_spec(monkeypatch: pytest.Mo
     assert [call["context_mode"] for call in calls] == ["task", "curated", None]
 
 
+def test_spawn_terminals_batch_accepts_immersive_context_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
+
+    asyncio.run(
+        tools.context_workspace_spawn_terminals_batch(
+            str(tmp_path),
+            [
+                {"kind": "codex", "task": "Continue from recall", "context_mode": "immersive"},
+            ],
+        )
+    )
+
+    assert calls[0]["context_mode"] == "immersive"
+
+
 def test_spawn_agent_forwards_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[dict[str, object]] = []
 

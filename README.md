@@ -268,6 +268,17 @@ cd client
 npm run build
 ```
 
+Run the explicit regression protection suite:
+
+```bash
+python3 scripts/run_regression_checks.py
+```
+
+Backend regressions live in `tests/regressions/`. Client regressions live in
+`client/tests/regressions/`. When a PR fixes a bug, add a regression test there
+or update an existing one so the old failure mode cannot be reintroduced
+silently. Name the test after the issue, PR, or incident when possible.
+
 The tests use fake CLI agent fixtures so execution flow can be verified without hosted models or external agent tools.
 
 For the first public release gate, see

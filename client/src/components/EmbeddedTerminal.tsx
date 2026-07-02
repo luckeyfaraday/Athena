@@ -161,6 +161,35 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     };
   }, [active, session.id]);
 
+  useEffect(() => {
+    if (!active) return;
+    const timers = new Set<number>();
+    const recoverVisibleTerminal = () => {
+      if (document.visibilityState === "hidden") return;
+      lastResizeRef.current = null;
+      const timer = window.setTimeout(() => {
+        timers.delete(timer);
+        const container = containerRef.current;
+        const terminal = terminalRef.current;
+        const fit = fitRef.current;
+        if (!container || !terminal || !fit) return;
+        fitVisibleTerminal(container, terminal, fit, session.id, true, lastResizeRef);
+        refreshTerminal(terminal);
+      }, 0);
+      timers.add(timer);
+    };
+
+    window.addEventListener("focus", recoverVisibleTerminal);
+    window.addEventListener("pageshow", recoverVisibleTerminal);
+    document.addEventListener("visibilitychange", recoverVisibleTerminal);
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      window.removeEventListener("focus", recoverVisibleTerminal);
+      window.removeEventListener("pageshow", recoverVisibleTerminal);
+      document.removeEventListener("visibilitychange", recoverVisibleTerminal);
+    };
+  }, [active, session.id]);
+
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
     if (!hasImageFiles(event.dataTransfer)) return;
     event.preventDefault();

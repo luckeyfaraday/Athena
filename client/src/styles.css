@@ -1086,8 +1086,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   gap: 10px;
 }
 .embeddedStage {
-  align-content: start;
-  grid-auto-rows: minmax(205px, auto);
+  align-content: stretch;
+  grid-auto-rows: minmax(0, 1fr);
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -1130,7 +1130,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   background: var(--terminal);
 }
 .slotPane {
-  min-height: 205px;
+  min-height: 0;
   resize: vertical;
   transition: box-shadow 120ms ease, border-color 120ms ease, transform 90ms ease;
 }

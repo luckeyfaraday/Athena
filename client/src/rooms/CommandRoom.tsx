@@ -89,6 +89,7 @@ export function CommandRoom({
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
   const newMenuRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const workspaceOrderKey = normalizeWorkspaceKey(workspace || "none");
   const sessionIds = sessions.map((session) => session.id);
   const sessionSignature = sessionIds.join("|");
@@ -133,6 +134,16 @@ export function CommandRoom({
   const displayedTerminalSessions = activeMaximizedPaneId
     ? visibleSessions.filter((session) => session.id === activeMaximizedPaneId)
     : visibleSessions;
+
+  // The native `resize: vertical` handle on a pane writes an inline height straight onto
+  // the DOM node, which React never manages and so never clears. That pinned height keeps
+  // a previously resized pane from shrinking when a sibling is spawned below it, so clear
+  // it whenever the visible pane set changes and let the grid re-tile every pane.
+  useEffect(() => {
+    stageRef.current?.querySelectorAll<HTMLElement>(".slotPane").forEach((pane) => {
+      pane.style.height = "";
+    });
+  }, [visibleSessionKey]);
   const visibleAgentSessions = agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session)));
   const providerTabs = useMemo(() => {
     const counts = new Map<SessionProviderFilter, number>([["all", visibleAgentSessions.length]]);
@@ -356,6 +367,7 @@ export function CommandRoom({
 
       {activeTab === "terminals" ? (
         <div
+          ref={stageRef}
           className={[
             "terminalStage embeddedStage slotTerminalStage",
             activeMaximizedPaneId ? "hasMaximized" : "",

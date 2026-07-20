@@ -46,6 +46,20 @@ export function savedResumeSessionId(entry: RestorableTerminal): string | null {
   return entry.resumeSessionId ?? entry.providerSessionId;
 }
 
+export function hasMissingSavedRestoreIdentity(
+  entry: RestorableTerminal,
+  resolvedResumeSessionId: string | null,
+): boolean {
+  return Boolean(savedResumeSessionId(entry) && !resolvedResumeSessionId);
+}
+
+export function shouldConfirmEmbeddedTerminalRestoreShutdown(
+  completedBeforeDeadline: boolean,
+  ptyHostShutdownConfirmed: boolean,
+): boolean {
+  return completedBeforeDeadline && ptyHostShutdownConfirmed;
+}
+
 export function claudeProjectPathCandidates(projectsDir: string, workspace: string): string[] {
   return Array.from(new Set([
     path.join(projectsDir, encodeClaudeProjectPath(workspace)),

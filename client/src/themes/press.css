@@ -76,17 +76,9 @@
   background: var(--bg);
 }
 
-/* ── Paper grain texture overlay ── */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 9999;
-  opacity: 0.035;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-}
+/* Keep the press surface flat. A former fixed, full-window feTurbulence layer
+   used mix-blend-mode and forced Chromium to continuously composite the entire
+   application in Linux software-rendering mode. */
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; }

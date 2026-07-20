@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +16,11 @@ from backend.app import create_app
 from backend.context_artifacts import RunArtifacts
 from backend.hermes import HermesAskResult, HermesInstallResult, HermesStatus
 from backend.memory import HermesMemoryStore
+from backend.memory_admission import (
+    DEFAULT_LAUNCH_RESERVATION_BYTES,
+    DEFAULT_MINIMUM_HEADROOM_BYTES,
+    LaunchMemoryAdmission,
+)
 from backend.runs import Run, RunRegistry, RunStatus
 from backend.runtime import RuntimeLimits
 
@@ -499,6 +506,25 @@ def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path, 
     assert body["summary"] == "No native agent sessions were found for this workspace."
 
 
+def test_project_agent_sessions_endpoint_coalesces_repeated_scans(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    def fake_list(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(app_module, "list_native_agent_sessions", fake_list)
+    client = _client(tmp_path)
+
+    first = client.get("/agents/sessions", params={"project_dir": str(tmp_path)})
+    second = client.get("/agents/sessions", params={"project_dir": str(tmp_path)})
+    refreshed = client.get("/agents/sessions", params={"project_dir": str(tmp_path), "refresh": "true"})
+
+    assert first.status_code == second.status_code == refreshed.status_code == 200
+    assert calls == 2
+
+
 def test_agent_sessions_endpoint_rejects_unknown_provider(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -537,6 +563,37 @@ def test_all_agent_sessions_endpoint_uses_short_lived_cache(tmp_path: Path, monk
     assert first.json()["cache"]["hit"] is False
     assert second.json()["sessions"] == [{"id": "session-1"}]
     assert second.json()["cache"]["hit"] is True
+
+
+def test_all_agent_sessions_concurrent_cold_misses_are_coalesced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+
+    def fake_list(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal calls
+        calls += 1
+        scan_started.set()
+        assert release_scan.wait(timeout=2)
+        return []
+
+    monkeypatch.setattr(app_module, "list_native_agent_sessions", fake_list)
+    monkeypatch.setattr(app_module, "format_agent_sessions_summary", lambda sessions: "0 sessions")
+    client = _client(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.get, "/agents/sessions/all")
+        assert scan_started.wait(timeout=2)
+        second = pool.submit(client.get, "/agents/sessions/all")
+        release_scan.set()
+        responses = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert calls == 1
+    assert all(response.status_code == 200 for response in responses)
+    assert sorted(response.json()["cache"]["hit"] for response in responses) == [False, True]
 
 
 def test_all_agent_sessions_endpoint_refresh_bypasses_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -872,6 +929,32 @@ def test_spawn_rejects_when_global_limit_is_reached(tmp_path: Path) -> None:
     assert "Global concurrency limit" in response.json()["detail"]
 
 
+def test_spawn_rejects_low_physical_memory_before_creating_run(tmp_path: Path) -> None:
+    registry = RunRegistry()
+    memory_admission = LaunchMemoryAdmission(
+        probe=lambda: DEFAULT_MINIMUM_HEADROOM_BYTES + DEFAULT_LAUNCH_RESERVATION_BYTES - 1,
+    )
+    client = _client(
+        tmp_path,
+        registry=registry,
+        memory_admission=memory_admission,
+    )
+
+    response = client.post(
+        "/agents/spawn",
+        json={
+            "agent_type": "codex",
+            "project_dir": str(tmp_path),
+            "task": "Must not allocate a run.",
+        },
+    )
+
+    assert response.status_code == 429
+    assert "physical-memory admission" in response.json()["detail"]
+    assert "Swap is not counted" in response.json()["detail"]
+    assert registry.list_runs() == []
+
+
 def test_spawn_uses_default_timeout_from_runtime_limits(tmp_path: Path) -> None:
     client = _client(
         tmp_path,
@@ -920,6 +1003,7 @@ def _client(
     registry: RunRegistry | None = None,
     limits: RuntimeLimits | None = None,
     memory: object | None = None,
+    memory_admission: LaunchMemoryAdmission | None = None,
     execute_inline: bool = True,
 ) -> TestClient:
     memory = memory or HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
@@ -931,6 +1015,7 @@ def _client(
         registry=registry,
         adapters={"codex": adapter or FakeAdapter(fixture)},
         limits=limits,
+        memory_admission=memory_admission,
         execute_inline=execute_inline,
     )
     return TestClient(app)

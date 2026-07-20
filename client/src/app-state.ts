@@ -69,6 +69,18 @@ export function samePerformanceDiagnostics(a: PerformanceDiagnostics | null, b: 
     && a.eventLoopLagMs === b.eventLoopLagMs
     && a.maxEventLoopLagMs === b.maxEventLoopLagMs
     && a.lastOutputBatchAt === b.lastOutputBatchAt
+    && a.rendererTerminalSubscribers === b.rendererTerminalSubscribers
+    && a.hiddenRawIpcBytes === b.hiddenRawIpcBytes
+    && a.terminalOutputRetries === b.terminalOutputRetries
+    && a.terminalOutputResets === b.terminalOutputResets
+    && a.terminalOutputDroppedChars === b.terminalOutputDroppedChars
+    && a.terminalOutputDeliveredChars === b.terminalOutputDeliveredChars
+    && a.terminalOutputAcknowledgedChars === b.terminalOutputAcknowledgedChars
+    && a.terminalReplayCount === b.terminalReplayCount
+    && a.terminalReplayBytes === b.terminalReplayBytes
+    && a.terminalReplayDurationMs === b.terminalReplayDurationMs
+    && a.terminalReplayMaxDurationMs === b.terminalReplayMaxDurationMs
+    && JSON.stringify(a.sessionIndex) === JSON.stringify(b.sessionIndex)
     && sameControlEvents(a.controlEvents, b.controlEvents)
     && sameTerminalControlStates(a.terminalControl, b.terminalControl)
     && sameAgentProcessDiagnostics(a.agentProcesses, b.agentProcesses);

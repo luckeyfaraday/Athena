@@ -11,6 +11,7 @@ import {
   codexSessionIdForWorkspace,
   encodeResolvedClaudeProjectPath,
   effectiveCreationMs,
+  hasMissingSavedRestoreIdentity,
   openCodeDatabaseCandidates,
   openCodeSessionCandidates,
   openCodeSessionExists,
@@ -18,6 +19,7 @@ import {
   savedResumeSessionId,
   selectDiscoveredSessionId,
   selectEmbeddedTerminalRestoreEntries,
+  shouldConfirmEmbeddedTerminalRestoreShutdown,
 } from "../dist-electron/terminal-restore-policy.js";
 
 const execFileAsync = promisify(execFile);
@@ -84,6 +86,29 @@ test("restore uses provider session id when resume session id is missing", () =>
     savedResumeSessionId(entry("codex-resume", "codex", "/home/dev/project", { providerSessionId: "provider-session", resumeSessionId: "resume-session" })),
     "resume-session",
   );
+});
+
+test("one missing saved identity is deferred without blocking independent restore entries", () => {
+  const missing = entry("missing", "claude", "/home/dev/project", { providerSessionId: "deleted-session" });
+  const valid = entry("valid", "codex", "/home/dev/project", { resumeSessionId: "valid-session" });
+  const legacy = entry("legacy", "codex");
+
+  const decisions = [
+    hasMissingSavedRestoreIdentity(missing, null),
+    hasMissingSavedRestoreIdentity(valid, "valid-session"),
+    hasMissingSavedRestoreIdentity(legacy, null),
+  ];
+  assert.deepEqual(decisions, [true, false, false]);
+  assert.deepEqual(
+    [missing, valid, legacy].filter((_item, index) => !decisions[index]).map((item) => item.id),
+    ["valid", "legacy"],
+  );
+});
+
+test("restore crash-loop evidence clears only after PTY shutdown beats the quit deadline", () => {
+  assert.equal(shouldConfirmEmbeddedTerminalRestoreShutdown(true, true), true);
+  assert.equal(shouldConfirmEmbeddedTerminalRestoreShutdown(true, false), false);
+  assert.equal(shouldConfirmEmbeddedTerminalRestoreShutdown(false, true), false);
 });
 
 test("claude project path candidates include current and legacy encodings", () => {

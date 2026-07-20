@@ -54,6 +54,45 @@ export type EmbeddedTerminalSession = {
   error: string | null;
 };
 
+export type EmbeddedTerminalStreamSnapshot = {
+  id: string;
+  epoch: string;
+  buffer: string;
+  throughSequence: number;
+};
+
+export type EmbeddedTerminalDataPayload = {
+  id: string;
+  epoch: string;
+  fromSequence: number;
+  sequence: number;
+  data: string;
+  reset: boolean;
+};
+
+export type EmbeddedTerminalExitPayload = {
+  id: string;
+  exitCode: number | null;
+  epoch?: string;
+  throughSequence?: number;
+};
+
+export type EmbeddedTerminalDataSubscriptionOptions = {
+  ackMode?: "after-dispatch" | "manual";
+};
+
+export type GraphicsPreference = "auto" | "safe" | "accelerated";
+export type GraphicsRuntimeStatus = {
+  mode: "safe" | "accelerated";
+  reason: string;
+  quarantined: boolean;
+  preference: GraphicsPreference;
+  recommendedMode: "safe" | "accelerated";
+  restartRequired: boolean;
+  lastGpuCrashAt: string | null;
+  lastGpuCrashReason: string | null;
+};
+
 export type EmbeddedTerminalSpawnOptions = {
   kind?: EmbeddedTerminalKind;
   title?: string;
@@ -96,6 +135,26 @@ export type PerformanceDiagnostics = {
   eventLoopLagMs: number;
   maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
+  rendererTerminalSubscribers: number;
+  hiddenRawIpcBytes: number;
+  terminalOutputRetries: number;
+  terminalOutputResets: number;
+  terminalOutputDroppedChars: number;
+  terminalOutputDeliveredChars: number;
+  terminalOutputAcknowledgedChars: number;
+  terminalReplayCount: number;
+  terminalReplayBytes: number;
+  terminalReplayDurationMs: number;
+  terminalReplayMaxDurationMs: number;
+  sessionIndex: {
+    filesSeen: number;
+    filesStatted: number;
+    filesParsed: number;
+    bytesParsed: number;
+    cacheHits: number;
+    durationMs: number;
+    lastError: string | null;
+  } | null;
   controlEvents: ControlEvent[];
   terminalControl: TerminalControlState[];
   agentProcesses: AgentProcessDiagnostic[];
@@ -198,6 +257,8 @@ type WorkspaceApi = {
   getPreferences: () => Promise<Record<string, string>>;
   setPreference: (key: string, value: string) => Promise<Record<string, string>>;
   removePreference: (key: string) => Promise<Record<string, string>>;
+  getGraphicsStatus: () => Promise<GraphicsRuntimeStatus>;
+  setGraphicsPreference: (value: GraphicsPreference) => Promise<GraphicsRuntimeStatus>;
   getDefaultWorkspace: () => Promise<WorkspacePath>;
   toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
   getCodexTerminalState: () => Promise<CodexTerminalStatus>;
@@ -210,10 +271,13 @@ type WorkspaceApi = {
   listEmbeddedTerminals: () => Promise<EmbeddedTerminalSession[]>;
   restoreEmbeddedTerminals: (allowedWorkspaces?: string[]) => Promise<EmbeddedTerminalSession[]>;
   spawnEmbeddedTerminal: (workspace: string, options?: EmbeddedTerminalSpawnOptions) => Promise<EmbeddedTerminalSession>;
+  spawnEmbeddedTerminals: (workspace: string, options: EmbeddedTerminalSpawnOptions[]) => Promise<EmbeddedTerminalSession[]>;
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
   renameEmbeddedTerminal: (id: string, title: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
   attachEmbeddedTerminalBuffer: (id: string) => Promise<string>;
+  attachEmbeddedTerminalStream: (id: string) => Promise<EmbeddedTerminalStreamSnapshot>;
+  ackEmbeddedTerminalData: (id: string, epoch: string, sequence: number) => void;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   listAgentMessages: (workspace?: string, limit?: number) => Promise<AgentMessage[]>;
   sendAgentMessage: (request: SendAgentMessageRequest) => Promise<SendAgentMessageResult>;
@@ -226,9 +290,14 @@ type WorkspaceApi = {
   playAttentionSound: () => Promise<void>;
   onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
   onWorkspaceClose: (callback: (payload: { workspace: WorkspacePath }) => void) => () => void;
-  onEmbeddedTerminalData: (callback: (payload: { id: string; data: string }) => void) => () => void;
-  onEmbeddedTerminalDataFor: (id: string, callback: (payload: { id: string; data: string }) => void) => () => void;
-  onEmbeddedTerminalExit: (callback: (payload: { id: string; exitCode: number | null }) => void) => () => void;
+  onEmbeddedTerminalData: (callback: (payload: EmbeddedTerminalDataPayload) => void) => () => void;
+  onEmbeddedTerminalDataFor: (
+    id: string,
+    callback: (payload: EmbeddedTerminalDataPayload) => void,
+    options?: EmbeddedTerminalDataSubscriptionOptions,
+  ) => () => void;
+  onEmbeddedTerminalAttention: (callback: (payload: { id: string; kind: "action" | "update" }) => void) => () => void;
+  onEmbeddedTerminalExit: (callback: (payload: EmbeddedTerminalExitPayload) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   onCodexTerminalData: (callback: (data: string) => void) => () => void;
   onCodexTerminalState: (callback: (state: CodexTerminalStatus) => void) => () => void;
@@ -265,6 +334,19 @@ const browserFallback: WorkspaceApi = {
   async getPreferences() { return {}; },
   async setPreference() { return {}; },
   async removePreference() { return {}; },
+  async getGraphicsStatus() {
+    return {
+      mode: "safe" as const,
+      reason: "Browser preview uses safe graphics mode.",
+      quarantined: false,
+      preference: "auto" as const,
+      recommendedMode: "safe" as const,
+      restartRequired: false,
+      lastGpuCrashAt: null,
+      lastGpuCrashReason: null,
+    };
+  },
+  async setGraphicsPreference() { return this.getGraphicsStatus(); },
   async getDefaultWorkspace() { return fallbackWorkspacePath(); },
   async toWorkspacePath(workspace: string) { return toFallbackWorkspacePath(workspace); },
   async getCodexTerminalState() { return { running: false, workspace: null, pid: null, lastError: null }; },
@@ -293,12 +375,26 @@ const browserFallback: WorkspaceApi = {
       error: null,
     };
   },
+  async spawnEmbeddedTerminals(workspace: string, options: EmbeddedTerminalSpawnOptions[]) {
+    const sessions: EmbeddedTerminalSession[] = [];
+    for (const item of options) sessions.push(await this.spawnEmbeddedTerminal(workspace, item));
+    return sessions;
+  },
   async writeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async renameEmbeddedTerminal(id: string, title: string) {
     return { ...(await this.spawnEmbeddedTerminal("/preview")), id, title };
   },
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
   async attachEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
+  async attachEmbeddedTerminalStream(id: string) {
+    return {
+      id,
+      epoch: "preview",
+      buffer: "[preview terminal buffer]\\r\\n$ ",
+      throughSequence: 0,
+    };
+  },
+  ackEmbeddedTerminalData() {},
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async listAgentMessages() { return []; },
   async sendAgentMessage(request: SendAgentMessageRequest) {
@@ -336,6 +432,18 @@ const browserFallback: WorkspaceApi = {
       eventLoopLagMs: 0,
       maxEventLoopLagMs: 0,
       lastOutputBatchAt: null,
+      rendererTerminalSubscribers: 0,
+      hiddenRawIpcBytes: 0,
+      terminalOutputRetries: 0,
+      terminalOutputResets: 0,
+      terminalOutputDroppedChars: 0,
+      terminalOutputDeliveredChars: 0,
+      terminalOutputAcknowledgedChars: 0,
+      terminalReplayCount: 0,
+      terminalReplayBytes: 0,
+      terminalReplayDurationMs: 0,
+      terminalReplayMaxDurationMs: 0,
+      sessionIndex: null,
       controlEvents: [],
       terminalControl: [],
       agentProcesses: [],
@@ -374,6 +482,7 @@ const browserFallback: WorkspaceApi = {
   onWorkspaceClose() { return () => undefined; },
   onEmbeddedTerminalData() { return () => undefined; },
   onEmbeddedTerminalDataFor() { return () => undefined; },
+  onEmbeddedTerminalAttention() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },
   onCodexTerminalData() { return () => undefined; },

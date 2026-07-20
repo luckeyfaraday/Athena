@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { BrowserWindow } from "electron";
+import { BrowserWindow, type WebContents } from "electron";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import {
   buildClaudeMcpConfig,
@@ -42,11 +42,17 @@ import { getBackendState } from "./backend.js";
 import { getControlState } from "./control-server.js";
 import { terminalInputWritesForKind } from "./input-sequencing.js";
 import { isTerminalRestorePaused, readAthenaLaunchState } from "./launch-state.js";
+import {
+  launchStaggerDelayMs,
+  reserveLaunchAdmission,
+  settleLaunchAdmission,
+} from "./launch-admission.js";
 import { ptyHost } from "./pty-host-client.js";
 import {
   claudeProjectPathCandidates,
   codexSessionIdForWorkspace,
   effectiveCreationMs,
+  hasMissingSavedRestoreIdentity,
   openCodeDatabaseCandidates,
   openCodeSessionExists,
   openCodeSessionIdForWorkspace,
@@ -66,11 +72,17 @@ import {
   recordTerminalInputActivity,
   recordTerminalOutputActivity,
 } from "./terminal-activity.js";
+import { TerminalAttentionTracker } from "./terminal-attention.js";
 import {
-  DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
-  appendBoundedTerminalOutput,
-} from "./terminal-buffer.js";
-import { OutputAckGate } from "./terminal-output-ack.js";
+  TERMINAL_OUTPUT_CLEANUP_INTERVAL_MS,
+  TERMINAL_OUTPUT_MAX_GRACE_MS,
+  terminalOutputCleanupDecision,
+} from "./terminal-output-cleanup.js";
+import {
+  TerminalOutputStreamHub,
+  type TerminalStreamAttachSnapshot,
+  type TerminalStreamDelivery,
+} from "./terminal-output-stream.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
   resolveOpenCodeBaselineBinary,
@@ -157,10 +169,14 @@ export function initEmbeddedTerminals(appRoot: string): void {
   startEventLoopMonitor();
 }
 
-export function prepareEmbeddedTerminalRestoreForQuit(): void {
+export function prepareEmbeddedTerminalRestoreForQuit(): Promise<void> {
   appQuitting = true;
+  return ptyHost.shutdown();
+}
+
+/** Clear restore crash-loop evidence only after main confirms PTY shutdown. */
+export function confirmEmbeddedTerminalRestoreShutdown(): void {
   clearRestoreAttempts();
-  ptyHost.shutdown();
 }
 
 /**
@@ -173,9 +189,8 @@ export function hasPendingEmbeddedTerminalRestoreAttempts(): boolean {
 }
 
 const terminals = new Map<string, ManagedTerminal>();
-const outputBuffers = new Map<string, string>();
 const MAX_BUFFER_CHARS = 200_000;
-const MAX_PENDING_OUTPUT_CHARS = DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS;
+const RENDERER_REPLAY_MAX_CHARS = 64 * 1024;
 const PTY_FLUSH_INTERVAL_MS = 16;
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 1000;
 const CLAUDE_SESSION_DISCOVERY_ATTEMPTS = 20;
@@ -187,8 +202,22 @@ const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
 // Grok stamps the session dir at creation; allow a little slack so a dir written
 // just before our spawn timestamp (clock skew / startup latency) still matches.
 const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
-const pendingOutput = new Map<string, string>();
-const outputAckGate = new OutputAckGate();
+const outputStream = new TerminalOutputStreamHub({ maxSnapshotChars: MAX_BUFFER_CHARS });
+const terminalAttention = new TerminalAttentionTracker();
+type RendererOutputSubscription = {
+  sender: WebContents;
+  allTerminals: boolean;
+  terminalIds: Set<string>;
+};
+const rendererOutputSubscriptions = new Map<number, RendererOutputSubscription>();
+type ControlOutputConsumer = {
+  terminalId: string;
+  onDelivery: (delivery: TerminalStreamDelivery) => boolean;
+  onExit: (payload: { exitCode: number | null; epoch: string; throughSequence: number }) => void;
+};
+const controlOutputConsumers = new Map<string, ControlOutputConsumer>();
+const outputCleanupTimers = new Map<string, NodeJS.Timeout>();
+const outputCleanupDeadlines = new Map<string, number>();
 let outputFlushTimer: NodeJS.Timeout | null = null;
 let outputFlushTimerDueAt = 0;
 let eventLoopMonitorTimer: NodeJS.Timeout | null = null;
@@ -199,6 +228,7 @@ const perfCounters = {
   ptyBytes: 0,
   ipcBatches: 0,
   ipcBytes: 0,
+  hiddenRawIpcBytes: 0,
   lastBatchAt: null as string | null,
   sampleStartedAt: Date.now(),
   rates: {
@@ -221,6 +251,17 @@ export type PerformanceDiagnostics = {
   eventLoopLagMs: number;
   maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
+  rendererTerminalSubscribers: number;
+  hiddenRawIpcBytes: number;
+  terminalOutputRetries: number;
+  terminalOutputResets: number;
+  terminalOutputDroppedChars: number;
+  terminalOutputDeliveredChars: number;
+  terminalOutputAcknowledgedChars: number;
+  terminalReplayCount: number;
+  terminalReplayBytes: number;
+  terminalReplayDurationMs: number;
+  terminalReplayMaxDurationMs: number;
   controlEvents: ControlEvent[];
   terminalControl: TerminalControlState[];
   agentProcesses: AgentProcessDiagnostic[];
@@ -247,91 +288,115 @@ export function listEmbeddedAgentMessages(workspace?: string | null, limit?: num
 }
 
 export function getEmbeddedTerminalBuffer(id: string): string {
-  return outputBuffers.get(id) ?? "";
+  return outputStream.getBuffer(id);
 }
 
 export function attachEmbeddedTerminalBuffer(id: string): string {
-  const buffer = getEmbeddedTerminalBuffer(id);
-  pendingOutput.delete(id);
-  outputAckGate.clear(id);
-  if (pendingOutput.size === 0) clearOutputFlushTimer();
-  return buffer;
+  return getEmbeddedTerminalBuffer(id);
 }
 
-type TerminalDataListener = (chunk: string) => void;
-type TerminalExitListener = (exitCode: number | null) => void;
+export function attachEmbeddedTerminalStream(id: string, sender: WebContents): TerminalStreamAttachSnapshot {
+  const subscription = ensureRendererOutputSubscription(sender);
+  subscription.terminalIds.add(id);
+  return outputStream.attach(id, rendererConsumerId(sender.id), {
+    replayMaxChars: RENDERER_REPLAY_MAX_CHARS,
+  });
+}
 
-const dataListeners = new Map<string, Set<TerminalDataListener>>();
-const exitListeners = new Map<string, Set<TerminalExitListener>>();
+export type EmbeddedTerminalControlStream = {
+  snapshot: TerminalStreamAttachSnapshot;
+  start: () => void;
+  close: () => void;
+};
 
 /**
- * Subscribe to live PTY output for a terminal from inside the main process. This
- * powers the control server's SSE stream endpoint (remote viewers such as the
- * mobile app) alongside the existing renderer IPC fan-out. The listener receives
- * raw terminal chunks exactly as they are appended to the rolling buffer.
- * Returns an unsubscribe function; `onExit` (if provided) fires once when the
- * terminal exits or crashes.
+ * Atomically attach a distinct non-renderer consumer. The consumer starts
+ * paused so its snapshot can be queued first; output produced in that window is
+ * retained by sequence and released only after `start()`.
  */
-export function subscribeEmbeddedTerminalData(
+export function attachEmbeddedTerminalControlStream(
   id: string,
-  onData: TerminalDataListener,
-  onExit?: TerminalExitListener,
-): () => void {
-  let dataSet = dataListeners.get(id);
-  if (!dataSet) {
-    dataSet = new Set();
-    dataListeners.set(id, dataSet);
+  consumerId: string,
+  replayMaxChars: number,
+  onDelivery: ControlOutputConsumer["onDelivery"],
+  onExit: ControlOutputConsumer["onExit"],
+): EmbeddedTerminalControlStream {
+  if (controlOutputConsumers.has(consumerId)) {
+    throw new Error(`Terminal output consumer already exists: ${consumerId}`);
   }
-  dataSet.add(onData);
-
-  if (onExit) {
-    let exitSet = exitListeners.get(id);
-    if (!exitSet) {
-      exitSet = new Set();
-      exitListeners.set(id, exitSet);
-    }
-    exitSet.add(onExit);
-  }
-
-  return () => {
-    const currentData = dataListeners.get(id);
-    if (currentData) {
-      currentData.delete(onData);
-      if (currentData.size === 0) dataListeners.delete(id);
-    }
-    if (onExit) {
-      const currentExit = exitListeners.get(id);
-      if (currentExit) {
-        currentExit.delete(onExit);
-        if (currentExit.size === 0) exitListeners.delete(id);
-      }
-    }
+  controlOutputConsumers.set(consumerId, { terminalId: id, onDelivery, onExit });
+  const snapshot = outputStream.attach(id, consumerId, { replayMaxChars, paused: true });
+  let closed = false;
+  return {
+    snapshot,
+    start: () => {
+      if (closed || !outputStream.resumeConsumer(id, consumerId)) return;
+      flushOutput(id);
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      controlOutputConsumers.delete(consumerId);
+      outputStream.detach(id, consumerId);
+      if (!outputStream.hasPendingDeliveries()) clearOutputFlushTimer();
+    },
   };
 }
 
-function notifyTerminalData(id: string, chunk: string): void {
-  const listeners = dataListeners.get(id);
-  if (!listeners) return;
-  for (const listener of listeners) {
-    try {
-      listener(chunk);
-    } catch {
-      // A failing stream subscriber must not break PTY fan-out to other clients.
-    }
+export function subscribeEmbeddedTerminalOutput(id: string, sender: WebContents): void {
+  const subscription = ensureRendererOutputSubscription(sender);
+  subscription.terminalIds.add(id);
+  outputStream.subscribe(id, rendererConsumerId(sender.id));
+}
+
+export function unsubscribeEmbeddedTerminalOutput(id: string, senderId: number): void {
+  const subscription = rendererOutputSubscriptions.get(senderId);
+  if (!subscription) return;
+  subscription.terminalIds.delete(id);
+  if (!subscription.allTerminals) outputStream.detach(id, rendererConsumerId(senderId));
+}
+
+export function subscribeAllEmbeddedTerminalOutput(sender: WebContents): void {
+  const subscription = ensureRendererOutputSubscription(sender);
+  subscription.allTerminals = true;
+  for (const id of outputStream.terminalIds()) {
+    outputStream.subscribe(id, rendererConsumerId(sender.id));
   }
 }
 
-function notifyTerminalExit(id: string, exitCode: number | null): void {
-  const listeners = exitListeners.get(id);
-  if (!listeners) return;
-  for (const listener of Array.from(listeners)) {
-    try {
-      listener(exitCode);
-    } catch {
-      // Ignore subscriber errors raised during stream teardown.
+export function unsubscribeAllEmbeddedTerminalOutput(senderId: number): void {
+  const subscription = rendererOutputSubscriptions.get(senderId);
+  if (!subscription) return;
+  subscription.allTerminals = false;
+  for (const id of outputStream.terminalIds()) {
+    if (!subscription.terminalIds.has(id)) outputStream.detach(id, rendererConsumerId(senderId));
+  }
+}
+
+function ensureRendererOutputSubscription(sender: WebContents): RendererOutputSubscription {
+  let subscription = rendererOutputSubscriptions.get(sender.id);
+  if (subscription) return subscription;
+  subscription = { sender, allTerminals: false, terminalIds: new Set() };
+  rendererOutputSubscriptions.set(sender.id, subscription);
+  sender.once("destroyed", () => {
+    rendererOutputSubscriptions.delete(sender.id);
+    outputStream.detachConsumer(rendererConsumerId(sender.id));
+  });
+  return subscription;
+}
+
+function rendererConsumerId(senderId: number): string {
+  return `renderer:${senderId}`;
+}
+
+function rendererTerminalSubscriberCount(): number {
+  let count = 0;
+  for (const terminalId of outputStream.terminalIds()) {
+    for (const consumerId of outputStream.terminalConsumerIds(terminalId)) {
+      if (consumerId.startsWith("renderer:")) count += 1;
     }
   }
-  exitListeners.delete(id);
+  return count;
 }
 
 export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | null {
@@ -354,34 +419,87 @@ export async function restoreEmbeddedTerminals(allowedWorkspaces?: string[]): Pr
     const entries = readRestoreEntries();
     const plan = selectEmbeddedTerminalRestoreEntries(entries, allowedWorkspaces, terminals.keys());
     writeRestoreEntries([...plan.retained, ...plan.live]);
-    recordRestoreAttempts(plan.restore);
     for (const entry of plan.live) {
       const liveSession = terminals.get(entry.id)?.session;
       if (liveSession) restored.push({ ...liveSession });
     }
-    if (plan.restore.length > 0) scheduleRestoreAttemptClear();
-    for (const entry of plan.restore) {
+    let attemptedRestore = false;
+    for (let index = 0; index < plan.restore.length; index += 1) {
+      const entry = plan.restore[index];
       if (!fs.existsSync(entry.workspace)) continue;
-      const resumeSessionId = await resolveRestoreResumeSessionId(entry);
-      const session = await spawnEmbeddedTerminal(entry.workspace, {
-        kind: entry.kind,
-        title: entry.title,
-        cols: 96,
-        rows: 28,
-        resumeSessionId: resumeSessionId ?? undefined,
-        sessionLabel: entry.sessionLabel ?? undefined,
-        // Without a resumable session the spawn starts a fresh provider
-        // session, so a saved provider id would be a stale, wrong binding.
-        providerSessionId: resumeSessionId ? entry.providerSessionId ?? resumeSessionId : undefined,
-        contextMode: "none",
-        controlSource: "restore",
-      });
-      if (session.status === "running") restored.push(session);
+      const admission = reserveLaunchAdmission({ source: "restore", kind: entry.kind, count: 1 });
+      if (!admission.granted) {
+        preserveDeferredRestoreEntries(plan.restore.slice(index));
+        console.warn(`[Athena] ${admission.message} Saved restore entries were preserved for a later retry.`);
+        break;
+      }
+
+      let launched = 0;
+      let stopAfterAttempt = false;
+      try {
+        const resumeSessionId = await resolveRestoreResumeSessionId(entry);
+        if (hasMissingSavedRestoreIdentity(entry, resumeSessionId)) {
+          // A known conversation disappearing from the provider store is not
+          // permission to silently replace it with a fresh conversation. Keep
+          // this entry for explicit user recovery while restoring independent
+          // entries after it.
+          preserveDeferredRestoreEntries([entry]);
+          console.warn(
+            `[Athena] Restore deferred for ${entry.title}: saved provider session identity is unavailable. `
+            + "No fresh session was launched.",
+          );
+        } else {
+          attemptedRestore = true;
+          recordRestoreAttempts([entry]);
+          const session = await spawnEmbeddedTerminal(entry.workspace, {
+            kind: entry.kind,
+            title: entry.title,
+            cols: 96,
+            rows: 28,
+            resumeSessionId: resumeSessionId ?? undefined,
+            sessionLabel: entry.sessionLabel ?? undefined,
+            // Without a resumable session the spawn starts a fresh provider
+            // session, so a saved provider id would be a stale, wrong binding.
+            providerSessionId: resumeSessionId ? entry.providerSessionId ?? resumeSessionId : undefined,
+            contextMode: "none",
+            controlSource: "restore",
+          });
+          if (session.status === "running") {
+            launched = 1;
+            restored.push(session);
+            const settleMs = launchStaggerDelayMs(entry.kind, index + 1);
+            if (settleMs > 0 && index < plan.restore.length - 1) await delay(settleMs);
+          } else {
+            preserveDeferredRestoreEntries(plan.restore.slice(index));
+            stopAfterAttempt = true;
+          }
+        }
+      } catch (error) {
+        // A provider/session-store failure must not consume the current entry or
+        // every entry after it. Preserve the unstarted plan before surfacing the
+        // error; the existing idempotency filter prevents a later retry from
+        // duplicating any terminal that did start.
+        preserveDeferredRestoreEntries(plan.restore.slice(index));
+        throw error;
+      } finally {
+        settleLaunchAdmission(admission, launched);
+      }
+      if (stopAfterAttempt) break;
     }
+    if (attemptedRestore) scheduleRestoreAttemptClear();
     return restored;
   } finally {
     restoreInFlight = false;
   }
+}
+
+function preserveDeferredRestoreEntries(entries: RestorableTerminal[]): void {
+  const byId = new Map<string, RestorableTerminal>();
+  for (const entry of entries) byId.set(entry.id, entry);
+  for (const entry of readRestoreEntries()) {
+    if (!byId.has(entry.id)) byId.set(entry.id, entry);
+  }
+  writeRestoreEntries(Array.from(byId.values()).slice(0, 40));
 }
 
 async function resolveRestoreResumeSessionId(entry: RestorableTerminal): Promise<string | null> {
@@ -433,8 +551,9 @@ export function clearSavedEmbeddedTerminalRestores(): number {
 
 export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostics> {
   updatePerformanceRates();
-  const pendingOutputBytes = Array.from(pendingOutput.values()).reduce((total, value) => total + Buffer.byteLength(value), 0);
-  const bufferedTerminalChars = Array.from(outputBuffers.values()).reduce((total, value) => total + value.length, 0);
+  const pendingOutputBytes = outputStream.pendingChars();
+  const bufferedTerminalChars = outputStream.bufferedChars();
+  const streamDiagnostics = outputStream.diagnostics();
   const agentProcesses = await detectAgentProcesses();
   return {
     activeTerminals: terminals.size,
@@ -448,6 +567,17 @@ export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostic
     eventLoopLagMs,
     maxEventLoopLagMs,
     lastOutputBatchAt: perfCounters.lastBatchAt,
+    rendererTerminalSubscribers: rendererTerminalSubscriberCount(),
+    hiddenRawIpcBytes: perfCounters.hiddenRawIpcBytes,
+    terminalOutputRetries: streamDiagnostics.retries,
+    terminalOutputResets: streamDiagnostics.resets,
+    terminalOutputDroppedChars: streamDiagnostics.droppedOrTruncatedChars,
+    terminalOutputDeliveredChars: streamDiagnostics.deliveredChars,
+    terminalOutputAcknowledgedChars: streamDiagnostics.acknowledgedChars,
+    terminalReplayCount: streamDiagnostics.replayCount,
+    terminalReplayBytes: streamDiagnostics.replayBytes,
+    terminalReplayDurationMs: streamDiagnostics.replayDurationMs,
+    terminalReplayMaxDurationMs: streamDiagnostics.maxReplayDurationMs,
     controlEvents: recentControlEvents(),
     terminalControl: terminalControlStates(),
     agentProcesses,
@@ -921,10 +1051,9 @@ export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminal
   clearQueueDrain(id);
   terminals.delete(id);
   clearTerminalActivity(id);
-  notifyTerminalExit(id, null);
   removeRestoreEntry(id);
-  emit("embedded-terminal:exit", { id, exitCode: null });
-  clearTerminalOutputState(id);
+  emitTerminalExit(id, null);
+  scheduleTerminalOutputStateCleanup(id);
   return { ...entry.session };
 }
 
@@ -935,27 +1064,26 @@ function installPtyHostListeners(): void {
     recordTerminalOutput(id);
     recordTerminalOutputActivity(id);
     markTerminalOutputForMessages(id);
-    appendBuffer(id, data);
-    notifyTerminalData(id, data);
     queueOutput(id, data);
+    const attention = terminalAttention.classify(id, data);
+    if (attention) emit("embedded-terminal:attention", { id, kind: attention });
     // Output usually means the agent finished a turn; retry queued delivery
     // once it settles back to an idle prompt.
     if (terminalsWithQueuedMessages.has(id)) scheduleQueueDrain(id);
   });
   ptyHost.on("exit", ({ id, exitCode }) => {
     flushOutput(id);
-    notifyTerminalExit(id, exitCode);
     const entry = terminals.get(id);
     if (!entry) return;
     entry.session = { ...entry.session, status: "exited", exitCode };
     recordTerminalExited(id, exitCode);
     failQueuedAgentMessages(id, "Target terminal exited before delivery.");
     clearQueueDrain(id);
-    emit("embedded-terminal:exit", { id, exitCode });
+    emitTerminalExit(id, exitCode);
     terminals.delete(id);
     clearTerminalActivity(id);
     if (!appQuitting) removeRestoreEntry(id);
-    clearTerminalOutputState(id);
+    scheduleTerminalOutputStateCleanup(id);
   });
   ptyHost.on("error", ({ id, error }) => {
     if (!id) {
@@ -981,7 +1109,6 @@ function installPtyHostListeners(): void {
     console.error("[Athena] PTY host crashed:", error);
     for (const id of ids) {
       flushOutput(id);
-      notifyTerminalExit(id, null);
       const entry = terminals.get(id);
       if (!entry) continue;
       entry.session = { ...entry.session, status: "failed", error };
@@ -996,22 +1123,93 @@ function installPtyHostListeners(): void {
       failQueuedAgentMessages(id, "Target terminal crashed before delivery.");
       clearQueueDrain(id);
       emit("embedded-terminal:session", entry.session);
-      emit("embedded-terminal:exit", { id, exitCode: null });
+      emitTerminalExit(id, null);
       terminals.delete(id);
       clearTerminalActivity(id);
       if (!appQuitting) removeRestoreEntry(id);
-      clearTerminalOutputState(id);
+      scheduleTerminalOutputStateCleanup(id);
     }
   });
 }
 
 function clearTerminalOutputState(id: string): void {
-  outputBuffers.delete(id);
-  pendingOutput.delete(id);
-  outputAckGate.clear(id);
-  dataListeners.delete(id);
-  exitListeners.delete(id);
-  if (pendingOutput.size === 0) clearOutputFlushTimer();
+  const cleanupTimer = outputCleanupTimers.get(id);
+  if (cleanupTimer) clearTimeout(cleanupTimer);
+  outputCleanupTimers.delete(id);
+  outputCleanupDeadlines.delete(id);
+  outputStream.clearTerminal(id);
+  terminalAttention.clear(id);
+  for (const subscription of rendererOutputSubscriptions.values()) {
+    subscription.terminalIds.delete(id);
+  }
+  for (const [consumerId, consumer] of controlOutputConsumers) {
+    if (consumer.terminalId === id) controlOutputConsumers.delete(consumerId);
+  }
+  if (!outputStream.hasPendingDeliveries()) clearOutputFlushTimer();
+}
+
+function scheduleTerminalOutputStateCleanup(id: string): void {
+  const current = outputCleanupTimers.get(id);
+  if (current) clearTimeout(current);
+  const now = Date.now();
+  const existingDeadline = outputCleanupDeadlines.get(id);
+  const deadline = existingDeadline ?? now + TERMINAL_OUTPUT_MAX_GRACE_MS;
+  outputCleanupDeadlines.set(id, deadline);
+  // Always retain a newly exited terminal for one ordinary grace interval so
+  // a renderer mounting just after the exit can still obtain its final screen.
+  const decision = existingDeadline == null
+    ? { clear: false, delayMs: Math.min(TERMINAL_OUTPUT_CLEANUP_INTERVAL_MS, deadline - now) }
+    : terminalOutputCleanupDecision(
+        now,
+        deadline,
+        outputStream.hasPendingDeliveriesForTerminal(id),
+      );
+  if (decision.clear) {
+    clearTerminalOutputState(id);
+    return;
+  }
+  // Give a renderer that is parsing a large final batch enough time for its
+  // drain ACK (including several lost-ACK retries) before releasing replay
+  // state. The previous immediate cleanup could discard the process's final
+  // output whenever it exited while another batch was in flight.
+  const timer = setTimeout(() => {
+    outputCleanupTimers.delete(id);
+    // Pending final sequences extend retention only to the hard tombstone
+    // deadline. A dead renderer can therefore neither lose ordinary slow-drain
+    // recovery nor retain buffers/retry timers forever.
+    scheduleTerminalOutputStateCleanup(id);
+  }, decision.delayMs);
+  timer.unref?.();
+  outputCleanupTimers.set(id, timer);
+}
+
+function emitTerminalExit(id: string, exitCode: number | null): void {
+  // Publish any incomplete final UTF-16 code unit as a sequenced replacement
+  // character, then flush it before taking the exit cursor. The renderer can
+  // therefore hold the exit marker until every final output sequence drains.
+  outputStream.finalize(id);
+  flushOutput(id);
+  const cursor = outputStream.cursor(id);
+  const payload = {
+    id,
+    exitCode,
+    epoch: cursor.epoch,
+    throughSequence: cursor.sequence,
+  };
+  emit("embedded-terminal:exit", payload);
+  for (const consumer of Array.from(controlOutputConsumers.values())) {
+    if (consumer.terminalId !== id) continue;
+    try {
+      consumer.onExit({
+        exitCode,
+        epoch: cursor.epoch,
+        throughSequence: cursor.sequence,
+      });
+    } catch {
+      // Stream cleanup is owned by the consumer; one failed remote client must
+      // not interfere with renderer exit delivery or other terminals.
+    }
+  }
 }
 
 function restoreFilePath(): string {
@@ -1158,17 +1356,15 @@ function isRestorableTerminal(value: unknown): value is RestorableTerminal {
     && (item.resumeSessionId == null || typeof item.resumeSessionId === "string");
 }
 
-function appendBuffer(id: string, data: string): void {
-  const next = `${outputBuffers.get(id) ?? ""}${data}`;
-  outputBuffers.set(id, next.length > MAX_BUFFER_CHARS ? next.slice(-MAX_BUFFER_CHARS) : next);
-}
-
 function queueOutput(id: string, data: string): void {
   updatePerformanceRates();
   perfCounters.ptyChunks += 1;
   perfCounters.ptyBytes += Buffer.byteLength(data);
-  pendingOutput.set(id, appendBoundedTerminalOutput(pendingOutput.get(id) ?? "", data, MAX_PENDING_OUTPUT_CHARS));
-  scheduleOutputFlush(PTY_FLUSH_INTERVAL_MS);
+  for (const [senderId, subscription] of rendererOutputSubscriptions) {
+    if (subscription.allTerminals) outputStream.subscribe(id, rendererConsumerId(senderId));
+  }
+  outputStream.append(id, data);
+  if (outputStream.terminalConsumerIds(id).length > 0) scheduleOutputFlush(PTY_FLUSH_INTERVAL_MS);
 }
 
 function clearOutputFlushTimer(): void {
@@ -1191,32 +1387,76 @@ function flushOutput(id?: string): void {
   clearOutputFlushTimer();
 
   const now = Date.now();
-  let retryDelayMs: number | null = null;
-  const entries = id ? [[id, pendingOutput.get(id) ?? ""] as const] : Array.from(pendingOutput.entries());
-  for (const [terminalId, data] of entries) {
-    if (!data) continue;
-    if (!outputAckGate.canSend(terminalId, now)) {
-      const delay = outputAckGate.retryDelayMs(terminalId, now);
-      retryDelayMs = Math.min(retryDelayMs ?? Infinity, delay ?? PTY_FLUSH_INTERVAL_MS);
-      continue;
-    }
-    pendingOutput.delete(terminalId);
-    const sequence = outputAckGate.markSent(terminalId, now);
+  const deliveries = id ? outputStream.pollTerminal(id, now) : outputStream.poll(now);
+  for (const delivery of deliveries) {
+    if (!sendTerminalDelivery(delivery)) continue;
     perfCounters.ipcBatches += 1;
-    perfCounters.ipcBytes += Buffer.byteLength(data);
+    perfCounters.ipcBytes += Buffer.byteLength(delivery.data);
     perfCounters.lastBatchAt = new Date().toISOString();
-    emit("embedded-terminal:data", { id: terminalId, data, sequence });
   }
 
-  if (pendingOutput.size > 0) {
-    const hasUnprocessedPending = Boolean(id && Array.from(pendingOutput.keys()).some((terminalId) => terminalId !== id));
-    scheduleOutputFlush(hasUnprocessedPending ? PTY_FLUSH_INTERVAL_MS : retryDelayMs ?? PTY_FLUSH_INTERVAL_MS);
+  if (outputStream.hasPendingDeliveries()) {
+    scheduleOutputFlush(outputStream.nextRetryDelayMs(now) ?? PTY_FLUSH_INTERVAL_MS);
   }
 }
 
-export function acknowledgeEmbeddedTerminalOutput(id: string, sequence: number): void {
-  if (!outputAckGate.acknowledge(id, sequence)) return;
-  if (pendingOutput.has(id)) flushOutput(id);
+function sendTerminalDelivery(delivery: TerminalStreamDelivery): boolean {
+  const controlConsumer = controlOutputConsumers.get(delivery.consumerId);
+  if (controlConsumer) {
+    let accepted = false;
+    try {
+      accepted = controlConsumer.onDelivery(delivery);
+    } catch {
+      accepted = false;
+    }
+    if (accepted) {
+      outputStream.acknowledge(
+        delivery.id,
+        delivery.consumerId,
+        delivery.epoch,
+        delivery.sequence,
+      );
+      return true;
+    }
+    controlOutputConsumers.delete(delivery.consumerId);
+    outputStream.detach(delivery.id, delivery.consumerId);
+    return false;
+  }
+  const senderId = Number(delivery.consumerId.slice("renderer:".length));
+  const subscription = rendererOutputSubscriptions.get(senderId);
+  if (!subscription || subscription.sender.isDestroyed()) {
+    rendererOutputSubscriptions.delete(senderId);
+    outputStream.detachConsumer(delivery.consumerId);
+    return false;
+  }
+  try {
+    if (subscription.allTerminals && !subscription.terminalIds.has(delivery.id)) {
+      perfCounters.hiddenRawIpcBytes += Buffer.byteLength(delivery.data);
+    }
+    subscription.sender.send("embedded-terminal:data", {
+      id: delivery.id,
+      epoch: delivery.epoch,
+      fromSequence: delivery.fromSequence,
+      sequence: delivery.sequence,
+      data: delivery.data,
+      reset: delivery.reset,
+    });
+    return true;
+  } catch {
+    rendererOutputSubscriptions.delete(senderId);
+    outputStream.detachConsumer(delivery.consumerId);
+    return false;
+  }
+}
+
+export function acknowledgeEmbeddedTerminalOutput(
+  id: string,
+  senderId: number,
+  epoch: string,
+  sequence: number,
+): void {
+  if (!outputStream.acknowledge(id, rendererConsumerId(senderId), epoch, sequence)) return;
+  flushOutput(id);
 }
 
 function roundRate(value: number): number {

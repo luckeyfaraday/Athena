@@ -2,14 +2,34 @@ import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { listAgentSessionsCached, type AgentSession } from "./agent-sessions.js";
+import {
+  getAgentSessionScanDiagnostics,
+  listAgentSessionsCached,
+  type AgentSession,
+} from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
 import { checkControlHealth, getControlState, restartControlServer, type ControlState } from "./control-server.js";
 import type { CodexTerminalState } from "./codex-terminal.js";
 import { normalizeExternalUrl } from "./external-links.js";
+import {
+  clearGraphicsQuarantine,
+  getGraphicsRuntimeStatus,
+  GRAPHICS_PREFERENCE_KEY,
+  parseGraphicsPreference,
+  type GraphicsRuntimeStatus,
+} from "./graphics-state.js";
 import { clearTerminalRestorePause, readAthenaLaunchState, type AthenaLaunchState } from "./launch-state.js";
-import { checkMemoryPressure, formatBytes } from "./memory-guard.js";
+import {
+  launchStaggerDelayMs,
+  OneShotLaunchOverride,
+  publicLaunchAdmission,
+  releaseLaunchAdmission,
+  reserveLaunchAdmission,
+  settleLaunchAdmission,
+  type LaunchAdmissionResult,
+} from "./launch-admission.js";
+import { formatBytes } from "./memory-guard.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { getPreferences, removePreference, setPreference } from "./preferences.js";
 import {
@@ -26,6 +46,7 @@ import {
 import {
   acknowledgeEmbeddedTerminalOutput,
   attachEmbeddedTerminalBuffer,
+  attachEmbeddedTerminalStream,
   clearSavedEmbeddedTerminalRestores,
   getEmbeddedTerminalBuffer,
   getPerformanceDiagnostics,
@@ -38,6 +59,10 @@ import {
   sendAgentMessage,
   restoreEmbeddedTerminals,
   spawnEmbeddedTerminal,
+  subscribeAllEmbeddedTerminalOutput,
+  subscribeEmbeddedTerminalOutput,
+  unsubscribeAllEmbeddedTerminalOutput,
+  unsubscribeEmbeddedTerminalOutput,
   writeEmbeddedTerminal,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
@@ -52,50 +77,100 @@ import type { AgentMessage } from "./agent-messages.js";
 // of MiB plus their own MCP server; launching one onto a memory-starved machine
 // freezes the whole desktop via swap thrashing. Warn before the user adds the
 // pane that tips the box over. Plain shells are cheap, so they are never guarded.
-// This runs only on user-initiated spawns, not on session restore (which reuses
-// spawnEmbeddedTerminal directly and must not pop a dialog per restored pane).
-async function guardAgentLaunchMemory(options?: EmbeddedTerminalSpawnOptions): Promise<void> {
-  const kind: EmbeddedTerminalKind = options?.kind ?? "shell";
-  if (kind === "shell") return;
-  const status = checkMemoryPressure();
-  if (status.level === "ok") return;
+// A grid reaches IPC as one atomically reserved batch. A low-memory approval is
+// therefore a one-shot token for that single request; it must never silently
+// authorize later panes or unrelated concurrent requests. Concurrent callers
+// share the visible prompt, but only one can consume its approval.
+const MAX_UI_TERMINAL_SPAWN_COUNT = 8;
+const uiMemoryOverride = new OneShotLaunchOverride();
+let uiMemoryPromptInFlight: Promise<boolean> | null = null;
 
-  const available = formatBytes(status.availableBytes);
-  if (status.level === "warn") {
-    console.warn(`Launching ${kind} with low free memory (${available} available).`);
-    return;
+async function guardAgentLaunchMemory(
+  options?: EmbeddedTerminalSpawnOptions,
+  count = 1,
+): Promise<LaunchAdmissionResult> {
+  const kind: EmbeddedTerminalKind = options?.kind ?? "shell";
+  let admission = reserveLaunchAdmission({
+    source: "ui",
+    kind,
+    count,
+  });
+  if (admission.granted) {
+    if (admission.decision === "warn") {
+      console.warn(admission.message, publicLaunchAdmission(admission));
+    }
+    return admission;
   }
 
-  console.error(`Launching ${kind} with critically low memory (${available} available).`);
+  if (uiMemoryOverride.consume()) {
+    admission = reserveLaunchAdmission({ source: "ui", kind, count, overrideCritical: true });
+    console.warn(admission.message, publicLaunchAdmission(admission));
+    return admission;
+  }
+  console.error(admission.message, publicLaunchAdmission(admission));
+  const approved = await requestUiMemoryOverride(admission);
+  if (!approved) {
+    throw new Error("Launch cancelled: not enough free memory. Close some agents and try again.");
+  }
+  if (!uiMemoryOverride.consume()) {
+    throw new Error("Launch cancelled: the low-memory override expired. Try again after closing some agents.");
+  }
+  admission = reserveLaunchAdmission({ source: "ui", kind, count, overrideCritical: true });
+  if (!admission.granted) {
+    throw new Error(admission.message);
+  }
+  console.warn(admission.message, publicLaunchAdmission(admission));
+  return admission;
+}
+
+function requestUiMemoryOverride(admission: LaunchAdmissionResult): Promise<boolean> {
+  if (uiMemoryPromptInFlight) return uiMemoryPromptInFlight;
+  const available = formatBytes(admission.projectedAvailableBytes);
   const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
   const messageBox = {
     type: "warning" as const,
     title: "Low memory",
     message: "Your machine is almost out of memory.",
     detail:
-      `Only ${available} of memory is free. Launching another agent now is likely to freeze Athena `
+      `After reserving memory for this agent, only ${available} remains. Launching now is likely to freeze Athena `
       + "and your whole desktop while the system swaps.\n\n"
-      + "Close some running agents or apps first, or launch anyway at your own risk.",
+      + "Close some running agents or apps first, or launch anyway at your own risk. One confirmation covers this grid launch.",
     buttons: ["Cancel", "Launch anyway"],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
   };
-  const { response } = window
-    ? await dialog.showMessageBox(window, messageBox)
-    : await dialog.showMessageBox(messageBox);
-  if (response === 0) {
-    throw new Error("Launch cancelled: not enough free memory. Close some agents and try again.");
-  }
+  uiMemoryPromptInFlight = (window
+    ? dialog.showMessageBox(window, messageBox)
+    : dialog.showMessageBox(messageBox))
+    .then(({ response }) => {
+      const approved = response !== 0;
+      if (approved) {
+        uiMemoryOverride.grant();
+      }
+      return approved;
+    })
+    .finally(() => {
+      uiMemoryPromptInFlight = null;
+    });
+  return uiMemoryPromptInFlight;
 }
 
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
-  ipcMain.on("embeddedTerminal:dataAck", (_event, id: string, sequence: number) => {
-    if (typeof id === "string" && Number.isSafeInteger(sequence)) {
-      acknowledgeEmbeddedTerminalOutput(id, sequence);
+  ipcMain.on("embeddedTerminal:dataAck", (event, id: string, epoch: string, sequence: number) => {
+    if (typeof id === "string" && typeof epoch === "string" && Number.isSafeInteger(sequence)) {
+      acknowledgeEmbeddedTerminalOutput(id, event.sender.id, epoch, sequence);
     }
   });
+  ipcMain.on("embeddedTerminal:subscribe", (event, id: string) => {
+    if (typeof id === "string" && id) subscribeEmbeddedTerminalOutput(id, event.sender);
+  });
+  ipcMain.on("embeddedTerminal:unsubscribe", (event, id: string) => {
+    if (typeof id === "string" && id) unsubscribeEmbeddedTerminalOutput(id, event.sender.id);
+  });
+  ipcMain.on("embeddedTerminal:subscribeAll", (event) => subscribeAllEmbeddedTerminalOutput(event.sender));
+  ipcMain.on("embeddedTerminal:unsubscribeAll", (event) => unsubscribeAllEmbeddedTerminalOutput(event.sender.id));
   const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
     ipcMain.handle(channel, async (event, ...args) => {
       recordIpcBreadcrumb(channel, "start", args);
@@ -164,6 +239,16 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("preferences:get", (): Record<string, string> => getPreferences());
   handle("preferences:set", (_event, key: string, value: string): Record<string, string> => setPreference(key, value));
   handle("preferences:remove", (_event, key: string): Record<string, string> => removePreference(key));
+  handle("graphics:getStatus", (): GraphicsRuntimeStatus => {
+    const preference = parseGraphicsPreference(getPreferences()[GRAPHICS_PREFERENCE_KEY]);
+    return getGraphicsRuntimeStatus(preference);
+  });
+  handle("graphics:setPreference", (_event, value: string): GraphicsRuntimeStatus => {
+    const preference = parseGraphicsPreference(value);
+    setPreference(GRAPHICS_PREFERENCE_KEY, preference);
+    if (preference === "accelerated") clearGraphicsQuarantine();
+    return getGraphicsRuntimeStatus(preference);
+  });
   handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());
   handle("codexTerminal:start", (event, workspace: string): Promise<CodexTerminalState> => {
     const window = BrowserWindow.fromWebContents(event.sender);
@@ -189,15 +274,63 @@ export function registerIpcHandlers(appRoot: string): void {
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
   handle("embeddedTerminal:attachBuffer", (_event, id: string): string => attachEmbeddedTerminalBuffer(id));
+  handle("embeddedTerminal:attachStream", (event, id: string) => attachEmbeddedTerminalStream(id, event.sender));
   handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
   handle("agentMessages:list", (_event, workspace?: string, limit?: number): AgentMessage[] => listEmbeddedAgentMessages(workspace, limit));
   handle("agentMessages:send", (_event, request: SendAgentMessageRequest): Promise<SendAgentMessageResult> => sendAgentMessage({ ...request, source: "ui" }));
-  handle("performance:diagnostics", (): Promise<PerformanceDiagnostics> => getPerformanceDiagnostics());
+  handle("performance:diagnostics", async () => ({
+    ...await getPerformanceDiagnostics(),
+    sessionIndex: getAgentSessionScanDiagnostics(),
+  }));
   handle(
     "embeddedTerminal:spawn",
     async (_event, workspace: string, options?: EmbeddedTerminalSpawnOptions): Promise<EmbeddedTerminalSession> => {
-      await guardAgentLaunchMemory(options);
-      return spawnEmbeddedTerminal(workspace, options);
+      const admission = await guardAgentLaunchMemory(options);
+      let launched = false;
+      try {
+        const session = await spawnEmbeddedTerminal(workspace, options);
+        launched = session.status === "running";
+        if (!launched) throw new Error(session.error ?? `Failed to launch ${session.title}.`);
+        return session;
+      } finally {
+        if (launched) settleLaunchAdmission(admission, 1);
+        else releaseLaunchAdmission(admission);
+      }
+    },
+  );
+  handle(
+    "embeddedTerminal:spawnBatch",
+    async (
+      _event,
+      workspace: string,
+      optionList: EmbeddedTerminalSpawnOptions[],
+    ): Promise<EmbeddedTerminalSession[]> => {
+      if (!Array.isArray(optionList) || optionList.length < 1 || optionList.length > MAX_UI_TERMINAL_SPAWN_COUNT) {
+        throw new Error(`Terminal batch must contain 1-${MAX_UI_TERMINAL_SPAWN_COUNT} entries.`);
+      }
+      const kind = optionList[0]?.kind ?? "shell";
+      if (optionList.some((options) => (options.kind ?? "shell") !== kind)) {
+        throw new Error("A terminal batch must use one agent kind so memory can be reserved atomically.");
+      }
+      const admission = await guardAgentLaunchMemory(optionList[0], optionList.length);
+      const sessions: EmbeddedTerminalSession[] = [];
+      let runningCount = 0;
+      try {
+        for (const [index, options] of optionList.entries()) {
+          const staggerMs = launchStaggerDelayMs(kind, index);
+          if (staggerMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, staggerMs));
+          const session = await spawnEmbeddedTerminal(workspace, options);
+          sessions.push(session);
+          if (session.status !== "running") {
+            throw new Error(session.error ?? `Failed to launch ${session.title}.`);
+          }
+          runningCount += 1;
+        }
+        return sessions;
+      } finally {
+        if (runningCount > 0) settleLaunchAdmission(admission, runningCount);
+        else releaseLaunchAdmission(admission);
+      }
     },
   );
   handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> => writeEmbeddedTerminal(id, data));

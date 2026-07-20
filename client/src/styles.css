@@ -1166,6 +1166,31 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .slotPane.dropTarget {
   border-color: rgba(216, 194, 143, .5);
 }
+.terminalPaneResizeHandle {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 7px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.terminalPaneResizeHandle::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 2px;
+  width: 20px;
+  height: 1px;
+  background: var(--line-strong);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.terminalPane:hover .terminalPaneResizeHandle::after,
+.terminalPaneResizeHandle:focus-visible::after {
+  opacity: 1;
+}
 .terminalChrome {
   min-height: 34px;
   padding: 0 12px;

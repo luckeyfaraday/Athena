@@ -9,7 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { BackendClient, type BackendStatus, type ElectronControlStatus } from "./api";
-import { desktop, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
+import { desktop, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type GraphicsPreference, type GraphicsRuntimeStatus, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
 import { AppSidebar, AthenaMark } from "./components/AppSidebar";
 import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -31,7 +31,7 @@ import {
   type LoadState,
 } from "./app-state";
 import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
-import { classifyTerminalAttention, mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
+import { mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
 import { handoffLaunchOptions, type HandoffAgentKind } from "./handoff-launch";
 import {
   applyAgentSessionRenames,
@@ -59,6 +59,11 @@ const terminalFocusStorageKey = "context-workspace:terminalFocus";
 const appRefreshIntervalMs = 15_000;
 const nativeSessionRefreshIntervalMs = 60_000;
 const uiThemeStyleElementId = "athena-selected-ui-theme";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
   monolith: () => import("./themes/monolith.css?raw"),
   press: () => import("./themes/press.css?raw"),
@@ -244,6 +249,7 @@ export function App() {
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [launchState, setLaunchState] = useState<AthenaLaunchState | null>(null);
+  const [graphicsStatus, setGraphicsStatus] = useState<GraphicsRuntimeStatus | null>(null);
   const [restoreRequest, setRestoreRequest] = useState<{ workspaceKey: string; nonce: number } | null>(null);
   const backendRefreshInFlight = useRef(false);
   const dataRefreshInFlight = useRef(false);
@@ -301,6 +307,12 @@ export function App() {
     setTerminalFocusState(focused);
     writeTerminalFocus(focused);
     if (focused) setActiveRoom("command");
+  }
+
+  function updateGraphicsPreference(preference: GraphicsPreference) {
+    void desktop.setGraphicsPreference(preference)
+      .then(setGraphicsStatus)
+      .catch((err) => setError(String(err)));
   }
 
   const client = useMemo(() => {
@@ -542,6 +554,7 @@ export function App() {
         }
       })
       .catch(() => undefined);
+    desktop.getGraphicsStatus().then(setGraphicsStatus).catch(() => undefined);
   }, [refreshData, refreshElectronControl, refreshSessions, sessionRenames]);
 
   useEffect(() => {
@@ -609,10 +622,8 @@ export function App() {
     const removeWorkspaceClose = desktop.onWorkspaceClose(({ workspace: closedWorkspace }) => {
       closeWorkspaceTab(closedWorkspace);
     });
-    const removeData = desktop.onEmbeddedTerminalData((payload) => {
-      if (!workspaceAttentionKeyForSession(payload.id)) return;
-      const kind = classifyTerminalAttention(payload.data);
-      if (kind) markWorkspaceAttention(payload.id, kind);
+    const removeAttention = desktop.onEmbeddedTerminalAttention((payload) => {
+      markWorkspaceAttention(payload.id, payload.kind);
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       markWorkspaceAttention(payload.id, "update");
@@ -624,7 +635,7 @@ export function App() {
       removeSession();
       removeWorkspaceOpen();
       removeWorkspaceClose();
-      removeData();
+      removeAttention();
       removeExit();
     };
   }, []);
@@ -826,20 +837,7 @@ export function App() {
         rows: 28,
         sessionLabel: kind === "shell" || kind === "hermes" ? undefined : "New",
       }));
-      const created: EmbeddedTerminalSession[] = [];
-
-      for (const [index, options] of launchOptions.entries()) {
-        if ((kind === "opencode" || kind === "athena" || kind === "grok") && index > 0) await delay(650);
-        created.push(
-          await desktop.spawnEmbeddedTerminal(workspace, {
-            kind,
-            title: options.title,
-            cols: options.cols,
-            rows: options.rows,
-            sessionLabel: options.sessionLabel,
-          }),
-        );
-      }
+      const created = await desktop.spawnEmbeddedTerminals(workspace, launchOptions);
       setEmbeddedSessions((current) => count > 1
         ? [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]
         : appendEmbeddedSessions(current, created));
@@ -1285,6 +1283,7 @@ export function App() {
                 terminalFocus={terminalFocus}
                 performance={performanceDiagnostics}
                 launchState={launchState}
+                graphics={graphicsStatus}
                 onSelectWorkspace={selectWorkspace}
                 onRestartBackend={restartBackend}
                 onRestartControl={restartElectronControl}
@@ -1293,6 +1292,7 @@ export function App() {
                 onInterfaceModeChange={setInterfaceMode}
                 onThemeChange={setUiTheme}
                 onTerminalFocusChange={setTerminalFocus}
+                onGraphicsPreferenceChange={updateGraphicsPreference}
               />
             )}
 
@@ -1368,8 +1368,4 @@ function AppTitleBar({
       </div>
     </header>
   );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }

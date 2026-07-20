@@ -1,4 +1,4 @@
-import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   Code2,
@@ -28,6 +28,11 @@ import {
   writeDeletedAgentSessions,
 } from "../session-utils";
 import { normalizeWorkspaceKey, sameWorkspacePath } from "../workspace-utils";
+import {
+  clampTerminalPaneHeight,
+  reconcileTerminalPaneHeights,
+  terminalFocusAfterCollapse,
+} from "../pane-layout";
 
 type PaneDragState = {
   id: string;
@@ -85,15 +90,18 @@ export function CommandRoom({
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
   const [activeTerminalPaneByWorkspace, setActiveTerminalPaneByWorkspace] = useState<Record<string, string>>({});
+  const [paneHeightsByWorkspace, setPaneHeightsByWorkspace] = useState<Record<string, Record<string, number>>>({});
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
+  const paneSetSignatureByWorkspaceRef = useRef(new Map<string, string>());
   const newMenuRef = useRef<HTMLDivElement | null>(null);
   const workspaceOrderKey = normalizeWorkspaceKey(workspace || "none");
   const sessionIds = sessions.map((session) => session.id);
   const sessionSignature = sessionIds.join("|");
   const paneOrder = paneOrderByWorkspace[workspaceOrderKey] ?? sessionIds;
   const activeTerminalPaneId = activeTerminalPaneByWorkspace[workspaceOrderKey] ?? null;
+  const paneHeights = paneHeightsByWorkspace[workspaceOrderKey] ?? {};
 
   useEffect(() => {
     setPaneOrderByWorkspace((current) => {
@@ -154,6 +162,27 @@ export function CommandRoom({
   const runningAgentSessions = visibleAgentSessions.filter((session) => session.status === "running").length;
 
   useEffect(() => {
+    const previousSignature = paneSetSignatureByWorkspaceRef.current.get(workspaceOrderKey);
+    paneSetSignatureByWorkspaceRef.current.set(workspaceOrderKey, visibleSessionKey);
+    setPaneHeightsByWorkspace((current) => {
+      const existing = current[workspaceOrderKey] ?? {};
+      const next = reconcileTerminalPaneHeights(
+        existing,
+        visibleSessions.map((session) => session.id),
+        previousSignature !== undefined && previousSignature !== visibleSessionKey,
+      );
+      if (next === existing) return current;
+      if (Object.keys(next).length === 0) {
+        if (!current[workspaceOrderKey]) return current;
+        const withoutWorkspace = { ...current };
+        delete withoutWorkspace[workspaceOrderKey];
+        return withoutWorkspace;
+      }
+      return { ...current, [workspaceOrderKey]: next };
+    });
+  }, [visibleSessionKey, workspaceOrderKey]);
+
+  useEffect(() => {
     setDeletedSessionKeys(readDeletedAgentSessions(workspace));
   }, [workspace]);
 
@@ -191,6 +220,24 @@ export function CommandRoom({
   }, [newMenuOpen]);
 
   function togglePaneCollapsed(sessionId: string) {
+    const collapsing = !collapsedPaneIds.has(sessionId);
+    if (collapsing) {
+      const nextActive = terminalFocusAfterCollapse(
+        sessionId,
+        activeTerminalPaneId,
+        visibleSessions.map((session) => session.id),
+        collapsedPaneIds,
+      );
+      setActiveTerminalPaneByWorkspace((current) => {
+        if (nextActive) return current[workspaceOrderKey] === nextActive
+          ? current
+          : { ...current, [workspaceOrderKey]: nextActive };
+        if (!current[workspaceOrderKey]) return current;
+        const next = { ...current };
+        delete next[workspaceOrderKey];
+        return next;
+      });
+    }
     setCollapsedPaneIds((current) => {
       const next = new Set(current);
       if (next.has(sessionId)) next.delete(sessionId);
@@ -281,6 +328,49 @@ export function CommandRoom({
     chrome.addEventListener("pointercancel", end);
   }
 
+  function startPaneResize(event: ReactPointerEvent<HTMLDivElement>, sessionId: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    const handle = event.currentTarget;
+    const pane = handle.closest<HTMLElement>("[data-pane-id]");
+    const stage = pane?.parentElement;
+    if (!pane || !stage) return;
+    handle.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = pane.getBoundingClientRect().height;
+    let pendingHeight = startHeight;
+    let resizeFrame: number | null = null;
+
+    const commitHeight = () => {
+      resizeFrame = null;
+      const nextHeight = clampTerminalPaneHeight(pendingHeight, stage.clientHeight);
+      setPaneHeightsByWorkspace((current) => ({
+        ...current,
+        [workspaceOrderKey]: {
+          ...(current[workspaceOrderKey] ?? {}),
+          [sessionId]: nextHeight,
+        },
+      }));
+    };
+    const move = (moveEvent: PointerEvent) => {
+      pendingHeight = startHeight + moveEvent.clientY - startY;
+      if (resizeFrame == null) {
+        resizeFrame = window.requestAnimationFrame(commitHeight);
+      }
+    };
+    const end = () => {
+      if (resizeFrame != null) window.cancelAnimationFrame(resizeFrame);
+      commitHeight();
+      if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+
   async function submitBroadcastPrompt() {
     const trimmed = broadcastPrompt.trim();
     if (!trimmed || promptTargets.length === 0 || broadcasting) return;
@@ -363,6 +453,17 @@ export function CommandRoom({
         >
           {visibleSessions.map((session) => {
             const displayed = displayedTerminalSessions.some((item) => item.id === session.id);
+            const customHeight = !collapsedPaneIds.has(session.id) && activeMaximizedPaneId !== session.id
+              ? paneHeights[session.id]
+              : undefined;
+            const paneStyle: CSSProperties = {
+              position: "relative",
+              resize: "none",
+              ...(customHeight ? { height: `${customHeight}px` } : {}),
+              ...(dragState?.id === session.id
+                ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
+                : {}),
+            };
             return (
             <div
               key={session.id}
@@ -379,11 +480,7 @@ export function CommandRoom({
               aria-hidden={!displayed}
               aria-label={`${session.title} terminal pane`}
               onPointerDownCapture={() => setActiveTerminalPaneForWorkspace(workspaceOrderKey, session.id)}
-              style={
-                dragState?.id === session.id
-                  ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
-                  : undefined
-              }
+              style={paneStyle}
             >
               <div
                 className="terminalChrome draggableChrome"
@@ -419,7 +516,16 @@ export function CommandRoom({
               {displayed && !collapsedPaneIds.has(session.id) && (
                 interfaceMode === "chat"
                   ? <EmbeddedChatTerminal session={session} />
-                  : <EmbeddedTerminal session={session} active={displayed} />
+                  : <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
+              )}
+              {displayed && !collapsedPaneIds.has(session.id) && activeMaximizedPaneId !== session.id && (
+                <div
+                  className="terminalPaneResizeHandle"
+                  role="separator"
+                  aria-label={`Resize ${session.title}`}
+                  aria-orientation="horizontal"
+                  onPointerDown={(event) => startPaneResize(event, session.id)}
+                />
               )}
             </div>
             );

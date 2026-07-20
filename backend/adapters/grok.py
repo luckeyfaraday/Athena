@@ -32,7 +32,10 @@ class GrokAdapter:
 
     def summarize_result(self, run: Run, artifacts: RunArtifacts) -> str:
         if artifacts.stdout.exists():
-            result = artifacts.stdout.read_text(encoding="utf-8").strip()
+            # Run logs are bounded as raw process bytes. A byte-budget cutoff
+            # can land between UTF-8 code units, and third-party CLIs may emit
+            # non-UTF-8 diagnostics. Keep result summarization recoverable.
+            result = artifacts.stdout.read_text(encoding="utf-8", errors="replace").strip()
             if result:
                 return result
         return f"{run.agent_id} completed without a captured final message."

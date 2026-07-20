@@ -1,7 +1,13 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Bot, CheckCircle2, Code2, FileText, Play, ScrollText, Sparkles, TerminalSquare, XCircle } from "lucide-react";
 import type { RecallSourceSession, WorkspaceSnapshot } from "../api";
-import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession } from "../electron";
+import {
+  desktop,
+  type AgentSession,
+  type EmbeddedTerminalDataPayload,
+  type EmbeddedTerminalKind,
+  type EmbeddedTerminalSession,
+} from "../electron";
 import { agentSessionDotStatus, embeddedSessionDotStatus, inspectorStatusView, StatusDot, StatusPill } from "../components/status";
 import {
   byteLength,
@@ -576,25 +582,11 @@ function SessionInspector({
     }
 
     let cancelled = false;
-    desktop
-      .getEmbeddedTerminalBuffer(terminalId)
-      .then((content) => {
-        if (!cancelled) setBuffer(tailBuffer(content, inspectorBufferTailChars));
-      })
-      .catch((error) => {
-        if (!cancelled) setBuffer(String(error));
-      });
-    return () => {
-      cancelled = true;
-      if (flushTimerRef.current !== null) {
-        window.clearTimeout(flushTimerRef.current);
-        flushTimerRef.current = null;
-      }
-    };
-  }, [terminalId]);
-
-  useEffect(() => {
-    if (!terminalId) return undefined;
+    let attached = false;
+    let streamEpoch: string | null = null;
+    let throughSequence = 0;
+    let attachGeneration = 0;
+    const beforeAttach: EmbeddedTerminalDataPayload[] = [];
     const flushPending = () => {
       flushTimerRef.current = null;
       const pending = pendingBufferRef.current;
@@ -602,19 +594,57 @@ function SessionInspector({
       if (!pending) return;
       setBuffer((current) => tailBuffer(`${current}${pending}`, inspectorBufferTailChars));
     };
-    const removeData = desktop.onEmbeddedTerminalDataFor(terminalId, (payload) => {
-      pendingBufferRef.current += payload.data;
-      if (flushTimerRef.current === null) {
-        flushTimerRef.current = window.setTimeout(flushPending, inspectorBufferFlushMs);
+    const applyPayload = (payload: EmbeddedTerminalDataPayload) => {
+      if (!attached) {
+        beforeAttach.push(payload);
+        return;
       }
-    });
+      if (payload.epoch !== streamEpoch || (!payload.reset && payload.fromSequence > throughSequence + 1)) {
+        void attachStream();
+        return;
+      }
+      if (payload.sequence <= throughSequence) return;
+      throughSequence = payload.sequence;
+      if (payload.reset) {
+        if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+        pendingBufferRef.current = "";
+        setBuffer(tailBuffer(payload.data, inspectorBufferTailChars));
+      } else {
+        pendingBufferRef.current += payload.data;
+        if (flushTimerRef.current === null) {
+          flushTimerRef.current = window.setTimeout(flushPending, inspectorBufferFlushMs);
+        }
+      }
+    };
+    const attachStream = async () => {
+      const generation = ++attachGeneration;
+      attached = false;
+      const snapshot = await desktop.attachEmbeddedTerminalStream(terminalId).catch(() => null);
+      if (!snapshot || cancelled || generation !== attachGeneration) return;
+      streamEpoch = snapshot.epoch;
+      throughSequence = snapshot.throughSequence;
+      pendingBufferRef.current = "";
+      setBuffer(tailBuffer(snapshot.buffer, inspectorBufferTailChars));
+      attached = true;
+      const deferred = beforeAttach.splice(0);
+      for (const payload of deferred) {
+        if (payload.epoch === snapshot.epoch && payload.sequence <= snapshot.throughSequence) continue;
+        applyPayload(payload);
+      }
+    };
+    const removeData = desktop.onEmbeddedTerminalDataFor(terminalId, applyPayload);
+    void attachStream();
     return () => {
+      cancelled = true;
+      attachGeneration += 1;
       removeData();
       if (flushTimerRef.current !== null) {
         window.clearTimeout(flushTimerRef.current);
         flushTimerRef.current = null;
       }
       pendingBufferRef.current = "";
+      beforeAttach.length = 0;
     };
   }, [terminalId]);
 

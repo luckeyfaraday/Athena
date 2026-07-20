@@ -1,8 +1,14 @@
 import { DragEvent, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ILink, type ITheme } from "@xterm/xterm";
-import { desktop, type EmbeddedTerminalSession } from "../electron";
+import {
+  desktop,
+  type EmbeddedTerminalDataPayload,
+  type EmbeddedTerminalExitPayload,
+  type EmbeddedTerminalSession,
+} from "../electron";
 import { terminalUsesMouseWheelProtocol } from "../embedded-scroll";
+import { subscribeTerminalWindowReturn } from "../terminal-lifecycle";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = {
@@ -10,7 +16,8 @@ type Props = {
   active?: boolean;
 };
 
-const MAX_PENDING_XTERM_OUTPUT_CHARS = 64_000;
+type FitRequest = { refresh?: boolean; focus?: boolean };
+const EXIT_STREAM_RECOVERY_MS = 2_500;
 
 export function EmbeddedTerminal({ session, active = true }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -18,6 +25,7 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const activeRef = useRef(active);
   const lastResizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const scheduleFitRef = useRef<((request?: FitRequest) => void) | null>(null);
   const dragDepthRef = useRef(0);
   const [imageDropActive, setImageDropActive] = useState(false);
 
@@ -30,9 +38,9 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     if (!container) return;
 
     const terminal = new Terminal({
-      // Blinking cursors keep xterm repainting even when output is idle. Athena
-      // disables GPU compositing on Linux by default, so avoid that continuous
-      // software-render cost across every visible terminal pane.
+      // Blinking cursors keep xterm repainting even when output is idle. Keep
+      // this disabled in both accelerated and crash-safe graphics modes so a
+      // workspace with several visible panes remains genuinely idle.
       cursorBlink: false,
       cursorStyle: "block",
       fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, monospace",
@@ -52,62 +60,216 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     terminal.open(container);
     terminalRef.current = terminal;
     fitRef.current = fit;
-    fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current, lastResizeRef);
-    if (activeRef.current) terminal.focus();
-
     let disposed = false;
     let writeInFlight = false;
-    let pendingWrite = "";
+    let attachResolved = false;
+    let streamEpoch: string | null = null;
+    let appliedSequence = 0;
+    let queuedThroughSequence = 0;
+    let attachGeneration = 0;
+    let pendingExit: EmbeddedTerminalExitPayload | null = null;
+    let exitQueued = false;
+    let exitReattachAttempted = false;
+    let exitRecoveryTimer = 0;
+    const pendingWrites: Array<{
+      data: string;
+      epoch: string;
+      sequence: number;
+      acknowledge: boolean;
+      reset: boolean;
+      refresh: boolean;
+    }> = [];
+    const beforeAttach: EmbeddedTerminalDataPayload[] = [];
     let refreshAfterWrite = false;
+    const enqueuePendingExit = () => {
+      if (!pendingExit || exitQueued || !attachResolved) return;
+      if (pendingExit.epoch && streamEpoch && pendingExit.epoch !== streamEpoch) {
+        if (!exitReattachAttempted) {
+          exitReattachAttempted = true;
+          void attachStream();
+          return;
+        }
+        // Main retains final output briefly after exit. If that state expired
+        // before this view attached, the old exit cursor can never belong to
+        // the replacement epoch. Render one explicit gap plus the exit once;
+        // repeatedly reattaching here otherwise creates an infinite loop.
+        const exit = pendingExit;
+        pendingExit = null;
+        exitQueued = true;
+        if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
+        exitRecoveryTimer = 0;
+        pendingWrites.push({
+          data: `\r\n\x1b[33m[Athena: final terminal history expired before this view attached]\x1b[0m\r\n`
+            + `\x1b[33m[process exited: ${exit.exitCode ?? "unknown"}]\x1b[0m\r\n`,
+          epoch: streamEpoch,
+          sequence: queuedThroughSequence,
+          acknowledge: false,
+          reset: false,
+          refresh: true,
+        });
+        drainWrites();
+        return;
+      }
+      const throughSequence = pendingExit.throughSequence ?? queuedThroughSequence;
+      if (throughSequence > queuedThroughSequence) {
+        if (!exitRecoveryTimer) {
+          exitRecoveryTimer = window.setTimeout(() => {
+            exitRecoveryTimer = 0;
+            if (pendingExit && !exitQueued) void attachStream();
+          }, EXIT_STREAM_RECOVERY_MS);
+        }
+        return;
+      }
+      const exit = pendingExit;
+      pendingExit = null;
+      exitQueued = true;
+      if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
+      exitRecoveryTimer = 0;
+      pendingWrites.push({
+        data: `\r\n\x1b[33m[process exited: ${exit.exitCode ?? "unknown"}]\x1b[0m\r\n`,
+        epoch: streamEpoch ?? "",
+        sequence: throughSequence,
+        acknowledge: false,
+        reset: false,
+        refresh: true,
+      });
+      drainWrites();
+    };
     const drainWrites = () => {
-      if (disposed || writeInFlight || !pendingWrite) return;
-      const data = pendingWrite;
-      pendingWrite = "";
+      if (disposed || writeInFlight || pendingWrites.length === 0) return;
+      const write = pendingWrites.shift();
+      if (!write) return;
       writeInFlight = true;
-      terminal.write(data, () => {
+      if (write.reset) terminal.reset();
+      const complete = () => {
+        // A reattach can replace the stream epoch while xterm is still
+        // draining one old write. Its completion/ACK is harmless, but its old
+        // sequence must not advance the cursor for the replacement epoch or
+        // fresh payloads could be mistaken for duplicates.
+        if (write.epoch === streamEpoch) {
+          appliedSequence = Math.max(appliedSequence, write.sequence);
+        }
+        if (write.acknowledge) {
+          desktop.ackEmbeddedTerminalData(session.id, write.epoch, write.sequence);
+        }
         writeInFlight = false;
-        if (refreshAfterWrite && !pendingWrite) {
+        refreshAfterWrite ||= write.refresh;
+        if (refreshAfterWrite && pendingWrites.length === 0) {
           refreshAfterWrite = false;
           refreshTerminal(terminal);
         }
         drainWrites();
-      });
+      };
+      if (write.data) terminal.write(write.data, complete);
+      else complete();
     };
-    const enqueueWrite = (data: string, refresh = false) => {
-      const combined = `${pendingWrite}${data}`;
-      pendingWrite = combined.length > MAX_PENDING_XTERM_OUTPUT_CHARS
-        ? combined.slice(-MAX_PENDING_XTERM_OUTPUT_CHARS)
-        : combined;
-      refreshAfterWrite ||= refresh;
+
+    const enqueuePayload = (payload: EmbeddedTerminalDataPayload) => {
+      if (!attachResolved) {
+        beforeAttach.push(payload);
+        return;
+      }
+      if (payload.epoch !== streamEpoch) {
+        void attachStream();
+        return;
+      }
+      if (payload.sequence <= appliedSequence) {
+        desktop.ackEmbeddedTerminalData(session.id, payload.epoch, payload.sequence);
+        return;
+      }
+      if (payload.sequence <= queuedThroughSequence) {
+        // A retry can arrive while its first copy is still being parsed. The
+        // first copy's completion callback will ACK it; never enqueue it twice.
+        return;
+      }
+      if (!payload.reset && payload.fromSequence > queuedThroughSequence + 1) {
+        // A sequence gap means this view cannot safely continue from its local
+        // parser state. Rebase atomically from the rolling snapshot.
+        void attachStream();
+        return;
+      }
+      if (payload.reset) {
+        pendingWrites.length = 0;
+      }
+      queuedThroughSequence = payload.sequence;
+      pendingWrites.push({
+        data: payload.data,
+        epoch: payload.epoch,
+        sequence: payload.sequence,
+        acknowledge: true,
+        reset: payload.reset,
+        refresh: payload.reset,
+      });
+      enqueuePendingExit();
       drainWrites();
     };
 
-    void desktop.attachEmbeddedTerminalBuffer(session.id)
-      .then((buffer) => {
-        if (!buffer || terminalRef.current !== terminal) return;
-        enqueueWrite(buffer, true);
-      })
-      .catch(() => undefined);
+    const attachStream = async () => {
+      const generation = ++attachGeneration;
+      attachResolved = false;
+      const snapshot = await desktop.attachEmbeddedTerminalStream(session.id).catch(() => null);
+      if (!snapshot || disposed || generation !== attachGeneration || terminalRef.current !== terminal) return;
+      streamEpoch = snapshot.epoch;
+      appliedSequence = 0;
+      queuedThroughSequence = snapshot.throughSequence;
+      pendingWrites.length = 0;
+      pendingWrites.push({
+        data: snapshot.buffer,
+        epoch: snapshot.epoch,
+        sequence: snapshot.throughSequence,
+        acknowledge: false,
+        reset: true,
+        refresh: true,
+      });
+      attachResolved = true;
+      const deferred = beforeAttach.splice(0);
+      for (const payload of deferred) {
+        if (payload.epoch === snapshot.epoch && payload.sequence <= snapshot.throughSequence) continue;
+        enqueuePayload(payload);
+      }
+      enqueuePendingExit();
+      drainWrites();
+    };
 
     const dataDisposable = terminal.onData((data) => {
       void desktop.writeEmbeddedTerminal(session.id, data).catch(() => undefined);
     });
 
-    const removeData = desktop.onEmbeddedTerminalDataFor(session.id, (payload) => {
-      enqueueWrite(payload.data);
-    });
+    const removeData = desktop.onEmbeddedTerminalDataFor(session.id, enqueuePayload, { ackMode: "manual" });
+    void attachStream();
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
-      if (payload.id === session.id) terminal.writeln(`\r\n\x1b[33m[process exited: ${payload.exitCode ?? "unknown"}]\x1b[0m`);
+      if (payload.id !== session.id || exitQueued) return;
+      pendingExit = payload;
+      exitReattachAttempted = false;
+      enqueuePendingExit();
     });
 
-    const resize = () => {
-      fitVisibleTerminal(container, terminal, fit, session.id, activeRef.current, lastResizeRef);
+    let fitFrame = 0;
+    let pendingFitRequest: FitRequest = {};
+    const scheduleFit = (request: FitRequest = {}) => {
+      pendingFitRequest = {
+        refresh: pendingFitRequest.refresh || request.refresh,
+        focus: pendingFitRequest.focus || request.focus,
+      };
+      if (fitFrame) return;
+      fitFrame = window.requestAnimationFrame(() => {
+        fitFrame = 0;
+        const next = pendingFitRequest;
+        pendingFitRequest = {};
+        fitVisibleTerminal(container, terminal, fit, session.id, lastResizeRef);
+        if (next.refresh) refreshTerminal(terminal);
+        if (next.focus && activeRef.current) terminal.focus();
+      });
     };
-    const observer = new ResizeObserver(resize);
+    scheduleFitRef.current = scheduleFit;
+    const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(container);
-    window.setTimeout(resize, 50);
+    scheduleFit({ refresh: true, focus: activeRef.current });
+    const handleWindowReturn = () => scheduleFit({ refresh: true, focus: activeRef.current });
+    const removeWindowReturn = subscribeTerminalWindowReturn(handleWindowReturn);
     const themeObserver = new MutationObserver(() => {
       terminal.options.theme = readTerminalTheme();
+      scheduleFit({ refresh: true });
     });
     themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-theme-loaded"] });
 
@@ -119,8 +281,13 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
 
     return () => {
       disposed = true;
-      pendingWrite = "";
+      attachGeneration += 1;
+      if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
+      pendingWrites.length = 0;
+      beforeAttach.length = 0;
       container.removeEventListener("wheel", stopWheelPropagation);
+      removeWindowReturn();
+      if (fitFrame) window.cancelAnimationFrame(fitFrame);
       observer.disconnect();
       themeObserver.disconnect();
       removeData();
@@ -130,36 +297,14 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
+      scheduleFitRef.current = null;
     };
   }, [session.id]);
 
   useEffect(() => {
     activeRef.current = active;
-    if (!active) return;
-    // Force PTY resize on next fit so the backend re-emits SIGWINCH and TUI apps redraw
-    // after tab/workspace switches that left the pane visually stale.
-    lastResizeRef.current = null;
-    const refit = () => {
-      const container = containerRef.current;
-      const terminal = terminalRef.current;
-      const fit = fitRef.current;
-      if (!container || !terminal || !fit) return;
-      fitVisibleTerminal(container, terminal, fit, session.id, true, lastResizeRef);
-      refreshTerminal(terminal);
-      terminal.focus();
-    };
-    let raf1 = 0;
-    let raf2 = 0;
-    raf1 = window.requestAnimationFrame(() => {
-      raf2 = window.requestAnimationFrame(refit);
-    });
-    const timers = [80, 240].map((delay) => window.setTimeout(refit, delay));
-    return () => {
-      timers.forEach((timer) => window.clearTimeout(timer));
-      window.cancelAnimationFrame(raf1);
-      window.cancelAnimationFrame(raf2);
-    };
-  }, [active, session.id]);
+    scheduleFitRef.current?.({ refresh: true, focus: active });
+  }, [active]);
 
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
     if (!hasImageFiles(event.dataTransfer)) return;
@@ -265,10 +410,9 @@ function fitVisibleTerminal(
   terminal: Terminal,
   fit: FitAddon,
   sessionId: string,
-  active: boolean,
   lastResizeRef: { current: { cols: number; rows: number } | null },
 ) {
-  if (!active || !hasUsableTerminalSize(container)) return;
+  if (!hasUsableTerminalSize(container)) return;
   try {
     fit.fit();
     const nextSize = { cols: terminal.cols, rows: terminal.rows };

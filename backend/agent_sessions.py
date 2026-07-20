@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import os
@@ -9,16 +10,27 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import threading
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from itertools import chain, islice
 from pathlib import Path
-from typing import Any, Literal
-from urllib.parse import unquote
+from typing import Any, Generator, Literal
+from urllib.parse import quote, unquote
 
 
 AgentSessionProvider = Literal["codex", "opencode", "athena", "claude", "hermes", "grok"]
 AgentSessionStatus = Literal["historical"]
 MAX_PROVIDER_ROWS = 1000
+MAX_FILE_SCAN_DIRS = 160
+MAX_FILE_SCAN_ENTRIES = 1200
+CLAUDE_METADATA_MAX_LINES = 200
+GROK_METADATA_MAX_LINES = 200
+HERMES_WORKSPACE_HINT_MAX_BYTES = 8192
+HERMES_WORKSPACE_HINT_MAX_MESSAGES = 8
+MAX_HERMES_ROWS_INSPECTED = MAX_FILE_SCAN_ENTRIES
+HERMES_METADATA_CACHE_MAX_ENTRIES = 2048
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +40,61 @@ logger = logging.getLogger(__name__)
 # escape the provider's session directory. This guards the function directly
 # rather than relying on the HTTP router to reject "/" in the path segment.
 _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+_PATH_HINT_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)[^\s\"'`]{2,1024}")
+_HermesFileSignature = tuple[int, int, int]
+_HermesMetadataCacheEntry = tuple[_HermesFileSignature, dict[str, str | None]]
+_hermes_metadata_cache: OrderedDict[str, _HermesMetadataCacheEntry] = OrderedDict()
+_hermes_metadata_cache_lock = threading.Lock()
+
+
+class _BoundedTextJoiner:
+    """Build an exact UTF-8 head or tail without retaining the whole result."""
+
+    def __init__(self, separator: str, *, max_bytes: int, tail: bool) -> None:
+        self._separator = separator
+        self._max_bytes = max(1, max_bytes)
+        self._tail = tail
+        self._data = bytearray()
+        self._has_item = False
+
+    @property
+    def full(self) -> bool:
+        return not self._tail and len(self._data) >= self._max_bytes
+
+    def add(self, text: str) -> None:
+        if self._has_item:
+            self._append_text(self._separator)
+        self._has_item = True
+        self._append_text(text)
+
+    def _append_text(self, text: str) -> None:
+        # Encode in modest pieces so appending a large tool response does not
+        # create another full-size byte copy alongside the decoded JSON value.
+        for offset in range(0, len(text), 16_384):
+            if self.full:
+                return
+            self._append_bytes(text[offset : offset + 16_384].encode("utf-8"))
+
+    def _append_bytes(self, data: bytes) -> None:
+        if not data:
+            return
+        if self._tail:
+            if len(data) >= self._max_bytes:
+                self._data = bytearray(data[-self._max_bytes :])
+                return
+            self._data.extend(data)
+            # Trim in batches to avoid shifting a max-sized bytearray for every
+            # small transcript fragment.
+            if len(self._data) > self._max_bytes * 2:
+                self._data = self._data[-self._max_bytes :]
+            return
+        remaining = self._max_bytes - len(self._data)
+        if remaining > 0:
+            self._data.extend(data[:remaining])
+
+    def text(self) -> str:
+        data = self._data[-self._max_bytes :] if self._tail else self._data
+        return data.decode("utf-8", errors="replace")
 
 
 def _validate_session_id(session_id: str) -> str:
@@ -126,22 +193,22 @@ def read_agent_session_transcript(
     normalized_id = _validate_session_id(session_id)
     home = Path(home_dir).expanduser().resolve() if home_dir is not None else Path.home()
     if provider == "opencode":
-        markdown = _read_opencode_transcript(normalized_id, home)
+        markdown = _read_opencode_transcript(normalized_id, home, max_bytes=max_bytes, tail=tail)
     elif provider == "athena":
-        markdown = _read_athena_transcript(normalized_id, home)
+        markdown = _read_athena_transcript(normalized_id, home, max_bytes=max_bytes, tail=tail)
     elif provider == "claude":
-        markdown = _read_claude_transcript(normalized_id, home)
+        markdown = _read_claude_transcript(normalized_id, home, max_bytes=max_bytes, tail=tail)
     elif provider == "hermes":
-        markdown = _read_hermes_transcript(normalized_id, home)
+        markdown = _read_hermes_transcript(normalized_id, home, max_bytes=max_bytes, tail=tail)
     elif provider == "codex":
-        markdown = _read_codex_transcript(normalized_id, home)
+        markdown = _read_codex_transcript(normalized_id, home, max_bytes=max_bytes, tail=tail)
     elif provider == "grok":
-        markdown = _read_grok_transcript(normalized_id, home)
+        markdown = _read_grok_transcript(normalized_id, home, max_bytes=max_bytes, tail=tail)
     else:
         raise ValueError(f"Unsupported session provider: {provider}")
     if not markdown:
         raise FileNotFoundError(f"{provider} session not found: {normalized_id}")
-    return _bounded_text(markdown, max_bytes=max_bytes, tail=tail)
+    return markdown
 
 
 def _read_codex_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
@@ -155,16 +222,23 @@ def _read_codex_sessions(workspace: Path | None, home: Path) -> list[AgentSessio
     seen_ids: set[str] = set()
 
     if db_path.exists():
+        workspace_sql = ""
+        params: tuple[Any, ...] = ()
+        if workspace is not None:
+            filter_sql, filter_params = _workspace_sql_filter("cwd", workspace)
+            workspace_sql = f"where {filter_sql}"
+            params = filter_params
         rows = _query_sqlite(
             db_path,
-            """
+            f"""
             select id, cwd, title, created_at_ms, updated_at_ms, git_branch,
                    cli_version, first_user_message, model, agent_role
             from threads
+            {workspace_sql}
             order by updated_at_ms desc
             limit ?
             """,
-            (MAX_PROVIDER_ROWS,),
+            (*params, MAX_PROVIDER_ROWS),
         )
         for row in rows:
             session_workspace = _string_value(row[1]) or (str(workspace) if workspace else "")
@@ -241,11 +315,68 @@ def _read_codex_jsonl_metadata(workspace: Path, home: Path) -> dict[str, dict[st
 
 
 def _recent_jsonl_files(root: Path, *, limit: int) -> list[Path]:
-    try:
-        files = [path for path in root.rglob("*.jsonl") if path.is_file()]
-    except OSError:
+    return _recent_files(root, limit=limit, suffix=".jsonl")
+
+
+def _recent_files(root: Path, *, limit: int, suffix: str, prefix: str = "") -> list[Path]:
+    """Return recent matching files while bounding traversal and retained state.
+
+    Provider directories are user-controlled and can contain years of history.
+    A fixed directory/entry budget prevents a discovery refresh from turning
+    into an unbounded recursive walk. Within that budget, a heap retains only
+    the requested newest paths.
+    """
+    if limit <= 0 or not root.is_dir():
         return []
-    return sorted(files, key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)[:limit]
+
+    heap: list[tuple[int, int, Path]] = []
+    directories = [root]
+    visited_dirs = 0
+    inspected_entries = 0
+    sequence = 0
+
+    while directories and visited_dirs < MAX_FILE_SCAN_DIRS and inspected_entries < MAX_FILE_SCAN_ENTRIES:
+        directory = directories.pop()
+        visited_dirs += 1
+        try:
+            with os.scandir(directory) as iterator:
+                entries = []
+                for entry in iterator:
+                    if inspected_entries >= MAX_FILE_SCAN_ENTRIES:
+                        break
+                    inspected_entries += 1
+                    entries.append(entry)
+        except OSError:
+            continue
+
+        # Date-based Codex directories sort newest-first. Push in ascending
+        # order because the stack pops from the end.
+        entries.sort(key=lambda entry: entry.name, reverse=True)
+        child_dirs: list[Path] = []
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    child_dirs.append(Path(entry.path))
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if not entry.name.endswith(suffix) or (prefix and not entry.name.startswith(prefix)):
+                continue
+            try:
+                modified_ns = entry.stat(follow_symlinks=False).st_mtime_ns
+            except OSError:
+                continue
+            sequence += 1
+            candidate = (modified_ns, sequence, Path(entry.path))
+            if len(heap) < limit:
+                heapq.heappush(heap, candidate)
+            elif candidate[:2] > heap[0][:2]:
+                heapq.heapreplace(heap, candidate)
+        directories.extend(reversed(child_dirs))
+
+    return [path for _mtime, _sequence, path in sorted(heap, reverse=True)]
 
 
 def _read_codex_jsonl_file_metadata(file_path: Path) -> dict[str, Any]:
@@ -337,17 +468,29 @@ def _copy_string_fields(metadata: dict[str, Any], source: dict[str, Any] | None,
             metadata[target_key] = value
 
 
-def _read_codex_transcript(session_id: str, home: Path) -> str:
-    metadata_by_id = _read_codex_jsonl_metadata_for_all(home)
-    metadata = metadata_by_id.get(session_id)
-    file_path_text = _metadata_string(metadata or {}, "jsonl_path")
-    if not file_path_text:
-        return ""
-    file_path = Path(file_path_text)
-    if not file_path.exists():
+def _read_codex_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
+    sessions_dir = home / ".codex" / "sessions"
+    if not sessions_dir.exists():
         return ""
 
-    lines = [f"# Codex Session Transcript\n\n- session: {session_id}"]
+    recent_files = _recent_jsonl_files(sessions_dir, limit=800)
+    file_path = next((path for path in recent_files if session_id in path.stem), None)
+    metadata: dict[str, Any] | None = None
+    if file_path is None:
+        # Older/variant Codex filenames may omit the id. Preserve compatibility
+        # while staying inside the bounded recent-file candidate set.
+        for candidate in recent_files:
+            candidate_metadata = _read_codex_jsonl_file_metadata(candidate)
+            if _metadata_string(candidate_metadata, "session_id") == session_id:
+                file_path = candidate
+                metadata = candidate_metadata
+                break
+    if file_path is None:
+        return ""
+    metadata = metadata or _read_codex_jsonl_file_metadata(file_path)
+
+    output = _BoundedTextJoiner("\n\n", max_bytes=max_bytes, tail=tail)
+    output.add(f"# Codex Session Transcript\n\n- session: {session_id}")
     for label, key in (
         ("workspace", "cwd"),
         ("model", "model"),
@@ -361,25 +504,29 @@ def _read_codex_transcript(session_id: str, home: Path) -> str:
         ("git commit", "git_commit_hash"),
         ("jsonl", "jsonl_path"),
     ):
-        value = _metadata_string(metadata or {}, key)
+        value = _metadata_string(metadata, key)
         if value:
-            lines.append(f"- {label}: {value}")
-    system_prompt = _metadata_string(metadata or {}, "system_prompt_excerpt")
+            output.add(f"- {label}: {value}")
+    system_prompt = _metadata_string(metadata, "system_prompt_excerpt")
     if system_prompt:
-        lines.extend(["", "## System Prompt Excerpt", "", system_prompt])
-    lines.extend(["", "## Events", ""])
+        for item in ("", "## System Prompt Excerpt", "", system_prompt):
+            output.add(item)
+    for item in ("", "## Events", ""):
+        output.add(item)
     try:
         with file_path.open("r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
+                if output.full:
+                    break
                 entry = _parse_json_object(line)
                 if not entry:
                     continue
                 rendered = _render_codex_event(entry)
                 if rendered:
-                    lines.append(rendered)
+                    output.add(rendered)
     except OSError:
         return ""
-    return "\n\n".join(lines)
+    return output.text()
 
 
 def _read_codex_jsonl_metadata_for_all(home: Path) -> dict[str, dict[str, Any]]:
@@ -428,17 +575,24 @@ def _read_opencode_sessions(workspace: Path | None, home: Path) -> list[AgentSes
     db_path = home / ".local" / "share" / "opencode" / "opencode.db"
     if not db_path.exists():
         return []
+    workspace_sql = ""
+    params: tuple[Any, ...] = ()
+    if workspace is not None:
+        filter_sql, filter_params = _workspace_sql_filter("coalesce(s.directory, p.worktree)", workspace)
+        workspace_sql = f"where {filter_sql}"
+        params = filter_params
     rows = _query_sqlite(
         db_path,
-        """
+        f"""
         select s.id, coalesce(s.directory, p.worktree), s.title, s.time_created,
                s.time_updated, s.agent, s.model, p.worktree
         from session s
         left join project p on s.project_id = p.id
+        {workspace_sql}
         order by s.time_updated desc
         limit ?
         """,
-        (MAX_PROVIDER_ROWS,),
+        (*params, MAX_PROVIDER_ROWS),
     )
     sessions: list[AgentSession] = []
     for row in rows:
@@ -468,7 +622,7 @@ def _read_opencode_sessions(workspace: Path | None, home: Path) -> list[AgentSes
     return sessions
 
 
-def _read_opencode_transcript(session_id: str, home: Path) -> str:
+def _read_opencode_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
     db_path = home / ".local" / "share" / "opencode" / "opencode.db"
     if not db_path.exists():
         return ""
@@ -485,7 +639,7 @@ def _read_opencode_transcript(session_id: str, home: Path) -> str:
     if not session_rows:
         return ""
 
-    rows = _query_sqlite(
+    rows = _iter_sqlite(
         db_path,
         """
         select m.id, m.data, p.id, p.data, coalesce(p.time_created, m.time_created)
@@ -497,23 +651,30 @@ def _read_opencode_transcript(session_id: str, home: Path) -> str:
         (session_id,),
     )
     header = _opencode_transcript_header(session_rows[0])
-    lines = [header, ""]
+    output = _BoundedTextJoiner("\n", max_bytes=max_bytes, tail=tail)
+    output.add(header)
+    output.add("")
     current_message = ""
-    for message_id, message_data, _part_id, part_data, _time in rows:
-        msg_id = _string_value(message_id)
-        if msg_id and msg_id != current_message:
-            current_message = msg_id
-            role = _json_string(message_data, "role") or "message"
-            agent = _json_string(message_data, "agent")
-            model = _json_string(message_data, "modelID") or _json_nested_string(message_data, "model", "modelID")
-            details = " / ".join(value for value in (agent, model) if value)
-            lines.append(f"## {role.title()}{f' ({details})' if details else ''}")
-            lines.append("")
-        rendered = _render_opencode_part(part_data)
-        if rendered:
-            lines.append(rendered)
-            lines.append("")
-    return "\n".join(lines).strip() + "\n"
+    try:
+        for message_id, message_data, _part_id, part_data, _time in rows:
+            if output.full:
+                break
+            msg_id = _string_value(message_id)
+            if msg_id and msg_id != current_message:
+                current_message = msg_id
+                role = _json_string(message_data, "role") or "message"
+                agent = _json_string(message_data, "agent")
+                model = _json_string(message_data, "modelID") or _json_nested_string(message_data, "model", "modelID")
+                details = " / ".join(value for value in (agent, model) if value)
+                output.add(f"## {role.title()}{f' ({details})' if details else ''}")
+                output.add("")
+            rendered = _render_opencode_part(part_data)
+            if rendered:
+                output.add(rendered)
+                output.add("")
+    finally:
+        rows.close()
+    return output.text()
 
 
 def _athena_index_path(home: Path) -> Path:
@@ -530,9 +691,15 @@ def _read_athena_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
     db_path = _athena_index_path(home)
     if not db_path.exists() or not _sqlite_user_version(db_path, minimum=2):
         return []
+    workspace_sql = ""
+    params: tuple[Any, ...] = ()
+    if workspace is not None:
+        filter_sql, filter_params = _workspace_sql_filter("m.workspace", workspace)
+        workspace_sql = f"and {filter_sql}"
+        params = filter_params
     rows = _query_sqlite(
         db_path,
-        """
+        f"""
         select m.session_id, m.workspace,
                (select text from messages first_user
                 where first_user.agent = 'athena'
@@ -545,14 +712,14 @@ def _read_athena_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
                max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end),
                count(*)
         from messages m
-        where m.agent = 'athena'
+        where m.agent = 'athena' {workspace_sql}
         group by m.session_id, m.workspace
         order by (max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) is null),
                  max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) desc,
                  max(id) desc
         limit ?
         """,
-        (MAX_PROVIDER_ROWS,),
+        (*params, MAX_PROVIDER_ROWS),
     )
     sessions: list[AgentSession] = []
     for row in rows:
@@ -583,11 +750,11 @@ def _read_athena_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
     return sessions
 
 
-def _read_athena_transcript(session_id: str, home: Path) -> str:
+def _read_athena_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
     db_path = _athena_index_path(home)
     if not db_path.exists() or not _sqlite_user_version(db_path, minimum=2):
         return ""
-    rows = _query_sqlite(
+    rows = iter(_iter_sqlite(
         db_path,
         """
         select workspace, role, ts, text
@@ -597,22 +764,33 @@ def _read_athena_transcript(session_id: str, home: Path) -> str:
         limit ?
         """,
         (session_id, MAX_PROVIDER_ROWS),
-    )
-    if not rows:
+    ))
+    first_row = next(rows, None)
+    if first_row is None:
+        rows.close()
         return ""
-    workspace = _string_value(rows[0][0])
-    lines = ["# Athena Code Session Transcript", "", f"- session: {session_id}"]
+    workspace = _string_value(first_row[0])
+    output = _BoundedTextJoiner("\n", max_bytes=max_bytes, tail=tail)
+    for item in ("# Athena Code Session Transcript", "", f"- session: {session_id}"):
+        output.add(item)
     if workspace:
-        lines.append(f"- workspace: {workspace}")
-    lines.extend(["", "## Indexed Turns", ""])
-    for _workspace, role, ts, text in rows:
-        label = _string_value(role).title() or "Message"
-        timestamp = _string_value(ts)
-        heading = f"### {label}{f' ({timestamp})' if timestamp else ''}"
-        body = _string_value(text).strip()
-        if body:
-            lines.extend([heading, "", body, ""])
-    return "\n".join(lines).strip() + "\n"
+        output.add(f"- workspace: {workspace}")
+    for item in ("", "## Indexed Turns", ""):
+        output.add(item)
+    try:
+        for _workspace, role, ts, text in chain((first_row,), rows):
+            if output.full:
+                break
+            label = _string_value(role).title() or "Message"
+            timestamp = _string_value(ts)
+            heading = f"### {label}{f' ({timestamp})' if timestamp else ''}"
+            body = _string_value(text).strip()
+            if body:
+                for item in (heading, "", body, ""):
+                    output.add(item)
+    finally:
+        rows.close()
+    return output.text()
 
 
 def _grok_sessions_root(home: Path) -> Path:
@@ -624,21 +802,87 @@ def _read_grok_sessions(workspace: Path | None, home: Path) -> list[AgentSession
     if not sessions_root.is_dir():
         return []
     sessions: list[AgentSession] = []
-    for cwd_dir in sorted(sessions_root.iterdir()):
-        if not cwd_dir.is_dir():
-            continue
-        decoded_cwd = unquote(cwd_dir.name)
-        if workspace is not None and not _same_or_descendant_path(decoded_cwd, workspace):
-            continue
-        for session_dir in cwd_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            session = _read_grok_session(session_dir, decoded_cwd)
-            if session is not None:
-                sessions.append(session)
-            if len(sessions) >= MAX_PROVIDER_ROWS:
-                return sessions
+    for session_dir, decoded_cwd in _recent_grok_session_dirs(
+        sessions_root,
+        workspace,
+        limit=MAX_PROVIDER_ROWS,
+    ):
+        session = _read_grok_session(session_dir, decoded_cwd)
+        if session is not None:
+            sessions.append(session)
     return sessions
+
+
+def _recent_grok_session_dirs(
+    sessions_root: Path,
+    workspace: Path | None,
+    *,
+    limit: int,
+) -> list[tuple[Path, str]]:
+    """Select recent Grok session dirs under fixed cwd/session scan budgets."""
+    if limit <= 0:
+        return []
+
+    cwd_dirs: list[tuple[Path, str]] = []
+    seen_cwd_dirs: set[Path] = set()
+    if workspace is not None:
+        direct = sessions_root / quote(str(workspace), safe="")
+        if direct.is_dir():
+            cwd_dirs.append((direct, str(workspace)))
+            seen_cwd_dirs.add(direct)
+
+    inspected_cwds = 0
+    try:
+        with os.scandir(sessions_root) as iterator:
+            for entry in iterator:
+                if inspected_cwds >= MAX_FILE_SCAN_ENTRIES:
+                    break
+                inspected_cwds += 1
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                path = Path(entry.path)
+                if path in seen_cwd_dirs:
+                    continue
+                decoded_cwd = unquote(entry.name)
+                if workspace is not None and not _same_or_descendant_path(decoded_cwd, workspace):
+                    continue
+                cwd_dirs.append((path, decoded_cwd))
+                seen_cwd_dirs.add(path)
+                if len(cwd_dirs) >= MAX_FILE_SCAN_DIRS:
+                    break
+    except OSError:
+        pass
+
+    heap: list[tuple[int, int, Path, str]] = []
+    sequence = 0
+    inspected_sessions = 0
+    for cwd_dir, decoded_cwd in cwd_dirs:
+        if inspected_sessions >= MAX_FILE_SCAN_ENTRIES:
+            break
+        try:
+            with os.scandir(cwd_dir) as iterator:
+                for entry in iterator:
+                    if inspected_sessions >= MAX_FILE_SCAN_ENTRIES:
+                        break
+                    inspected_sessions += 1
+                    try:
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        modified_ns = entry.stat(follow_symlinks=False).st_mtime_ns
+                    except OSError:
+                        continue
+                    sequence += 1
+                    candidate = (modified_ns, sequence, Path(entry.path), decoded_cwd)
+                    if len(heap) < limit:
+                        heapq.heappush(heap, candidate)
+                    elif candidate[:2] > heap[0][:2]:
+                        heapq.heapreplace(heap, candidate)
+        except OSError:
+            continue
+    return [(path, cwd) for _mtime, _sequence, path, cwd in sorted(heap, reverse=True)]
 
 
 def _read_grok_session(session_dir: Path, fallback_workspace: str) -> AgentSession | None:
@@ -675,12 +919,17 @@ def _read_grok_session(session_dir: Path, fallback_workspace: str) -> AgentSessi
     )
 
 
-def _read_grok_transcript(session_id: str, home: Path) -> str:
+def _read_grok_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
     sessions_root = _grok_sessions_root(home)
     if not sessions_root.is_dir():
         return ""
     session_dir = next(
-        (path.parent for path in sessions_root.glob(f"*/{session_id}/chat_history.jsonl")),
+        (
+            candidate
+            for cwd_dir in _bounded_child_directories(sessions_root)
+            if (candidate := cwd_dir / session_id).is_dir()
+            and (candidate / "chat_history.jsonl").is_file()
+        ),
         None,
     )
     if session_dir is None:
@@ -688,11 +937,16 @@ def _read_grok_transcript(session_id: str, home: Path) -> str:
     summary = _json_object(_read_text_file(session_dir / "summary.json")) or {}
     info = summary.get("info")
     workspace = _string_value(info.get("cwd")) if isinstance(info, dict) else unquote(session_dir.parent.name)
-    lines = ["# Grok Session Transcript", "", f"- session: {session_id}"]
+    output = _BoundedTextJoiner("\n", max_bytes=max_bytes, tail=tail)
+    for item in ("# Grok Session Transcript", "", f"- session: {session_id}"):
+        output.add(item)
     if workspace:
-        lines.append(f"- workspace: {workspace}")
-    lines.extend(["", "## Turns", ""])
-    for entry in _read_jsonl(session_dir / "chat_history.jsonl"):
+        output.add(f"- workspace: {workspace}")
+    for item in ("", "## Turns", ""):
+        output.add(item)
+    for entry in _iter_jsonl(session_dir / "chat_history.jsonl"):
+        if output.full:
+            break
         if "synthetic_reason" in entry:
             continue
         role = _string_value(entry.get("type"))
@@ -700,12 +954,13 @@ def _read_grok_transcript(session_id: str, home: Path) -> str:
             continue
         body = _grok_message_text(entry.get("content")).strip()
         if body:
-            lines.extend([f"### {role.title()}", "", body, ""])
-    return "\n".join(lines).strip() + "\n"
+            for item in (f"### {role.title()}", "", body, ""):
+                output.add(item)
+    return output.text()
 
 
 def _first_grok_user_message(history_path: Path) -> str | None:
-    for entry in _read_jsonl(history_path):
+    for entry in _iter_jsonl(history_path, max_lines=GROK_METADATA_MAX_LINES):
         # Skip injected system-reminders, which Grok records as synthetic user turns.
         if entry.get("type") != "user" or "synthetic_reason" in entry:
             continue
@@ -725,18 +980,18 @@ def _grok_message_text(content: Any) -> str:
     return ""
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    raw = _read_text_file(path)
-    if not raw:
-        return []
-    entries: list[dict[str, Any]] = []
-    for line in raw.splitlines():
-        if not line.strip():
-            continue
-        data = _json_object(line)
-        if data:
-            entries.append(data)
-    return entries
+def _iter_jsonl(path: Path, *, max_lines: int | None = None) -> Generator[dict[str, Any], None, None]:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = islice(handle, max_lines) if max_lines is not None else handle
+            for line in lines:
+                if not line.strip():
+                    continue
+                data = _json_object(line)
+                if data:
+                    yield data
+    except OSError:
+        return
 
 
 def _read_text_file(path: Path) -> str:
@@ -784,27 +1039,60 @@ def _render_opencode_part(value: Any) -> str:
     return ""
 
 
-def _read_claude_transcript(session_id: str, home: Path) -> str:
+def _read_claude_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
     projects_dir = home / ".claude" / "projects"
     if not projects_dir.exists():
         return ""
-    matches = list(projects_dir.glob(f"*/{session_id}.jsonl"))
-    if not matches:
+    file_path = next(
+        (
+            candidate
+            for project_dir in _bounded_child_directories(projects_dir)
+            if (candidate := project_dir / f"{session_id}.jsonl").is_file()
+        ),
+        None,
+    )
+    if file_path is None:
         return ""
-    lines = [f"# Claude Code Session Transcript\n\n- session: {session_id}", ""]
-    for raw in matches[0].read_text(encoding="utf-8", errors="replace").splitlines():
-        data = _json_object(raw)
-        message = data.get("message") if isinstance(data, dict) else None
-        if not isinstance(message, dict):
-            continue
-        role = _string_property(message, "role") or "message"
-        text = _message_content(message)
-        if text:
-            lines.extend([f"## {role.title()}", "", text, ""])
-    return "\n".join(lines).strip() + "\n"
+    output = _BoundedTextJoiner("\n", max_bytes=max_bytes, tail=tail)
+    output.add(f"# Claude Code Session Transcript\n\n- session: {session_id}")
+    output.add("")
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                if output.full:
+                    break
+                data = _json_object(raw)
+                message = data.get("message") if isinstance(data, dict) else None
+                if not isinstance(message, dict):
+                    continue
+                role = _string_property(message, "role") or "message"
+                text = _message_content(message)
+                if text:
+                    for item in (f"## {role.title()}", "", text, ""):
+                        output.add(item)
+    except OSError:
+        return ""
+    return output.text()
 
 
-def _read_hermes_transcript(session_id: str, home: Path) -> str:
+def _bounded_child_directories(root: Path) -> Generator[Path, None, None]:
+    inspected = 0
+    try:
+        with os.scandir(root) as iterator:
+            for entry in iterator:
+                if inspected >= MAX_FILE_SCAN_ENTRIES:
+                    break
+                inspected += 1
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        yield Path(entry.path)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def _read_hermes_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
     hermes_dir = _resolve_hermes_dir(home)
     if hermes_dir is None:
         return ""
@@ -812,17 +1100,24 @@ def _read_hermes_transcript(session_id: str, home: Path) -> str:
     if not file_path.exists():
         return ""
     data = _json_object(file_path.read_text(encoding="utf-8", errors="replace"))
-    lines = [f"# Hermes Session Transcript\n\n- session: {session_id}", ""]
+    if not data:
+        return ""
+    output = _BoundedTextJoiner("\n", max_bytes=max_bytes, tail=tail)
+    output.add(f"# Hermes Session Transcript\n\n- session: {session_id}")
+    output.add("")
     messages = data.get("messages")
     if isinstance(messages, list):
         for item in messages:
+            if output.full:
+                break
             if not isinstance(item, dict):
                 continue
             role = _string_property(item, "role") or _string_property(item, "type") or "message"
             text = _message_content(item)
             if text:
-                lines.extend([f"## {role.title()}", "", text, ""])
-    return "\n".join(lines).strip() + "\n"
+                for part in (f"## {role.title()}", "", text, ""):
+                    output.add(part)
+    return output.text()
 
 
 def _read_claude_sessions(workspace: Path | None, home: Path) -> list[AgentSession]:
@@ -839,7 +1134,7 @@ def _read_claude_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
         if directory in seen_dirs or not directory.exists():
             continue
         seen_dirs.add(directory)
-        for file_path in sorted(directory.glob("*.jsonl")):
+        for file_path in _recent_jsonl_files(directory, limit=MAX_PROVIDER_ROWS):
             seen_files.add(file_path)
             session = _read_claude_session_file(file_path, workspace, allow_missing_cwd=True)
             if session:
@@ -857,7 +1152,7 @@ def _read_claude_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
 def _read_claude_session_file(file_path: Path, workspace: Path | None, *, allow_missing_cwd: bool) -> AgentSession | None:
     try:
         stat = file_path.stat()
-        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()[:200]
+        handle = file_path.open("r", encoding="utf-8", errors="replace")
     except OSError:
         return None
 
@@ -869,21 +1164,22 @@ def _read_claude_session_file(file_path: Path, workspace: Path | None, *, allow_
     model: str | None = None
     title: str | None = None
 
-    for line in lines:
-        entry = _parse_json_object(line)
-        if not entry:
-            continue
-        session_id = _string_property(entry, "sessionId") or session_id
-        cwd = _string_property(entry, "cwd") or cwd
-        branch = _string_property(entry, "gitBranch") or branch
-        timestamp = _string_property(entry, "timestamp")
-        if timestamp:
-            created_at = created_at or timestamp
-            updated_at = timestamp
-        message = _object_property(entry, "message")
-        model = _string_property(message, "model") or model
-        if not title and _string_property(message, "role") == "user":
-            title = _clean_session_title(_message_content(message))
+    with handle:
+        for line in islice(handle, CLAUDE_METADATA_MAX_LINES):
+            entry = _parse_json_object(line)
+            if not entry:
+                continue
+            session_id = _string_property(entry, "sessionId") or session_id
+            cwd = _string_property(entry, "cwd") or cwd
+            branch = _string_property(entry, "gitBranch") or branch
+            timestamp = _string_property(entry, "timestamp")
+            if timestamp:
+                created_at = created_at or timestamp
+                updated_at = timestamp
+            message = _object_property(entry, "message")
+            model = _string_property(message, "model") or model
+            if not title and _string_property(message, "role") == "user":
+                title = _clean_session_title(_message_content(message))
 
     if cwd:
         if workspace is not None and not _same_or_descendant_path(cwd, workspace):
@@ -917,44 +1213,56 @@ def _read_hermes_sessions(workspace: Path | None, home: Path) -> list[AgentSessi
     sessions_by_id: dict[str, AgentSession] = {}
 
     if db_path.exists():
-        rows = _query_sqlite(
-            db_path,
-            """
+        base_query = """
             select id, source, model, started_at, ended_at, message_count, title
             from sessions
             order by coalesce(ended_at, started_at) desc
-            limit ?
-            """,
-            (MAX_PROVIDER_ROWS,),
-        )
-        for row in rows:
-            session_id = _string_value(row[0])
-            if not session_id:
-                continue
-            file_metadata = _read_hermes_session_file(sessions_dir / f"session_{session_id}.json")
-            manifest_entry = manifest.get(session_id, {})
-            if workspace is not None and not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
-                continue
-            created_at = _from_epoch(row[3])
-            updated_at = _from_epoch(row[4]) if row[4] else file_metadata.get("updated_at") or manifest_entry.get("updated_at") or created_at
-            sessions_by_id[session_id] = AgentSession(
-                id=session_id,
-                provider="hermes",
-                title=_clean_session_title(_nullable_string(row[6]) or file_metadata.get("title") or manifest_entry.get("title")) or "Hermes session",
-                workspace=file_metadata.get("workspace") or (str(workspace) if workspace else ""),
-                branch=None,
-                model=_nullable_string(row[2]) or file_metadata.get("model"),
-                agent=_hermes_agent_label(_nullable_string(row[1]), manifest_entry, file_metadata),
-                created_at=file_metadata.get("created_at") or manifest_entry.get("created_at") or created_at,
-                updated_at=updated_at,
-                status="historical",
-                terminal_id=None,
-                pid=None,
-                resume_command=f"hermes --resume {_quote_shell_arg(session_id)}",
-            )
+        """
+        # Hermes has no indexed workspace column. For project queries, stream
+        # newest rows and apply workspace membership before the result limit;
+        # the old global LIMIT could make an older active workspace disappear.
+        row_limit = MAX_PROVIDER_ROWS if workspace is None else MAX_HERMES_ROWS_INSPECTED
+        rows = _iter_sqlite(db_path, f"{base_query} limit ?", (row_limit,))
+        try:
+            for row in rows:
+                session_id = _string_value(row[0])
+                if not session_id:
+                    continue
+                file_metadata = _read_hermes_session_file(sessions_dir / f"session_{session_id}.json")
+                manifest_entry = manifest.get(session_id, {})
+                if workspace is not None and not _hermes_session_matches_workspace(file_metadata, manifest_entry, workspace):
+                    continue
+                created_at = _from_epoch(row[3])
+                updated_at = _from_epoch(row[4]) if row[4] else file_metadata.get("updated_at") or manifest_entry.get("updated_at") or created_at
+                sessions_by_id[session_id] = AgentSession(
+                    id=session_id,
+                    provider="hermes",
+                    title=_clean_session_title(_nullable_string(row[6]) or file_metadata.get("title") or manifest_entry.get("title")) or "Hermes session",
+                    workspace=file_metadata.get("workspace") or (str(workspace) if workspace else ""),
+                    branch=None,
+                    model=_nullable_string(row[2]) or file_metadata.get("model"),
+                    agent=_hermes_agent_label(_nullable_string(row[1]), manifest_entry, file_metadata),
+                    created_at=file_metadata.get("created_at") or manifest_entry.get("created_at") or created_at,
+                    updated_at=updated_at,
+                    status="historical",
+                    terminal_id=None,
+                    pid=None,
+                    resume_command=f"hermes --resume {_quote_shell_arg(session_id)}",
+                )
+                if workspace is not None and len(sessions_by_id) >= 100:
+                    break
+        finally:
+            rows.close()
 
-    if not sessions_by_id and sessions_dir.exists():
-        for file_path in sessions_dir.glob("session_*.json"):
+    # Always merge file-only sessions. Previously any database row globally
+    # suppressed this fallback, hiding valid JSON-only sessions.
+    if len(sessions_by_id) < 100 and sessions_dir.exists():
+        for file_path in _recent_files(
+            sessions_dir,
+            limit=MAX_PROVIDER_ROWS,
+            suffix=".json",
+            prefix="session_",
+        ):
             match = re.match(r"^session_(.+)\.json$", file_path.name)
             if not match:
                 continue
@@ -1040,18 +1348,57 @@ def _read_hermes_manifest(file_path: Path) -> dict[str, dict[str, str | None]]:
 
 
 def _read_hermes_session_file(file_path: Path) -> dict[str, str | None]:
-    parsed = _read_json_object(file_path)
-    if not parsed:
-        return {}
-    return {
-        "title": _first_hermes_user_message(parsed),
-        "model": _string_property(parsed, "model"),
-        "platform": _string_property(parsed, "platform"),
-        "created_at": _string_property(parsed, "session_start"),
-        "updated_at": _string_property(parsed, "last_updated"),
-        "workspace": _hermes_workspace(parsed),
-        "search_text": json.dumps(parsed, ensure_ascii=False)[:300_000],
-    }
+    cache_key = str(file_path.absolute())
+    try:
+        stat = file_path.stat()
+        signature: _HermesFileSignature = (stat.st_mtime_ns, stat.st_size, getattr(stat, "st_ino", 0))
+    except OSError:
+        return _cached_hermes_metadata(cache_key) or {}
+
+    with _hermes_metadata_cache_lock:
+        cached = _hermes_metadata_cache.get(cache_key)
+        if cached and cached[0] == signature:
+            _hermes_metadata_cache.move_to_end(cache_key)
+            return dict(cached[1])
+        # Parse under the cache lock. Discovery is already sequential, and this
+        # coalesces concurrent API refreshes instead of parsing the same large
+        # Hermes file in multiple worker threads.
+        parsed = _read_json_object(file_path)
+        if not parsed:
+            if cached:
+                _hermes_metadata_cache[cache_key] = (signature, cached[1])
+                _hermes_metadata_cache.move_to_end(cache_key)
+                return dict(cached[1])
+            _hermes_metadata_cache[cache_key] = (signature, {})
+            _hermes_metadata_cache.move_to_end(cache_key)
+            while len(_hermes_metadata_cache) > HERMES_METADATA_CACHE_MAX_ENTRIES:
+                _hermes_metadata_cache.popitem(last=False)
+            return {}
+        metadata = {
+            "title": _first_hermes_user_message(parsed),
+            "model": _string_property(parsed, "model"),
+            "platform": _string_property(parsed, "platform"),
+            "created_at": _string_property(parsed, "session_start"),
+            "updated_at": _string_property(parsed, "last_updated"),
+            "workspace": _hermes_workspace(parsed),
+            "workspace_hint": _hermes_workspace_hint(parsed),
+        }
+        # Cache the signature observed before the read. If the file changed
+        # during parsing, the next refresh will detect and parse it again.
+        _hermes_metadata_cache[cache_key] = (signature, dict(metadata))
+        _hermes_metadata_cache.move_to_end(cache_key)
+        while len(_hermes_metadata_cache) > HERMES_METADATA_CACHE_MAX_ENTRIES:
+            _hermes_metadata_cache.popitem(last=False)
+        return metadata
+
+
+def _cached_hermes_metadata(cache_key: str) -> dict[str, str | None] | None:
+    with _hermes_metadata_cache_lock:
+        cached = _hermes_metadata_cache.get(cache_key)
+        if not cached:
+            return None
+        _hermes_metadata_cache.move_to_end(cache_key)
+        return dict(cached[1])
 
 
 def _read_json_object(file_path: Path) -> dict[str, Any] | None:
@@ -1068,7 +1415,10 @@ def _first_hermes_user_message(session: dict[str, Any]) -> str | None:
     for item in messages:
         if not isinstance(item, dict) or _string_property(item, "role") != "user":
             continue
-        return _clean_session_title(_message_content(item))
+        for fragment in _message_content_fragments(item):
+            title = _clean_session_title(fragment[:4096])
+            if title:
+                return title
     return None
 
 
@@ -1081,15 +1431,67 @@ def _hermes_workspace(session: dict[str, Any]) -> str | None:
     return _string_property(context, "project_dir") or _string_property(context, "workspace")
 
 
+def _hermes_workspace_hint(session: dict[str, Any]) -> str | None:
+    """Extract a small matching hint instead of retaining serialized history."""
+    output = _BoundedTextJoiner("\n", max_bytes=HERMES_WORKSPACE_HINT_MAX_BYTES, tail=False)
+    workspace = _hermes_workspace(session)
+    if workspace:
+        output.add(workspace)
+    for key in ("title", "name", "session_name", "sessionName"):
+        value = _string_property(session, key)
+        if value:
+            output.add(value)
+
+    messages = session.get("messages")
+    if isinstance(messages, list):
+        added_messages = 0
+        for item in messages:
+            if output.full or added_messages >= HERMES_WORKSPACE_HINT_MAX_MESSAGES:
+                break
+            if not isinstance(item, dict):
+                continue
+            role = _string_property(item, "role") or _string_property(item, "type")
+            if role not in {None, "user", "system"}:
+                continue
+            # Prefer explicit path-like tokens so a long prompt cannot crowd
+            # the workspace identifier out of the bounded hint. Keep a short
+            # title prefix as a fallback for basename matching.
+            paths_added = 0
+            has_content = False
+            for fragment in _message_content_fragments(item):
+                has_content = has_content or bool(fragment)
+                for match in _PATH_HINT_RE.finditer(fragment):
+                    output.add(match.group(0))
+                    paths_added += 1
+                    if output.full or paths_added >= 8:
+                        break
+                if output.full or paths_added >= 8:
+                    break
+            if not has_content:
+                continue
+            if not output.full:
+                for fragment in _message_content_fragments(item):
+                    if fragment:
+                        output.add(fragment[:1024])
+                        if output.full:
+                            break
+            added_messages += 1
+
+    return output.text() or None
+
+
 def _hermes_session_matches_workspace(file_metadata: dict[str, str | None], manifest_entry: dict[str, str | None], workspace: Path) -> bool:
     metadata_workspace = file_metadata.get("workspace")
-    if metadata_workspace and _same_or_descendant_path(metadata_workspace, workspace):
-        return True
+    # Explicit provider metadata is authoritative. Falling through to a
+    # lower-cased transcript/title hint after an explicit mismatch can merge
+    # case-distinct POSIX workspaces or resurrect stale path mentions.
+    if metadata_workspace:
+        return _same_or_descendant_path(metadata_workspace, workspace)
     haystack = _normalize_session_search_text("\n".join(
         value
         for value in (
             file_metadata.get("title"),
-            file_metadata.get("search_text"),
+            file_metadata.get("workspace_hint"),
             manifest_entry.get("title"),
         )
         if value
@@ -1105,14 +1507,18 @@ def _hermes_agent_label(source: str | None, manifest_entry: dict[str, str | None
 
 
 def _query_sqlite(db_path: Path, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    return list(_iter_sqlite(db_path, sql, params))
+
+
+def _iter_sqlite(db_path: Path, sql: str, params: tuple[Any, ...] = ()) -> Generator[tuple[Any, ...], None, None]:
     try:
         connection = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.25)
         try:
-            return list(connection.execute(sql, params))
+            yield from connection.execute(sql, params)
         finally:
             connection.close()
     except sqlite3.Error:
-        return []
+        return
 
 
 def _sqlite_user_version(db_path: Path, *, minimum: int) -> bool:
@@ -1161,21 +1567,82 @@ def _same_or_descendant_path(candidate: str | Path, workspace: str | Path) -> bo
     parent = _normalize_path(workspace)
     if not child or not parent:
         return False
-    return child == parent or (child.startswith("/") and parent == "/") or child.startswith(f"{parent}/")
+    if child == parent:
+        return True
+    return child.startswith(parent if parent.endswith("/") else f"{parent}/")
+
+
+def _workspace_sql_filter(column_expression: str, workspace: str | Path) -> tuple[str, tuple[str, ...]]:
+    """Build a literal-safe workspace/descendant predicate for native indexes."""
+    slashed_expression = f"replace(trim(coalesce({column_expression}, '')), char(92), '/')"
+    sensitive_expression = f"rtrim({slashed_expression}, '/')"
+    insensitive_expression = f"lower({sensitive_expression})"
+    clauses: list[str] = []
+    params: list[str] = []
+    for candidate, case_insensitive in _sql_workspace_candidates(workspace):
+        expression = insensitive_expression if case_insensitive else sensitive_expression
+        if candidate == "/":
+            # rtrim('/') is empty, so root must inspect the untrimmed spelling.
+            clauses.append(f"substr({slashed_expression}, 1, 1) = '/'")
+            continue
+        clauses.append(f"({expression} = ? or substr({expression}, 1, length(?) + 1) = ? || '/')")
+        params.extend((candidate, candidate, candidate))
+    return (f"({' or '.join(clauses)})" if clauses else "0", tuple(params))
+
+
+def _sql_workspace_candidates(workspace: str | Path) -> list[tuple[str, bool]]:
+    direct = str(workspace).strip().replace("\\", "/").rstrip("/") or "/"
+    comparable = _normalize_path(workspace) or "/"
+    values: dict[tuple[str, bool], tuple[str, bool]] = {}
+
+    def add(value: str, case_insensitive: bool) -> None:
+        normalized = value.lower() if case_insensitive else value
+        values[(normalized, case_insensitive)] = (normalized, case_insensitive)
+
+    add(direct, _is_case_insensitive_sql_path(direct))
+    add(comparable, _is_case_insensitive_sql_path(comparable))
+    drive = re.match(r"^([a-z]):(?:/(.*))?$", comparable, re.IGNORECASE)
+    if drive:
+        add(f"/mnt/{drive.group(1).lower()}{f'/{drive.group(2)}' if drive.group(2) else ''}", True)
+    return sorted(values.values(), key=lambda item: (item[1], item[0]))
+
+
+def _is_case_insensitive_sql_path(value: str) -> bool:
+    return bool(
+        re.match(r"^[a-z]:(?:/|$)", value, re.IGNORECASE)
+        or re.match(r"^/mnt/[a-z](?:/|$)", value, re.IGNORECASE)
+        or re.match(r"^//[^/]+/[^/]+", value)
+    )
 
 
 def _normalize_path(value: str | Path) -> str:
-    text = str(value).replace("\\", "/").rstrip("/").lower()
-    match = re.match(r"^/mnt/([a-z])/(.+)$", text)
-    if match:
-        text = f"{match.group(1)}:/{match.group(2)}"
-    if os.name == "nt" and text.startswith("/") and re.match(r"^/[a-z]:/", text):
-        text = text[1:]
-    return text
+    slashed = str(value).strip().replace("\\", "/")
+    if not slashed:
+        return ""
+
+    # Windows drives and their WSL mount spellings share case-insensitive
+    # identity. Preserve a root slash so C:/ never degrades into drive-relative
+    # C:. POSIX paths remain case-sensitive on every host platform.
+    wsl_drive = re.match(r"^/mnt/([a-z])(?:/(.*))?$", slashed, re.IGNORECASE)
+    if wsl_drive:
+        rest = re.sub(r"/+$", "", wsl_drive.group(2) or "")
+        return f"{wsl_drive.group(1)}:/{rest}".lower()
+    windows_drive = re.match(r"^/?([a-z]):/(.*)$", slashed, re.IGNORECASE)
+    if windows_drive:
+        rest = re.sub(r"/+$", "", windows_drive.group(2))
+        return f"{windows_drive.group(1)}:/{rest}".lower()
+
+    without_trailing_slashes = re.sub(r"/+$", "", slashed)
+    normalized = without_trailing_slashes or ("/" if slashed.startswith("/") else "")
+    if re.match(r"^//[^/]+/[^/]+", normalized):
+        return normalized.lower()
+    return normalized
 
 
 def _workspace_needles(workspace: str | Path) -> list[str]:
-    normalized = _normalize_path(workspace)
+    # Hints are deliberately case-folded free text; explicit metadata above is
+    # compared with filesystem semantics before this fallback is considered.
+    normalized = _normalize_path(workspace).lower()
     basename = Path(workspace).name.lower()
     needles = {normalized}
     if len(basename) >= 6 and re.search(r"[-_]", basename):
@@ -1258,16 +1725,18 @@ def _metadata_string(metadata: dict[str, Any], key: str) -> str | None:
 
 
 def _message_content(message: dict[str, Any] | None) -> str | None:
+    parts = list(_message_content_fragments(message))
+    return "\n".join(parts) if parts else None
+
+
+def _message_content_fragments(message: dict[str, Any] | None) -> Generator[str, None, None]:
     content = message.get("content") if message else None
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
+        yield content
+    elif isinstance(content, list):
         for item in content:
             if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-        return "\n".join(parts)
-    return None
+                yield item["text"]
 
 
 def _bounded_text(text: str, *, max_bytes: int, tail: bool) -> str:

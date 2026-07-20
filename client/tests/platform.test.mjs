@@ -32,9 +32,25 @@ test("normalizes equivalent Windows and WSL workspace keys", () => {
   assert.equal(normalizeComparablePath("/C:/Users/dev/repo"), "c:/users/dev/repo");
 });
 
+test("preserves filesystem roots in comparable paths", () => {
+  assert.equal(normalizeComparablePath("/"), "/");
+  assert.equal(normalizeComparablePath("///"), "/");
+  assert.equal(normalizeComparablePath("C:\\"), "c:/");
+  assert.equal(normalizeComparablePath("/mnt/C/"), "c:/");
+  assert.equal(normalizeComparablePath("\\\\Server\\Share\\"), "//server/share");
+});
+
 test("preserves POSIX path case when normalizing comparable paths", () => {
   assert.equal(normalizeComparablePath("/home/dev/Repo"), "/home/dev/Repo");
   assert.notEqual(normalizeComparablePath("/home/dev/Repo"), normalizeComparablePath("/home/dev/repo"));
+});
+
+test("normalizes UNC paths with Windows case semantics", () => {
+  assert.equal(normalizeComparablePath("\\\\Server\\Share\\Repo"), "//server/share/repo");
+  assert.equal(
+    normalizeComparablePath("\\\\SERVER\\SHARE\\REPO"),
+    normalizeComparablePath("\\\\server\\share\\repo"),
+  );
 });
 
 test("keeps Windows workspace paths first-class in the workspace model", () => {

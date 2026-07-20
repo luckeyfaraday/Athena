@@ -7,7 +7,9 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -28,6 +30,7 @@ from .context_artifacts import RunArtifacts
 from .executor import ExecutionResult, RunExecutor
 from .hermes import HermesManager
 from .memory import HermesMemoryStore
+from .memory_admission import LaunchMemoryAdmission
 from .runs import Run, RunRegistry, RunStatus
 from .runtime import RuntimeLimits, adapter_statuses, check_runtime_limits
 from .safety import resolve_project_dir
@@ -45,9 +48,9 @@ class MemoryDeleteRequest(BaseModel):
 class SpawnAgentRequest(BaseModel):
     agent_type: str = "codex"
     project_dir: str
-    task: str = Field(min_length=1)
-    memory_query: str | None = None
-    timeout_seconds: float | None = Field(default=None, gt=0)
+    task: str = Field(min_length=1, max_length=200000)
+    memory_query: str | None = Field(default=None, max_length=20000)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
 
 
 class HermesInstallRequest(BaseModel):
@@ -121,9 +124,25 @@ def create_app(
     executor: RunExecutor | None = None,
     adapters: dict[str, AgentAdapter] | None = None,
     limits: RuntimeLimits | None = None,
+    memory_admission: LaunchMemoryAdmission | None = None,
     execute_inline: bool = False,
 ) -> FastAPI:
-    app = FastAPI(title="Context Workspace Backend")
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        try:
+            yield
+        finally:
+            application.state.executor.begin_shutdown()
+            # Prevent queued work from entering the executor after its process
+            # snapshot.  Running work either appears in that snapshot or sees
+            # the executor's post-Popen shutdown gate and reaps itself.
+            application.state.pool.shutdown(wait=False, cancel_futures=True)
+            application.state.executor.shutdown()
+            # Waiting last drains bookkeeping for the workers whose process
+            # groups were just terminated, without admitting queued launches.
+            application.state.pool.shutdown(wait=True, cancel_futures=True)
+
+    app = FastAPI(title="Context Workspace Backend", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
@@ -138,9 +157,17 @@ def create_app(
     app.state.context_bundles = ContextBundleStore()
     app.state.adapters = adapters or {"codex": CodexAdapter(), "grok": GrokAdapter()}
     app.state.limits = limits or RuntimeLimits()
+    app.state.memory_admission = (
+        memory_admission if memory_admission is not None else LaunchMemoryAdmission()
+    )
     app.state.pool = ThreadPoolExecutor(max_workers=4)
     app.state.execute_inline = execute_inline
     app.state.all_sessions_cache = {}
+    app.state.project_sessions_cache = {}
+    # Both session endpoints traverse the same provider corpora. A shared lock
+    # coalesces cold misses across project and all-workspace callers instead of
+    # allowing each surface to duplicate the scan concurrently.
+    app.state.session_scan_lock = threading.Lock()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -386,18 +413,40 @@ def create_app(
         provider: str | None = Query(default=None),
         q: str = Query(default=""),
         limit: int = Query(default=100, ge=1, le=500),
+        refresh: bool = Query(default=False),
     ) -> dict[str, Any]:
         try:
             project = _resolve_read_project_dir(project_dir)
             session_provider = _session_provider(provider)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        sessions = list_native_agent_sessions(project, provider=session_provider, query=q, limit=limit)
-        return {
-            "project_dir": str(project),
-            "sessions": [session.payload() for session in sessions],
-            "summary": format_agent_sessions_summary(sessions),
-        }
+        cache_key = (str(project), session_provider or "", q, limit)
+        # Project-scoped MCP callers previously bypassed the only sessions
+        # cache and could launch the same provider corpus scan concurrently.
+        # Serialize cache misses so a burst coalesces into one bounded scan.
+        with app.state.session_scan_lock:
+            now = time.monotonic()
+            cached = app.state.project_sessions_cache.get(cache_key)
+            if (
+                not refresh
+                and cached is not None
+                and now - cached["created_monotonic"] < ALL_SESSIONS_CACHE_TTL_SECONDS
+            ):
+                return dict(cached["payload"])
+            sessions = list_native_agent_sessions(project, provider=session_provider, query=q, limit=limit)
+            payload = {
+                "project_dir": str(project),
+                "sessions": [session.payload() for session in sessions],
+                "summary": format_agent_sessions_summary(sessions),
+            }
+            app.state.project_sessions_cache[cache_key] = {"created_monotonic": now, "payload": payload}
+            if len(app.state.project_sessions_cache) > ALL_SESSIONS_CACHE_MAX_ENTRIES:
+                oldest_key = min(
+                    app.state.project_sessions_cache,
+                    key=lambda key: app.state.project_sessions_cache[key]["created_monotonic"],
+                )
+                del app.state.project_sessions_cache[oldest_key]
+            return payload
 
     @app.get("/agents/sessions/all")
     def list_all_agent_sessions(
@@ -412,38 +461,41 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         cache_key = (session_provider or "", q, limit)
-        now = time.monotonic()
-        cached = app.state.all_sessions_cache.get(cache_key)
-        if (
-            not refresh
-            and cached is not None
-            and now - cached["created_monotonic"] < ALL_SESSIONS_CACHE_TTL_SECONDS
-        ):
-            payload = dict(cached["payload"])
-            payload["cache"] = {
-                "hit": True,
-                "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS,
-                "age_seconds": now - cached["created_monotonic"],
-            }
-            return payload
+        with app.state.session_scan_lock:
+            # Recheck after acquiring the lock: another endpoint/request may
+            # have populated the cache while this request was waiting.
+            now = time.monotonic()
+            cached = app.state.all_sessions_cache.get(cache_key)
+            if (
+                not refresh
+                and cached is not None
+                and now - cached["created_monotonic"] < ALL_SESSIONS_CACHE_TTL_SECONDS
+            ):
+                payload = dict(cached["payload"])
+                payload["cache"] = {
+                    "hit": True,
+                    "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS,
+                    "age_seconds": now - cached["created_monotonic"],
+                }
+                return payload
 
-        sessions = list_native_agent_sessions(None, provider=session_provider, query=q, limit=limit)
-        payload = {
-            "project_dir": None,
-            "sessions": [session.payload() for session in sessions],
-            "summary": format_agent_sessions_summary(sessions),
-        }
-        app.state.all_sessions_cache[cache_key] = {"created_monotonic": now, "payload": payload}
-        if len(app.state.all_sessions_cache) > ALL_SESSIONS_CACHE_MAX_ENTRIES:
-            oldest_key = min(
-                app.state.all_sessions_cache,
-                key=lambda key: app.state.all_sessions_cache[key]["created_monotonic"],
-            )
-            del app.state.all_sessions_cache[oldest_key]
-        return {
-            **payload,
-            "cache": {"hit": False, "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS, "age_seconds": 0.0},
-        }
+            sessions = list_native_agent_sessions(None, provider=session_provider, query=q, limit=limit)
+            payload = {
+                "project_dir": None,
+                "sessions": [session.payload() for session in sessions],
+                "summary": format_agent_sessions_summary(sessions),
+            }
+            app.state.all_sessions_cache[cache_key] = {"created_monotonic": now, "payload": payload}
+            if len(app.state.all_sessions_cache) > ALL_SESSIONS_CACHE_MAX_ENTRIES:
+                oldest_key = min(
+                    app.state.all_sessions_cache,
+                    key=lambda key: app.state.all_sessions_cache[key]["created_monotonic"],
+                )
+                del app.state.all_sessions_cache[oldest_key]
+            return {
+                **payload,
+                "cache": {"hit": False, "ttl_seconds": ALL_SESSIONS_CACHE_TTL_SECONDS, "age_seconds": 0.0},
+            }
 
     @app.get("/agents/sessions/{provider}/{session_id}/transcript", response_class=PlainTextResponse)
     def get_agent_session_transcript(
@@ -481,6 +533,12 @@ def create_app(
         if not limit_decision.allowed:
             raise HTTPException(status_code=429, detail=limit_decision.reason)
 
+        memory_decision = app.state.memory_admission.reserve()
+        if not memory_decision.allowed:
+            # This must happen before create_run: a rejected launch may not
+            # consume an agent id, occupy a registry slot, or write artifacts.
+            raise HTTPException(status_code=429, detail=memory_decision.reason)
+
         try:
             run = app.state.registry.create_run(
                 agent_type=agent_type,
@@ -488,6 +546,7 @@ def create_app(
                 task=request.task,
             )
         except ValueError as exc:
+            app.state.memory_admission.release(memory_decision.reservation_id)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         memory_excerpt = ""
@@ -496,19 +555,28 @@ def create_app(
         if timeout_seconds is None:
             timeout_seconds = app.state.limits.default_timeout_seconds
 
-        if app.state.execute_inline:
-            _execute_and_record(app.state.executor, app.state.memory, run, adapter, memory_excerpt, timeout_seconds)
-        else:
-            background_tasks.add_task(
-                app.state.pool.submit,
-                _execute_and_record,
-                app.state.executor,
-                app.state.memory,
-                run,
-                adapter,
-                memory_excerpt,
-                timeout_seconds,
-            )
+        try:
+            if app.state.execute_inline:
+                _execute_and_record(app.state.executor, app.state.memory, run, adapter, memory_excerpt, timeout_seconds)
+                # Inline execution has already reached a terminal state, so
+                # no delayed descendant allocation remains to reserve for.
+                app.state.memory_admission.release(memory_decision.reservation_id)
+            else:
+                background_tasks.add_task(
+                    app.state.pool.submit,
+                    _execute_and_record,
+                    app.state.executor,
+                    app.state.memory,
+                    run,
+                    adapter,
+                    memory_excerpt,
+                    timeout_seconds,
+                )
+                # Async launches retain the short TTL reservation while the
+                # child and its MCP descendants grow toward steady-state RSS.
+        except Exception:
+            app.state.memory_admission.release(memory_decision.reservation_id)
+            raise
 
         return {"run": _run_payload(run)}
 

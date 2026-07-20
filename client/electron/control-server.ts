@@ -6,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import {
+  attachEmbeddedTerminalControlStream,
   findEmbeddedTerminal,
   getEmbeddedTerminalBuffer,
   killEmbeddedTerminal,
@@ -15,11 +16,16 @@ import {
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
   writeEmbeddedTerminalInputRaw,
-  subscribeEmbeddedTerminalData,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
 import { recordControlFailure } from "./control-events.js";
+import {
+  launchStaggerDelayMs,
+  publicLaunchAdmission,
+  reserveLaunchAdmission,
+  settleLaunchAdmission,
+} from "./launch-admission.js";
 import {
   evaluateControlAccess,
   sameControlPath,
@@ -28,7 +34,6 @@ import {
 import {
   boundedTerminalBufferMaxChars,
   formatTerminalBuffer,
-  terminalBufferTail,
 } from "./terminal-buffer.js";
 import { parseRawTerminalInputRequest, rawInputPreview } from "./terminal-input.js";
 import { toWorkspacePath, type WorkspacePath } from "./platform.js";
@@ -59,6 +64,9 @@ type SpawnTerminalRequest = {
   model?: string;
   cols?: number;
   rows?: number;
+  /** Authenticated, explicit opt-in to launch despite critical memory pressure. */
+  memory_override?: boolean;
+  memoryOverride?: boolean;
 };
 
 type WriteTerminalRequest = {
@@ -114,6 +122,7 @@ const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
 let controlToken: string | null = null;
 
 let server: http.Server | null = null;
+const controlSockets = new Set<net.Socket>();
 let watchdog: NodeJS.Timeout | null = null;
 let watchdogRestartInFlight = false;
 let healthFailureCount = 0;
@@ -166,6 +175,10 @@ export async function startControlServer(): Promise<ControlState> {
   const nextServer = http.createServer((request, response) => {
     void handleRequest(request, response);
   });
+  nextServer.on("connection", (socket) => {
+    controlSockets.add(socket);
+    socket.once("close", () => controlSockets.delete(socket));
+  });
 
   await new Promise<void>((resolve, reject) => {
     nextServer.once("error", reject);
@@ -199,7 +212,7 @@ export async function restartControlServer(reason = "manual restart"): Promise<C
   const serverToStop = server;
   server = null;
   if (serverToStop) {
-    await new Promise<void>((resolve) => serverToStop.close(() => resolve()));
+    await closeControlServer(serverToStop);
   }
   state = {
     baseUrl: null,
@@ -212,18 +225,39 @@ export async function restartControlServer(reason = "manual restart"): Promise<C
   return startControlServer();
 }
 
-export async function stopControlServer(): Promise<void> {
+export async function stopControlServer(): Promise<boolean> {
   stopControlWatchdog();
   const serverToStop = server;
   server = null;
   if (!serverToStop) {
     state = { ...state, running: false };
     writeControlDiscovery();
-    return;
+    return true;
   }
-  await new Promise<void>((resolve) => serverToStop.close(() => resolve()));
+  const closed = await closeControlServer(serverToStop);
   state = { ...state, running: false };
   writeControlDiscovery();
+  return closed;
+}
+
+function closeControlServer(serverToStop: http.Server, timeoutMs = 1_000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (closed: boolean) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(closed);
+    };
+    serverToStop.close((error) => finish(!error));
+    // SSE and keep-alive connections otherwise keep `close()` pending forever.
+    serverToStop.closeIdleConnections?.();
+    serverToStop.closeAllConnections?.();
+    for (const socket of controlSockets) socket.destroy();
+    timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+  });
 }
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -333,35 +367,84 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "POST" && url.pathname === "/terminals/spawn") {
       const payload = parseSpawnTerminalRequest(await readJsonBody(request));
-      if (payload.openWorkspace) {
-        payload.workspace = openWorkspaceInRenderer(payload.workspace, payload.selectWorkspace).nativePath;
+      const admission = reserveLaunchAdmission({
+        source: "control",
+        kind: payload.kind,
+        count: payload.count,
+        // Reaching this route already requires the per-launch control token, so
+        // this flag is both explicit and authorized by the existing auth layer.
+        overrideCritical: payload.memoryOverride,
+      });
+      if (!admission.granted) {
+        recordControlFailure({
+          kind: "spawn.failed",
+          detail: admission.message,
+          preview: payload.task,
+        });
+        sendJson(response, 429, {
+          error: admission.message,
+          admission: publicLaunchAdmission(admission),
+          retryable: true,
+          override: "Resubmit the authenticated request with memory_override: true to launch anyway.",
+        });
+        return;
       }
       const sessions: EmbeddedTerminalSession[] = [];
-      for (let index = 0; index < payload.count; index += 1) {
-        const session = await spawnEmbeddedTerminal(payload.workspace, {
-          kind: payload.kind,
-          title: payload.count > 1 ? terminalGridTitle(payload.kind, index) : payload.title,
-          task: payload.task,
-          cols: payload.cols,
-          rows: payload.rows,
-          resumeSessionId: payload.resumeSessionId,
-          sessionLabel: payload.sessionLabel,
-          contextMode: payload.contextMode,
-          contextText: payload.contextText,
-          model: payload.model,
-          controlSource: "electron-control",
-        }).catch((error) => {
-          recordControlFailure({
-            kind: "spawn.failed",
-            detail: String(error),
-            preview: payload.task,
+      let failedSession: EmbeddedTerminalSession | null = null;
+      try {
+        if (payload.openWorkspace) {
+          payload.workspace = openWorkspaceInRenderer(payload.workspace, payload.selectWorkspace).nativePath;
+        }
+        for (let index = 0; index < payload.count; index += 1) {
+          const staggerMs = launchStaggerDelayMs(payload.kind, index);
+          if (staggerMs > 0) await delay(staggerMs);
+          const session = await spawnEmbeddedTerminal(payload.workspace, {
+            kind: payload.kind,
+            title: payload.count > 1 ? terminalGridTitle(payload.kind, index) : payload.title,
+            task: payload.task,
+            cols: payload.cols,
+            rows: payload.rows,
+            resumeSessionId: payload.resumeSessionId,
+            sessionLabel: payload.sessionLabel,
+            contextMode: payload.contextMode,
+            contextText: payload.contextText,
+            model: payload.model,
+            controlSource: "electron-control",
+          }).catch((error) => {
+            recordControlFailure({
+              kind: "spawn.failed",
+              detail: String(error),
+              preview: payload.task,
+            });
+            throw error;
           });
-          throw error;
-        });
-        sessions.push(session);
-        if ((payload.kind === "opencode" || payload.kind === "athena" || payload.kind === "grok") && index < payload.count - 1) await delay(650);
+          if (session.status !== "running") {
+            failedSession = session;
+            recordControlFailure({
+              kind: "spawn.failed",
+              detail: session.error ?? `Failed to launch ${session.title}.`,
+              preview: payload.task,
+            });
+            break;
+          }
+          sessions.push(session);
+        }
+      } finally {
+        // Drop failed/unstarted capacity immediately. Successful capacity stays
+        // leased briefly because agent/MCP descendants allocate after node-pty's
+        // spawn promise resolves and are not yet visible in /proc at this point.
+        settleLaunchAdmission(admission, sessions.length);
       }
-      sendJson(response, 200, { sessions });
+      if (failedSession) {
+        sendJson(response, 500, {
+          error: failedSession.error ?? `Failed to launch ${failedSession.title}.`,
+          failed: failedSession,
+          sessions,
+          admission: publicLaunchAdmission(admission),
+        });
+        return;
+      }
+      sendJson(response, 200, { sessions, admission: publicLaunchAdmission(admission) });
       return;
     }
     sendJson(response, 404, { error: `Unknown control endpoint: ${request.method} ${url.pathname}` });
@@ -431,6 +514,7 @@ function parseSpawnTerminalRequest(body: unknown): {
   model?: string;
   cols?: number;
   rows?: number;
+  memoryOverride: boolean;
 } {
   if (!body || typeof body !== "object") throw new Error("Request body must be an object.");
   const request = body as SpawnTerminalRequest;
@@ -454,6 +538,7 @@ function parseSpawnTerminalRequest(body: unknown): {
     model: modelValue(request.model),
     cols: numberValue(request.cols),
     rows: numberValue(request.rows),
+    memoryOverride: booleanValue(request.memory_override ?? request.memoryOverride),
   };
 }
 
@@ -616,13 +701,13 @@ const SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 const SSE_MAX_BACKLOG_BYTES = 1_000_000;
 
 /**
- * Stream a terminal's live output as Server-Sent Events. The current rolling
- * buffer is replayed first as a `snapshot` event (so a remote viewer matches the
- * on-screen state, and an EventSource reconnect re-syncs instead of duplicating),
- * then every subsequent PTY chunk is pushed as a `data` event. Chunks are base64
- * encoded because raw terminal output contains newlines and control bytes that
- * would otherwise break SSE's line-based framing. Keystrokes continue to flow
- * back over POST /terminals/write; this channel is output-only.
+ * Stream a terminal's sequenced output as Server-Sent Events. Atomic attach
+ * pauses a distinct hub consumer while its `snapshot` is queued, so output
+ * produced in that window is retained and follows at the next sequence. A slow
+ * consumer that exceeds its bounded hub queue receives another self-declaring
+ * `snapshot` reset instead of a silent gap. SSE ids carry epoch:sequence while
+ * payloads stay base64-compatible with existing clients. Keystrokes continue
+ * to flow back over POST /terminals/write; this channel is output-only.
  */
 function streamEmbeddedTerminal(
   request: IncomingMessage,
@@ -640,40 +725,62 @@ function streamEmbeddedTerminal(
   // An initial comment flushes headers so EventSource fires `open` right away.
   response.write(": athena-control stream\n\n");
 
-  const send = (event: string, payloadBase64: string): void => {
-    if (closed) return;
+  const send = (event: string, payloadBase64: string, eventId?: string): boolean => {
+    if (closed) return false;
     if (response.writableLength > SSE_MAX_BACKLOG_BYTES) {
       cleanup();
       response.destroy(new Error("Terminal stream backpressure exceeded."));
-      return;
+      return false;
     }
-    response.write(`event: ${event}\ndata: ${payloadBase64}\n\n`);
+    try {
+      response.write(`${eventId ? `id: ${eventId}\n` : ""}event: ${event}\ndata: ${payloadBase64}\n\n`);
+      return true;
+    } catch {
+      cleanup();
+      return false;
+    }
   };
 
   let closed = false;
-  let unsubscribe: (() => void) | null = null;
+  let stream: ReturnType<typeof attachEmbeddedTerminalControlStream> | null = null;
   let heartbeat: NodeJS.Timeout | null = null;
   const cleanup = (): void => {
     if (closed) return;
     closed = true;
     if (heartbeat) clearInterval(heartbeat);
-    unsubscribe?.();
+    stream?.close();
   };
 
-  const snapshot = terminalBufferTail(getEmbeddedTerminalBuffer(terminalId), maxChars);
-  send("snapshot", Buffer.from(snapshot, "utf8").toString("base64"));
-
-  unsubscribe = subscribeEmbeddedTerminalData(
+  const consumerId = `control-sse:${crypto.randomUUID()}`;
+  stream = attachEmbeddedTerminalControlStream(
     terminalId,
-    (chunk) => {
-      if (chunk) send("data", Buffer.from(chunk, "utf8").toString("base64"));
+    consumerId,
+    maxChars,
+    (delivery) => {
+      if (!delivery.data && !delivery.reset) return true;
+      return send(
+        delivery.reset ? "snapshot" : "data",
+        Buffer.from(delivery.data, "utf8").toString("base64"),
+        `${delivery.epoch}:${delivery.sequence}`,
+      );
     },
-    (exitCode) => {
-      send("exit", Buffer.from(JSON.stringify({ exitCode }), "utf8").toString("base64"));
+    ({ exitCode, epoch, throughSequence }) => {
+      send(
+        "exit",
+        Buffer.from(JSON.stringify({ exitCode }), "utf8").toString("base64"),
+        `${epoch}:${throughSequence}`,
+      );
       cleanup();
       response.end();
     },
   );
+  const { snapshot } = stream;
+  if (!send(
+    "snapshot",
+    Buffer.from(snapshot.buffer, "utf8").toString("base64"),
+    `${snapshot.epoch}:${snapshot.throughSequence}`,
+  )) return;
+  stream.start();
 
   heartbeat = setInterval(() => response.write(": keep-alive\n\n"), SSE_HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();

@@ -1,6 +1,11 @@
 import { DragEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
-import { desktop, type EmbeddedTerminalSession } from "../electron";
+import {
+  desktop,
+  type EmbeddedTerminalDataPayload,
+  type EmbeddedTerminalExitPayload,
+  type EmbeddedTerminalSession,
+} from "../electron";
 import {
   promptHistoryForSession,
   recordChatPromptForSession,
@@ -18,6 +23,7 @@ const MAX_CHAT_BUFFER_CHARS = 80_000;
 const MAX_OUTPUT_CHARS = 14_000;
 const MAX_OUTPUT_BLOCKS = 8;
 const CHAT_OUTPUT_FLUSH_MS = 32;
+const EXIT_STREAM_RECOVERY_MS = 2_500;
 
 type ChatBlock = {
   id: string;
@@ -37,6 +43,15 @@ export function EmbeddedChatTerminal({ session }: Props) {
 
   useEffect(() => {
     let mounted = true;
+    let attached = false;
+    let streamEpoch: string | null = null;
+    let throughSequence = 0;
+    let attachGeneration = 0;
+    let pendingExit: EmbeddedTerminalExitPayload | null = null;
+    let exitRendered = false;
+    let exitReattachAttempted = false;
+    let exitRecoveryTimer = 0;
+    const beforeAttach: EmbeddedTerminalDataPayload[] = [];
     let pendingData = "";
     let flushTimer = 0;
     const flushPendingData = () => {
@@ -54,26 +69,99 @@ export function EmbeddedChatTerminal({ session }: Props) {
       pendingData = capChatBuffer(`${pendingData}${data}`);
       scheduleFlush();
     };
-    void desktop.attachEmbeddedTerminalBuffer(session.id)
-      .then((nextBuffer) => {
-        if (mounted) setBuffer(capChatBuffer(nextBuffer));
-      })
-      .catch(() => undefined);
+    const renderPendingExit = () => {
+      if (!pendingExit || exitRendered || !attached) return;
+      if (pendingExit.epoch && streamEpoch && pendingExit.epoch !== streamEpoch) {
+        if (!exitReattachAttempted) {
+          exitReattachAttempted = true;
+          void attachStream();
+          return;
+        }
+        const exit = pendingExit;
+        pendingExit = null;
+        exitRendered = true;
+        if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
+        exitRecoveryTimer = 0;
+        flushPendingData();
+        setBuffer((current) => capChatBuffer(
+          `${current}\n[Athena: final terminal history expired before this view attached]`
+          + `\n[process exited: ${exit.exitCode ?? "unknown"}]\n`,
+        ));
+        return;
+      }
+      if ((pendingExit.throughSequence ?? throughSequence) > throughSequence) {
+        if (!exitRecoveryTimer) {
+          exitRecoveryTimer = window.setTimeout(() => {
+            exitRecoveryTimer = 0;
+            if (pendingExit && !exitRendered) void attachStream();
+          }, EXIT_STREAM_RECOVERY_MS);
+        }
+        return;
+      }
+      const exit = pendingExit;
+      pendingExit = null;
+      exitRendered = true;
+      if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
+      exitRecoveryTimer = 0;
+      flushPendingData();
+      setBuffer((current) => capChatBuffer(`${current}\n[process exited: ${exit.exitCode ?? "unknown"}]\n`));
+    };
+    const applyPayload = (payload: EmbeddedTerminalDataPayload) => {
+      if (!attached) {
+        beforeAttach.push(payload);
+        return;
+      }
+      if (payload.epoch !== streamEpoch || (!payload.reset && payload.fromSequence > throughSequence + 1)) {
+        void attachStream();
+        return;
+      }
+      if (payload.sequence <= throughSequence) return;
+      throughSequence = payload.sequence;
+      if (payload.reset) {
+        if (flushTimer) window.clearTimeout(flushTimer);
+        flushTimer = 0;
+        pendingData = "";
+        setBuffer(capChatBuffer(payload.data));
+      } else {
+        enqueueOutput(payload.data);
+      }
+      renderPendingExit();
+    };
+    const attachStream = async () => {
+      const generation = ++attachGeneration;
+      attached = false;
+      const snapshot = await desktop.attachEmbeddedTerminalStream(session.id).catch(() => null);
+      if (!snapshot || !mounted || generation !== attachGeneration) return;
+      streamEpoch = snapshot.epoch;
+      throughSequence = snapshot.throughSequence;
+      pendingData = "";
+      setBuffer(capChatBuffer(snapshot.buffer));
+      attached = true;
+      const deferred = beforeAttach.splice(0);
+      for (const payload of deferred) {
+        if (payload.epoch === snapshot.epoch && payload.sequence <= snapshot.throughSequence) continue;
+        applyPayload(payload);
+      }
+      renderPendingExit();
+    };
 
-    const removeData = desktop.onEmbeddedTerminalDataFor(session.id, (payload) => {
-      enqueueOutput(payload.data);
-    });
+    const removeData = desktop.onEmbeddedTerminalDataFor(session.id, applyPayload);
+    void attachStream();
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       if (payload.id === session.id) {
-        flushPendingData();
-        setBuffer((current) => capChatBuffer(`${current}\n[process exited: ${payload.exitCode ?? "unknown"}]\n`));
+        pendingExit = payload;
+        exitReattachAttempted = false;
+        renderPendingExit();
       }
     });
 
     return () => {
       mounted = false;
+      attachGeneration += 1;
+      if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
       if (flushTimer) window.clearTimeout(flushTimer);
       pendingData = "";
+      beforeAttach.length = 0;
       removeData();
       removeExit();
     };

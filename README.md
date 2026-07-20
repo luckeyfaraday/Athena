@@ -255,20 +255,33 @@ GET  /agents/runs/{run_id}/artifacts/{artifact_name}
 
 ## Testing
 
-Run the backend test suite from the repository root:
+Run the complete backend suite and the permanent historical-regression gate
+from the repository root:
 
 ```bash
-pytest
+python -m pytest
+python scripts/run_regression_checks.py
 ```
 
-Run the client build checks:
+Run the client unit suites and build checks:
 
 ```bash
 cd client
+npm run test:chat
+npm run test:electron
+npm run test:regression
 npm run build
 ```
 
-The tests use fake CLI agent fixtures so execution flow can be verified without hosted models or external agent tools.
+The regression gate fails when either the backend or client regression corpus is
+missing. It permanently covers the resource/freeze incidents behind terminal
+remount and layout, output ACK recovery, bounded execution logs, and session
+scan amplification. Tests use fake CLI agent fixtures, so these checks do not
+launch hosted models or external agent tools.
+
+Pull requests run the same suites in `.github/workflows/pr-checks.yml`. Changes
+to terminal streaming, restore, graphics, process launch, session discovery, or
+pane layout must add a regression case for the historical behavior they touch.
 
 For the first public release gate, see
 [`docs/release-0.1.0-checklist.md`](docs/release-0.1.0-checklist.md).
@@ -311,6 +324,14 @@ That backend-run flow is maintained for compatibility and tests. Athena's curren
 ## Embedded Terminals
 
 The Electron main process manages embedded terminals through `node-pty`. The React UI renders them with `xterm.js`.
+
+Mounted terminal views use a bounded, sequence-aware stream. Output is sent
+only to subscribed visible views, retained until xterm's write callback
+acknowledges it, and replayed from an atomic snapshot after a remount. If a
+consumer falls behind its bounded budget, Athena sends an explicit reset and
+truncation marker instead of silently joining incompatible VT fragments.
+Collapsed, maximized-away, and off-workspace panes keep their PTY alive without
+receiving raw renderer IPC.
 
 The `New` menu can launch:
 
@@ -559,6 +580,25 @@ which hermes
 ### Multiple Athena windows show stale UI
 
 Quit all running Athena/AppImage instances before testing a newly built AppImage. Linux AppImages mount into `/tmp/.mount_ATHENA...`, so an older running instance can make it look like a rebuild did not change the UI.
+
+### Athena is hot or slow on Linux
+
+Open **Settings → Graphics** to inspect the active graphics mode. Athena keeps
+hardware acceleration enabled on healthy Linux systems so terminal painting
+does not overload the software compositor. A GPU-process crash or interrupted
+accelerated launch quarantines the next launch into safe mode, preventing a
+crash loop. The setting always requires a restart.
+
+Environment overrides remain available for diagnosis:
+
+```bash
+CONTEXT_WORKSPACE_ENABLE_GPU=1 npm start
+CONTEXT_WORKSPACE_SAFE_GRAPHICS=1 npm start
+```
+
+The explicit GPU override wins over quarantine and should only be used when you
+can recover from a native graphics crash. Settings also shows terminal stream
+subscribers, retries, resets, dropped/truncated characters, and event-loop lag.
 
 ### Embedded shell prints an `nvm` warning
 

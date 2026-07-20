@@ -45,6 +45,9 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
     {
       cwd: backendParent,
+      // POSIX group ownership lets shutdown signal uvicorn and every child it
+      // may have spawned. Windows uses taskkill /T for the forced fallback.
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
@@ -78,6 +81,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     }
   });
 
+  const launchedProcess = backendProcess;
   backendProcess.on("error", (error) => {
     state = {
       ...state,
@@ -86,7 +90,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       lastError: `Backend failed to start with ${python}: ${error.message}`,
     };
     writeBackendDiscovery();
-    backendProcess = null;
+    if (backendProcess === launchedProcess) backendProcess = null;
   });
 
   backendProcess.on("exit", (code, signal) => {
@@ -97,7 +101,7 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       lastError: `Backend exited: ${code ?? signal ?? "unknown"}`,
     };
     writeBackendDiscovery();
-    backendProcess = null;
+    if (backendProcess === launchedProcess) backendProcess = null;
   });
 
   return waitForHealth(baseUrl);
@@ -108,29 +112,74 @@ export async function restartBackend(appRoot: string): Promise<BackendState> {
   return startBackend(appRoot);
 }
 
-export async function stopBackend(): Promise<void> {
+export async function stopBackend(): Promise<boolean> {
   const processToStop = backendProcess;
   backendProcess = null;
   if (!processToStop) {
     state = { ...state, healthy: false, running: false };
     writeBackendDiscovery();
-    return;
+    return true;
   }
 
-  await new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
-      processToStop.kill();
-      resolve();
-    }, 3000);
-    processToStop.once("exit", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
-    processToStop.kill();
-  });
+  signalBackendTree(processToStop, "SIGTERM");
+  let exited = await waitForChildExit(processToStop, 3_000);
+  if (!exited) {
+    if (process.platform === "win32" && processToStop.pid) {
+      await forceKillWindowsTree(processToStop.pid);
+    } else {
+      signalBackendTree(processToStop, "SIGKILL");
+    }
+    exited = await waitForChildExit(processToStop, 1_000);
+  }
 
   state = { ...state, healthy: false, running: false };
   writeBackendDiscovery();
+  return exited;
+}
+
+function signalBackendTree(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): boolean {
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+    }
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+function waitForChildExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode != null || child.signalCode != null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    child.once("exit", onExit);
+  });
+}
+
+function forceKillWindowsTree(pid: number): Promise<void> {
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: "ignore",
+    });
+    killer.once("error", () => resolve());
+    killer.once("exit", () => resolve());
+  });
 }
 
 export async function checkBackendHealth(): Promise<BackendState> {

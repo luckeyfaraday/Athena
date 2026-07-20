@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -85,6 +88,38 @@ def test_lists_codex_sessions_from_workspace_descendants(tmp_path: Path) -> None
     sessions = list_native_agent_sessions(workspace, home_dir=home, provider="codex")
 
     assert [session.id for session in sessions] == ["child-codex"]
+
+
+def test_codex_filters_workspace_before_provider_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    db_path = home / ".codex" / "state_5.sqlite"
+    db_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(agent_sessions, "MAX_PROVIDER_ROWS", 2)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            create table threads (
+              id text, cwd text, title text, created_at_ms integer,
+              updated_at_ms integer, git_branch text, cli_version text,
+              first_user_message text, model text, agent_role text
+            )
+            """
+        )
+        connection.execute(
+            "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("wanted-old", str(workspace), "Wanted", 1, 1, None, None, None, None, None),
+        )
+        for index in range(3):
+            connection.execute(
+                "insert into threads values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"other-{index}", str(tmp_path / "other"), "Other", 1, 100 + index, None, None, None, None, None),
+            )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="codex")
+
+    assert [session.id for session in sessions] == ["wanted-old"]
 
 
 def test_lists_codex_sessions_across_all_workspaces(tmp_path: Path) -> None:
@@ -245,6 +280,34 @@ def test_lists_opencode_sessions_from_workspace_descendants(tmp_path: Path) -> N
     assert [session.id for session in sessions] == ["opencode-child"]
 
 
+def test_opencode_filters_workspace_before_provider_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    db_path = home / ".local" / "share" / "opencode" / "opencode.db"
+    db_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(agent_sessions, "MAX_PROVIDER_ROWS", 2)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("create table project (id text, worktree text)")
+        connection.execute(
+            "create table session (id text, project_id text, directory text, title text, "
+            "time_created integer, time_updated integer, agent text, model text)"
+        )
+        connection.execute(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("wanted-old", None, str(workspace), "Wanted", 1, 1, "build", None),
+        )
+        for index in range(3):
+            connection.execute(
+                "insert into session values (?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"other-{index}", None, str(tmp_path / "other"), "Other", 1, 100 + index, "build", None),
+            )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="opencode")
+
+    assert [session.id for session in sessions] == ["wanted-old"]
+
+
 def test_reads_opencode_transcript_from_message_parts(tmp_path: Path) -> None:
     home = tmp_path / "home"
     db_path = home / ".local" / "share" / "opencode" / "opencode.db"
@@ -334,6 +397,43 @@ def test_lists_athena_code_sessions_from_native_index(tmp_path: Path) -> None:
     assert sessions[0].resume_command == f'athena-code --session "athena-session-1" "{workspace}"'
     assert "# Athena Code Session Transcript" in transcript
     assert "Implemented the session provider." in transcript
+
+
+def test_athena_filters_workspace_before_provider_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    db_path = home / ".athena-code" / "context" / "sessions.db"
+    db_path.parent.mkdir(parents=True)
+    monkeypatch.setattr(agent_sessions, "MAX_PROVIDER_ROWS", 2)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("pragma user_version = 2")
+        connection.execute(
+            """
+            create table messages (
+              id integer primary key autoincrement,
+              agent text not null,
+              session_id text not null,
+              workspace text not null,
+              role text not null,
+              ts text not null,
+              text text not null
+            )
+            """
+        )
+        connection.execute(
+            "insert into messages (agent, session_id, workspace, role, ts, text) values (?, ?, ?, ?, ?, ?)",
+            ("athena", "wanted-old", str(workspace), "user", "2026-01-01T00:00:00Z", "Wanted"),
+        )
+        for index in range(3):
+            connection.execute(
+                "insert into messages (agent, session_id, workspace, role, ts, text) values (?, ?, ?, ?, ?, ?)",
+                ("athena", f"other-{index}", str(tmp_path / "other"), "user", f"2026-06-0{index + 1}T00:00:00Z", "Other"),
+            )
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="athena")
+
+    assert [session.id for session in sessions] == ["wanted-old"]
 
 
 def _seed_athena_index(db_path: Path, workspace: Path, *, user_version: int) -> None:
@@ -430,6 +530,147 @@ def test_lists_claude_jsonl_sessions(tmp_path: Path) -> None:
     assert [session.id for session in sessions] == ["claude-session-1"]
     assert sessions[0].title == "Polish the UI"
     assert sessions[0].updated_at == "2026-05-09T12:05:00Z"
+
+
+def test_recent_jsonl_selection_avoids_rglob_and_keeps_newest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    expected: list[Path] = []
+    for index in range(5):
+        file_path = root / f"session-{index}.jsonl"
+        file_path.write_text("{}", encoding="utf-8")
+        os.utime(file_path, ns=(index + 1, index + 1))
+        if index >= 3:
+            expected.append(file_path)
+
+    monkeypatch.setattr(Path, "rglob", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded rglob")))
+
+    selected = agent_sessions._recent_jsonl_files(root, limit=2)
+
+    assert selected == list(reversed(expected))
+
+
+def test_claude_metadata_streams_only_first_200_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    file_path = tmp_path / "claude-session.jsonl"
+    first = json.dumps(
+        {
+            "sessionId": "claude-session",
+            "cwd": str(workspace),
+            "timestamp": "2026-05-09T12:00:00Z",
+            "message": {"role": "user", "content": "Bound the metadata reader"},
+        }
+    )
+    filler = json.dumps({"timestamp": "2026-05-09T12:00:01Z", "message": {"role": "assistant"}})
+    ignored = json.dumps(
+        {
+            "cwd": str(tmp_path / "wrong-workspace"),
+            "timestamp": "2026-05-09T13:00:00Z",
+            "message": {"role": "assistant", "model": "must-not-be-read"},
+        }
+    )
+    file_path.write_text("\n".join([first, *([filler] * 199), ignored, *([ignored] * 20)]), encoding="utf-8")
+
+    real_open = Path.open
+    lines_read = 0
+
+    class CountingReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal lines_read
+            value = next(self.handle)
+            lines_read += 1
+            return value
+
+    def tracking_open(path: Path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        return CountingReader(handle) if path == file_path else handle
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    monkeypatch.setattr(Path, "read_text", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("read_text")))
+
+    session = agent_sessions._read_claude_session_file(file_path, workspace, allow_missing_cwd=False)
+
+    assert session is not None
+    assert session.title == "Bound the metadata reader"
+    assert session.model is None
+    assert lines_read == agent_sessions.CLAUDE_METADATA_MAX_LINES
+
+
+def test_claude_transcript_head_stops_at_requested_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    session_id = "bounded-claude"
+    file_path = home / ".claude" / "projects" / "project" / f"{session_id}.jsonl"
+    file_path.parent.mkdir(parents=True)
+    file_path.write_text(
+        "\n".join(
+            json.dumps({"message": {"role": "user", "content": f"message-{index}-" + ("x" * 200)}})
+            for index in range(100)
+        ),
+        encoding="utf-8",
+    )
+
+    real_open = Path.open
+    lines_read = 0
+
+    class CountingReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal lines_read
+            value = next(self.handle)
+            lines_read += 1
+            return value
+
+    def tracking_open(path: Path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        return CountingReader(handle) if path == file_path else handle
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+
+    transcript = read_agent_session_transcript(
+        "claude",
+        session_id,
+        home_dir=home,
+        max_bytes=128,
+        tail=False,
+    )
+
+    assert len(transcript.encode("utf-8")) <= 128
+    assert transcript.startswith("# Claude Code Session Transcript")
+    assert lines_read < 100
+
+
+@pytest.mark.parametrize("tail", [False, True])
+def test_bounded_transcript_joiner_preserves_utf8_boundary_semantics(tail: bool) -> None:
+    parts = ["header🙂", "middle-é", "tail🙂"]
+    output = agent_sessions._BoundedTextJoiner("\n", max_bytes=13, tail=tail)
+    for part in parts:
+        output.add(part)
+
+    assert output.text() == agent_sessions._bounded_text("\n".join(parts), max_bytes=13, tail=tail)
 
 
 def test_claude_sessions_do_not_leak_across_workspaces(tmp_path: Path) -> None:
@@ -550,6 +791,152 @@ def test_lists_hermes_sessions_from_wsl_fallback(tmp_path: Path, monkeypatch: py
     assert "Review the Athena sessions" in transcript
 
 
+def test_hermes_workspace_hint_is_bounded_without_serialized_search_text(tmp_path: Path) -> None:
+    workspace = tmp_path / "project-with-hyphen"
+    workspace.mkdir()
+    file_path = tmp_path / "session_h1.json"
+    file_path.write_text(
+        json.dumps(
+            {
+                "model": "hermes-model",
+                "messages": [
+                    {"role": "user", "content": f"Continue work in {workspace} " + ("x" * 50_000)},
+                    {"role": "assistant", "content": "y" * 50_000},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = agent_sessions._read_hermes_session_file(file_path)
+
+    assert "search_text" not in metadata
+    assert metadata["workspace_hint"] is not None
+    assert len((metadata["workspace_hint"] or "").encode("utf-8")) <= agent_sessions.HERMES_WORKSPACE_HINT_MAX_BYTES
+    assert agent_sessions._hermes_session_matches_workspace(metadata, {}, workspace)
+
+
+def test_provider_path_identity_preserves_posix_case_and_roots() -> None:
+    assert agent_sessions._normalize_path("/") == "/"
+    assert agent_sessions._same_or_descendant_path("/Work/Project/child", "/Work/Project")
+    assert not agent_sessions._same_or_descendant_path("/work/project", "/Work/Project")
+    assert agent_sessions._same_or_descendant_path("/work/project", "/")
+    assert agent_sessions._same_or_descendant_path(r"C:\Users\Alan", "C:/")
+    assert agent_sessions._same_or_descendant_path("/mnt/c/Users/Alan", "C:\\")
+
+
+def test_provider_sql_workspace_filter_uses_filesystem_case_semantics() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.execute("create table sessions (cwd text)")
+        connection.executemany(
+            "insert into sessions (cwd) values (?)",
+            [("/Work/Project",), ("/Work/Project/child",), ("/work/project",), ("relative",)],
+        )
+        sql, params = agent_sessions._workspace_sql_filter("cwd", "/Work/Project")
+        assert connection.execute(f"select cwd from sessions where {sql} order by cwd", params).fetchall() == [
+            ("/Work/Project",),
+            ("/Work/Project/child",),
+        ]
+        root_sql, root_params = agent_sessions._workspace_sql_filter("cwd", "/")
+        assert connection.execute(f"select cwd from sessions where {root_sql} order by cwd", root_params).fetchall() == [
+            ("/Work/Project",),
+            ("/Work/Project/child",),
+            ("/work/project",),
+        ]
+    finally:
+        connection.close()
+
+
+def test_explicit_hermes_workspace_cannot_fall_through_to_stale_hints() -> None:
+    metadata = {
+        "workspace": "/Work/Other",
+        "workspace_hint": "Earlier work mentioned /Work/Target",
+        "title": "Continue /Work/Target",
+    }
+    assert not agent_sessions._hermes_session_matches_workspace(metadata, {}, Path("/Work/Target"))
+
+
+def test_hermes_metadata_cache_reuses_unchanged_file_and_keeps_last_good(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "session_cached.json"
+    file_path.write_text(
+        json.dumps(
+            {
+                "model": "hermes-model",
+                "last_updated": "2026-05-12T10:05:00Z",
+                "messages": [{"role": "user", "content": "Cache this metadata"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    real_read_text = Path.read_text
+    reads = 0
+
+    def counting_read_text(path: Path, *args, **kwargs):
+        nonlocal reads
+        if path == file_path:
+            reads += 1
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    first = agent_sessions._read_hermes_session_file(file_path)
+    second = agent_sessions._read_hermes_session_file(file_path)
+    file_path.write_text("{truncated", encoding="utf-8")
+    corrupt = agent_sessions._read_hermes_session_file(file_path)
+    still_corrupt = agent_sessions._read_hermes_session_file(file_path)
+
+    assert first == second == corrupt == still_corrupt
+    assert first["title"] == "Cache this metadata"
+    assert reads == 2
+
+
+def test_hermes_metadata_cache_coalesces_concurrent_cold_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "session_concurrent.json"
+    file_path.write_text(
+        json.dumps({"messages": [{"role": "user", "content": "One cold parse"}]}),
+        encoding="utf-8",
+    )
+    real_read_text = Path.read_text
+    read_started = threading.Event()
+    release_read = threading.Event()
+    second_started = threading.Event()
+    reads = 0
+    reads_lock = threading.Lock()
+
+    def blocking_read_text(path: Path, *args, **kwargs):
+        nonlocal reads
+        if path == file_path:
+            with reads_lock:
+                reads += 1
+            read_started.set()
+            assert release_read.wait(timeout=2)
+        return real_read_text(path, *args, **kwargs)
+
+    def second_read():
+        second_started.set()
+        return agent_sessions._read_hermes_session_file(file_path)
+
+    monkeypatch.setattr(Path, "read_text", blocking_read_text)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(agent_sessions._read_hermes_session_file, file_path)
+        assert read_started.wait(timeout=2)
+        second_future = executor.submit(second_read)
+        assert second_started.wait(timeout=2)
+        release_read.set()
+        first = first_future.result(timeout=2)
+        second = second_future.result(timeout=2)
+
+    assert first == second
+    assert reads == 1
+
+
 def test_hermes_sessions_do_not_leak_across_workspaces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"
@@ -617,6 +1004,41 @@ def test_hermes_sessions_match_windows_style_workspace_mentions(tmp_path: Path, 
     assert [session.id for session in sessions] == ["windows_path"]
 
 
+def test_hermes_workspace_filter_is_applied_before_result_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "older-workspace"
+    workspace.mkdir()
+    hermes_home = home / ".hermes"
+    (hermes_home / "sessions").mkdir(parents=True)
+    (hermes_home / "state.db").touch()
+
+    def fake_rows(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        for index in range(agent_sessions.MAX_PROVIDER_ROWS):
+            yield (f"new-{index}", "cli", "model", index + 1, index + 1, 1, f"New {index}")
+        yield ("older-target", "cli", "model", 1, 1, 1, "Older target")
+
+    def fake_metadata(file_path: Path) -> dict[str, str | None]:
+        return {
+            "title": file_path.stem,
+            "model": "model",
+            "platform": "cli",
+            "created_at": None,
+            "updated_at": None,
+            "workspace": str(workspace) if "older-target" in file_path.name else str(tmp_path / "other"),
+            "workspace_hint": None,
+        }
+
+    monkeypatch.setattr(agent_sessions, "_iter_sqlite", fake_rows)
+    monkeypatch.setattr(agent_sessions, "_read_hermes_session_file", fake_metadata)
+
+    sessions = list_native_agent_sessions(workspace, home_dir=home, provider="hermes")
+
+    assert [session.id for session in sessions] == ["older-target"]
+
+
 def test_lists_grok_sessions_from_session_dirs(tmp_path: Path) -> None:
     from urllib.parse import quote
 
@@ -670,6 +1092,28 @@ def test_lists_grok_sessions_from_session_dirs(tmp_path: Path) -> None:
     assert "Add Grok as a coding agent" in transcript
     assert "Wired the Grok provider." in transcript
     assert "ignored reminder" not in transcript
+
+
+def test_grok_session_directory_discovery_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from urllib.parse import quote
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    sessions_root = tmp_path / "sessions"
+    cwd_dir = sessions_root / quote(str(workspace), safe="")
+    cwd_dir.mkdir(parents=True)
+    for index in range(10):
+        session_dir = cwd_dir / f"session-{index}"
+        session_dir.mkdir()
+        os.utime(session_dir, ns=(index + 1, index + 1))
+
+    monkeypatch.setattr(agent_sessions, "MAX_FILE_SCAN_ENTRIES", 3)
+    monkeypatch.setattr(Path, "iterdir", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unbounded iterdir")))
+
+    selected = agent_sessions._recent_grok_session_dirs(sessions_root, workspace, limit=10)
+
+    assert len(selected) == 3
+    assert all(decoded == str(workspace) for _path, decoded in selected)
 
 
 def test_formats_empty_and_populated_summary(tmp_path: Path) -> None:

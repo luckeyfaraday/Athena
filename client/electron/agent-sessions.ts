@@ -1,14 +1,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import { normalizeComparablePath } from "./platform.js";
 import { querySqlite, type SqliteValue } from "./sqlite.js";
 import { mapWithConcurrency, readFilePrefix } from "./file-prefix.js";
 import { memoizeAsyncWithTtl } from "./ttl-cache.js";
 import { claudeProjectPathCandidates } from "./terminal-restore-policy.js";
+import { sessionIndexClient } from "./session-index-client.js";
 
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
 
@@ -29,22 +28,73 @@ export type AgentSession = {
   metadata: Record<string, string>;
 };
 
-const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 30_000;
 const MAX_PROVIDER_ROWS = 1000;
 const MAX_JSONL_SCAN_DIRS = 160;
 const MAX_JSONL_SCAN_FILES = 1200;
 const SESSION_FILE_PREFIX_MAX_BYTES = 512_000;
 const SESSION_FILE_SCAN_CONCURRENCY = 8;
-const sessionCache = new Map<string, { expiresAt: number; promise: Promise<AgentSession[]> }>();
+export const AGENT_SESSION_CACHE_MAX_ENTRIES = 32;
+
+export class BoundedTtlPromiseCache<T> {
+  readonly #entries = new Map<string, { expiresAt: number; promise: Promise<T> }>();
+
+  constructor(
+    readonly maxEntries: number,
+    readonly ttlMs: number,
+  ) {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error("maxEntries must be a positive integer.");
+    if (!Number.isFinite(ttlMs) || ttlMs < 0) throw new Error("ttlMs must be non-negative.");
+  }
+
+  getOrCreate(key: string, factory: () => Promise<T>, now = Date.now()): Promise<T> {
+    this.pruneExpired(now);
+    const cached = this.#entries.get(key);
+    if (cached) {
+      // Map insertion order is the LRU order; refresh it on every hit.
+      this.#entries.delete(key);
+      this.#entries.set(key, cached);
+      return cached.promise;
+    }
+
+    const promise = factory();
+    const entry = { expiresAt: now + this.ttlMs, promise };
+    this.#entries.set(key, entry);
+    while (this.#entries.size > this.maxEntries) {
+      const oldest = this.#entries.keys().next().value as string | undefined;
+      if (oldest == null) break;
+      this.#entries.delete(oldest);
+    }
+    void promise.catch(() => {
+      if (this.#entries.get(key) === entry) this.#entries.delete(key);
+    });
+    return promise;
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  private pruneExpired(now: number): void {
+    for (const [key, entry] of this.#entries) {
+      if (entry.expiresAt <= now) this.#entries.delete(key);
+    }
+  }
+}
+
+const sessionCache = new BoundedTtlPromiseCache<AgentSession[]>(AGENT_SESSION_CACHE_MAX_ENTRIES, CACHE_TTL_MS);
 
 export function listAgentSessionsCached(workspace: string, liveTerminals: EmbeddedTerminalSession[] = []): Promise<AgentSession[]> {
   const resolvedWorkspace = path.resolve(workspace);
-  const cached = sessionCache.get(resolvedWorkspace);
-  if (cached && cached.expiresAt > Date.now()) return cached.promise.then((sessions) => mergeLiveSessions(sessions, liveTerminals, resolvedWorkspace));
-  const promise = listHistoricalAgentSessions(resolvedWorkspace);
-  sessionCache.set(resolvedWorkspace, { expiresAt: Date.now() + CACHE_TTL_MS, promise });
+  const promise = sessionCache.getOrCreate(
+    resolvedWorkspace,
+    () => listHistoricalAgentSessions(resolvedWorkspace),
+  );
   return promise.then((sessions) => mergeLiveSessions(sessions, liveTerminals, resolvedWorkspace));
+}
+
+export function getAgentSessionScanDiagnostics(): ReturnType<typeof sessionIndexClient.getDiagnostics> {
+  return sessionIndexClient.getDiagnostics();
 }
 
 async function listHistoricalAgentSessions(workspace: string): Promise<AgentSession[]> {
@@ -95,12 +145,14 @@ async function readCodexSessions(workspace: string): Promise<AgentSession[]> {
   const seenIds = new Set<string>();
 
   if (fs.existsSync(dbPath)) {
+    const workspaceFilter = workspaceSqlFilter("cwd", workspace);
     const rows = await querySqlite(dbPath, [
       "select id, cwd, title, created_at_ms, updated_at_ms, git_branch, cli_version, first_user_message, model, agent_role",
       "from threads",
+      `where ${workspaceFilter.sql}`,
       "order by updated_at_ms desc",
       `limit ${MAX_PROVIDER_ROWS}`,
-    ].join(" "), []);
+    ].join(" "), workspaceFilter.params);
     for (const row of rows) {
       const id = stringValue(row[0]);
       if (!id) continue;
@@ -289,13 +341,15 @@ function boundedUtf8(value: string, maxBytes: number): string {
 async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> {
   const dbPath = path.join(os.homedir(), ".local", "share", "opencode", "opencode.db");
   if (!fs.existsSync(dbPath)) return [];
+  const workspaceFilter = workspaceSqlFilter("coalesce(s.directory, p.worktree)", workspace);
   const rows = await querySqlite(dbPath, [
     "select s.id, coalesce(s.directory, p.worktree), s.title, s.time_created, s.time_updated, s.agent, s.model, p.worktree",
     "from session s",
     "left join project p on s.project_id = p.id",
+    `where ${workspaceFilter.sql}`,
     "order by s.time_updated desc",
     `limit ${MAX_PROVIDER_ROWS}`,
-  ].join(" "), []);
+  ].join(" "), workspaceFilter.params);
   return rows.filter((row) => sameOrDescendantPath(stringValue(row[1]) || stringValue(row[7]) || workspace, workspace)).map((row): AgentSession => {
     const id = stringValue(row[0]);
     const model = parseOpenCodeModel(nullableString(row[6]));
@@ -322,6 +376,7 @@ async function readOpenCodeSessions(workspace: string): Promise<AgentSession[]> 
 async function readAthenaSessions(workspace: string): Promise<AgentSession[]> {
   const dbPath = path.join(process.env.ATHENA_CODE_HOME || path.join(os.homedir(), ".athena-code"), "context", "sessions.db");
   if (!fs.existsSync(dbPath) || !await sqliteUserVersion(dbPath, 2)) return [];
+  const workspaceFilter = workspaceSqlFilter("m.workspace", workspace);
   const rows = await querySqlite(dbPath, [
     "select m.session_id, m.workspace,",
     "(select text from messages first_user where first_user.agent = 'athena'",
@@ -330,12 +385,12 @@ async function readAthenaSessions(workspace: string): Promise<AgentSession[]> {
     "min(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end),",
     "max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end), count(*)",
     "from messages m",
-    "where m.agent = 'athena'",
+    `where m.agent = 'athena' and ${workspaceFilter.sql}`,
     "group by m.session_id, m.workspace",
     "order by (max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) is null),",
     "max(case when ts glob '[12][0-9][0-9][0-9]-*' then ts end) desc, max(id) desc",
     `limit ${MAX_PROVIDER_ROWS}`,
-  ].join(" "), []);
+  ].join(" "), workspaceFilter.params);
   return rows.filter((row) => sameOrDescendantPath(stringValue(row[1]) || workspace, workspace)).map((row): AgentSession => {
     const id = stringValue(row[0]);
     const sessionWorkspace = stringValue(row[1]) || workspace;
@@ -562,242 +617,19 @@ async function readClaudeSessionFile(filePath: string, workspace: string, option
   };
 }
 
-// The Hermes session corpus lives in a single, workspace-independent directory
-// (~/.hermes plus its state.db) and is only narrowed to a workspace by the final
-// match. Each cached entry therefore carries a workspace-agnostic session
-// template alongside the metadata needed to test workspace membership; the only
-// per-workspace field is `workspace`, applied when the entry is selected.
-type HermesScanEntry = {
-  session: AgentSession;
-  metadata: HermesSessionFileMetadata | null;
-  manifestEntry: HermesManifestEntry | undefined;
-};
-
-// Scan the global corpus once per CACHE_TTL_MS and share it across workspaces.
-// Without this, a multi-workspace review reran the entire scan — re-reading and
-// re-decoding every session file — once per open workspace, multiplying peak
-// heap by the workspace count.
-const cachedHermesScan = memoizeAsyncWithTtl(CACHE_TTL_MS, scanHermesSessions);
-
 async function readHermesSessions(workspace: string): Promise<AgentSession[]> {
-  const entries = await cachedHermesScan();
-  const matched: AgentSession[] = [];
-  for (const entry of entries) {
-    if (!hermesSessionMatchesWorkspace(entry.metadata, entry.manifestEntry, workspace)) continue;
-    matched.push({ ...entry.session, workspace });
-  }
-  return matched
-    .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
-    .slice(0, 100);
-}
-
-async function scanHermesSessions(): Promise<HermesScanEntry[]> {
-  const hermesDir = await resolveHermesDir();
-  if (!hermesDir) return [];
-  const dbPath = path.join(hermesDir, "state.db");
-  const sessionsDir = path.join(hermesDir, "sessions");
-  const manifest = await readHermesManifest(path.join(sessionsDir, "sessions.json"));
-  const entries = new Map<string, HermesScanEntry>();
-
-  if (fs.existsSync(dbPath)) {
-    const rows = await querySqlite(dbPath, [
-      "select id, source, model, started_at, ended_at, message_count, title",
-      "from sessions",
-      "order by coalesce(ended_at, started_at) desc",
-      `limit ${MAX_PROVIDER_ROWS}`,
-    ].join(" "), []);
-    for (const row of rows) {
-      const id = stringValue(row[0]);
-      if (!id) continue;
-      const metadata = await readHermesSessionFile(path.join(sessionsDir, `session_${id}.json`));
-      const manifestEntry = manifest.get(id);
-      const agent = hermesAgentLabel(nullableString(row[1]), manifestEntry, metadata);
-      const createdAt = fromEpoch(row[3]);
-      const updatedAt = row[4] ? fromEpoch(row[4]) : metadata?.updatedAt ?? manifestEntry?.updatedAt ?? createdAt;
-      entries.set(id, {
-        metadata,
-        manifestEntry,
-        session: {
-          id,
-          provider: "hermes",
-          title: cleanSessionTitle(nullableString(row[6]) || metadata?.title || manifestEntry?.title || null) || "Hermes session",
-          workspace: "",
-          branch: null,
-          model: nullableString(row[2]) || metadata?.model || null,
-          agent,
-          createdAt: metadata?.createdAt || manifestEntry?.createdAt || createdAt,
-          updatedAt,
-          status: "historical",
-          terminalId: null,
-          pid: null,
-          resumeCommand: `hermes --resume ${quoteShellArg(id)}`,
-          metadata: {},
-        },
-      });
-    }
-  }
-
-  // Fallback for installs without a session database: enumerate the on-disk
-  // session files directly. Mirrors the previous per-workspace fallback, hoisted
-  // to the shared scan (so it triggers when the database yields nothing at all).
-  if (entries.size === 0 && fs.existsSync(sessionsDir)) {
-    for (const name of await safeReadDir(sessionsDir)) {
-      const match = name.match(/^session_(.+)\.json$/);
-      if (!match || entries.has(match[1])) continue;
-      const filePath = path.join(sessionsDir, name);
-      const metadata = await readHermesSessionFile(filePath);
-      if (!metadata) continue;
-      const stat = await fs.promises.stat(filePath);
-      const manifestEntry = manifest.get(match[1]);
-      entries.set(match[1], {
-        metadata,
-        manifestEntry,
-        session: {
-          id: match[1],
-          provider: "hermes",
-          title: cleanSessionTitle(metadata.title || manifestEntry?.title || null) || "Hermes session",
-          workspace: "",
-          branch: null,
-          model: metadata.model,
-          agent: hermesAgentLabel(metadata.platform, manifestEntry, metadata),
-          createdAt: metadata.createdAt || manifestEntry?.createdAt || stat.birthtime.toISOString(),
-          updatedAt: metadata.updatedAt || manifestEntry?.updatedAt || stat.mtime.toISOString(),
-          status: "historical",
-          terminalId: null,
-          pid: null,
-          resumeCommand: `hermes --resume ${quoteShellArg(match[1])}`,
-          metadata: {},
-        },
-      });
-    }
-  }
-
-  return Array.from(entries.values());
-}
-
-async function resolveHermesDir(): Promise<string | null> {
-  const native = path.join(os.homedir(), ".hermes");
-  if (fs.existsSync(native)) return native;
-  if (process.platform !== "win32") return null;
-  try {
-    const { stdout } = await execFileAsync("wsl.exe", ["-e", "sh", "-lc", 'wslpath -w "$HOME/.hermes"'], {
-      encoding: "utf8",
-      timeout: 3000,
-      windowsHide: true,
-    });
-    const candidate = stdout.trim().split(/\r?\n/)[0];
-    return candidate && fs.existsSync(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
-}
-
-type HermesManifestEntry = {
-  title: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  platform: string | null;
-  chatType: string | null;
-};
-
-type HermesSessionFileMetadata = {
-  title: string | null;
-  model: string | null;
-  platform: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  workspace: string | null;
-  searchText: string;
-};
-
-async function readHermesManifest(filePath: string): Promise<Map<string, HermesManifestEntry>> {
-  const manifest = new Map<string, HermesManifestEntry>();
-  const parsed = await readJsonObject(filePath);
-  if (!parsed) return manifest;
-  for (const value of Object.values(parsed)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const entry = value as Record<string, unknown>;
-    const sessionId = stringProperty(entry, "session_id");
-    if (!sessionId) continue;
-    const origin = objectProperty(entry, "origin");
-    manifest.set(sessionId, {
-      title: stringProperty(entry, "display_name") || stringProperty(origin, "chat_name") || stringProperty(entry, "session_key"),
-      createdAt: stringProperty(entry, "created_at"),
-      updatedAt: stringProperty(entry, "updated_at"),
-      platform: stringProperty(entry, "platform") || stringProperty(origin, "platform"),
-      chatType: stringProperty(entry, "chat_type") || stringProperty(origin, "chat_type"),
-    });
-  }
-  return manifest;
-}
-
-async function readHermesSessionFile(filePath: string): Promise<HermesSessionFileMetadata | null> {
-  const parsed = await readJsonObject(filePath);
-  if (!parsed) return null;
-  return {
-    title: firstHermesUserMessage(parsed),
-    model: stringProperty(parsed, "model"),
-    platform: stringProperty(parsed, "platform"),
-    createdAt: stringProperty(parsed, "session_start"),
-    updatedAt: stringProperty(parsed, "last_updated"),
-    workspace: hermesWorkspace(parsed),
-    searchText: JSON.stringify(parsed).slice(0, 300_000),
-  };
-}
-
-async function readJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
-  try {
-    return parseJsonObject(await fs.promises.readFile(filePath, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-function firstHermesUserMessage(session: Record<string, unknown>): string | null {
-  const messages = session.messages;
-  if (!Array.isArray(messages)) return null;
-  for (const item of messages) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const message = item as Record<string, unknown>;
-    if (stringProperty(message, "role") !== "user") continue;
-    return cleanSessionTitle(messageText(message));
-  }
-  return null;
-}
-
-function messageText(message: Record<string, unknown>): string | null {
-  const content = message.content;
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return null;
-  return content
-    .map((item) => item && typeof item === "object" && !Array.isArray(item) ? stringProperty(item as Record<string, unknown>, "text") : null)
-    .filter(Boolean)
-    .join("\n");
-}
-
-function hermesAgentLabel(source: string | null, manifestEntry?: HermesManifestEntry, metadata?: HermesSessionFileMetadata | null): string | null {
-  const platform = manifestEntry?.platform || metadata?.platform || source;
-  const chatType = manifestEntry?.chatType;
-  return [platform, chatType].filter(Boolean).join(" / ") || null;
-}
-
-function hermesWorkspace(session: Record<string, unknown>): string | null {
-  for (const key of ["workspace", "cwd", "project_dir", "projectDir", "project_path", "projectPath", "working_directory"]) {
-    const value = stringProperty(session, key);
-    if (value) return value;
-  }
-  const context = objectProperty(session, "context_workspace") || objectProperty(session, "contextWorkspace");
-  return stringProperty(context, "project_dir") || stringProperty(context, "workspace");
-}
-
-function hermesSessionMatchesWorkspace(metadata: HermesSessionFileMetadata | null, manifestEntry: HermesManifestEntry | undefined, workspace: string): boolean {
-  if (metadata?.workspace && sameOrDescendantPath(metadata.workspace, workspace)) return true;
-  const text = normalizeSessionSearchText([
-    metadata?.title,
-    metadata?.searchText,
-    manifestEntry?.title,
-  ].filter(Boolean).join("\n"));
-  return workspaceNeedles(workspace).some((needle) => text.includes(needle));
+  const indexed = await sessionIndexClient.listHermes(workspace);
+  return indexed.map((session): AgentSession => ({
+    ...session,
+    provider: "hermes",
+    workspace,
+    branch: null,
+    status: "historical",
+    terminalId: null,
+    pid: null,
+    resumeCommand: `hermes --resume ${quoteShellArg(session.id)}`,
+    metadata: {},
+  }));
 }
 
 const warnedSessionIndexes = new Set<string>();
@@ -855,27 +687,59 @@ function samePath(left: string, right: string): boolean {
   return normalizeComparablePath(left) === normalizeComparablePath(right);
 }
 
-function sameOrDescendantPath(candidate: string, workspace: string): boolean {
+export function sameOrDescendantPath(candidate: string, workspace: string): boolean {
   const child = normalizeComparablePath(candidate);
   const parent = normalizeComparablePath(workspace);
   if (!child || !parent) return false;
   if (child === parent) return true;
-  return parent === "/" ? child.startsWith("/") : child.startsWith(`${parent}/`);
+  return child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 }
 
-function workspaceNeedles(workspace: string): string[] {
-  const normalized = normalizeComparablePath(workspace).toLowerCase();
-  const baseName = path.basename(workspace).toLowerCase();
-  const needles = new Set<string>([normalized]);
-  if (baseName.length >= 6 && /[-_]/.test(baseName)) {
-    needles.add(baseName);
-    needles.add(baseName.replace(/[-_]+/g, " "));
+/**
+ * Apply workspace narrowing before a provider's ORDER/LIMIT. The final
+ * sameOrDescendantPath check remains in JS as a correctness guard, while this
+ * SQL predicate prevents a busy unrelated workspace from consuming the global
+ * row budget first. Native Windows and WSL spellings are both included.
+ */
+export function workspaceSqlFilter(columnExpression: string, workspace: string): { sql: string; params: string[] } {
+  const slashedExpression = `replace(trim(coalesce(${columnExpression}, '')), char(92), '/')`;
+  const sensitiveExpression = `rtrim(${slashedExpression}, '/')`;
+  const insensitiveExpression = `lower(${sensitiveExpression})`;
+  const candidates = sqlWorkspaceCandidates(workspace);
+  const clauses: string[] = [];
+  const params: string[] = [];
+  for (const candidate of candidates) {
+    const expression = candidate.caseInsensitive ? insensitiveExpression : sensitiveExpression;
+    if (candidate.value === "/") {
+      // rtrim('/') is empty, so root must inspect the untrimmed spelling.
+      clauses.push(`substr(${slashedExpression}, 1, 1) = '/'`);
+      continue;
+    }
+    clauses.push(`(${expression} = ? or substr(${expression}, 1, length(?) + 1) = ? || '/')`);
+    params.push(candidate.value, candidate.value, candidate.value);
   }
-  return Array.from(needles).filter(Boolean);
+  return { sql: clauses.length > 0 ? `(${clauses.join(" or ")})` : "0", params };
 }
 
-function normalizeSessionSearchText(value: string): string {
-  return value.toLowerCase().replace(/\\/g, "/").replace(/\/+/g, "/");
+function sqlWorkspaceCandidates(workspace: string): Array<{ value: string; caseInsensitive: boolean }> {
+  const direct = workspace.trim().replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  const comparable = normalizeComparablePath(workspace) || "/";
+  const candidates = new Map<string, { value: string; caseInsensitive: boolean }>();
+  const add = (value: string, caseInsensitive: boolean): void => {
+    const normalized = caseInsensitive ? value.toLowerCase() : value;
+    candidates.set(`${caseInsensitive ? "i" : "s"}:${normalized}`, { value: normalized, caseInsensitive });
+  };
+  add(direct, isCaseInsensitiveSqlPath(direct));
+  add(comparable, isCaseInsensitiveSqlPath(comparable));
+  const drive = /^([a-z]):(?:\/(.*))?$/i.exec(comparable);
+  if (drive) add(`/mnt/${drive[1].toLowerCase()}${drive[2] ? `/${drive[2]}` : ""}`, true);
+  return Array.from(candidates.values());
+}
+
+function isCaseInsensitiveSqlPath(value: string): boolean {
+  return /^[a-z]:(?:\/|$)/i.test(value)
+    || /^\/mnt\/[a-z](?:\/|$)/i.test(value)
+    || /^\/\/[^/]+\/[^/]+/.test(value);
 }
 
 function fromEpoch(value: SqliteValue): string {

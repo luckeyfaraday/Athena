@@ -35,6 +35,7 @@ class TypedEventEmitter extends EventEmitter {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REQUEST_TIMEOUT_MS = 10_000;
+const SHUTDOWN_FORCE_KILL_MS = 1_500;
 
 export class PtyHostClient extends TypedEventEmitter {
   private child: ChildProcess | null = null;
@@ -42,6 +43,7 @@ export class PtyHostClient extends TypedEventEmitter {
   private terminalIds = new Set<string>();
   private nextRequestId = 1;
   private stopping = false;
+  private shutdownPromise: Promise<void> | null = null;
 
   async spawn(payload: PtyHostSpawnRequest): Promise<number> {
     const pid = await this.request({ type: "spawn", payload });
@@ -65,13 +67,48 @@ export class PtyHostClient extends TypedEventEmitter {
     this.terminalIds.delete(id);
   }
 
-  shutdown(): void {
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
     this.stopping = true;
-    if (!this.child || this.child.killed) return;
+    if (!this.child || this.child.killed) return Promise.resolve();
     const child = this.child;
-    void this.request({ type: "shutdown" }).finally(() => {
-      child.kill();
+    this.shutdownPromise = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let fallbackTimer: NodeJS.Timeout | null = null;
+      let forceTimer: NodeJS.Timeout | null = null;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (forceTimer) clearTimeout(forceTimer);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        child.removeListener("exit", onExit);
+        child.removeListener("error", onError);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onExit = () => finish();
+      const onError = (error: Error) => finish(error);
+      forceTimer = setTimeout(() => {
+        if (!child.killed) child.kill("SIGKILL");
+        // ChildProcess normally emits exit after kill. Do not hang application
+        // shutdown forever if the platform fails to deliver that event, but do
+        // reject so launch state is not falsely marked clean.
+        fallbackTimer = setTimeout(
+          () => finish(new Error("PTY host did not confirm exit after forced shutdown.")),
+          250,
+        );
+        fallbackTimer.unref?.();
+      }, SHUTDOWN_FORCE_KILL_MS);
+      forceTimer.unref?.();
+      child.once("exit", onExit);
+      child.once("error", onError);
+      // The host flushes its pending output, kills every owned PTY and exits.
+      // A request rejection merely accelerates the forced-kill fallback.
+      void this.request({ type: "shutdown" }).catch(() => {
+        if (!child.killed) child.kill("SIGKILL");
+      });
     });
+    return this.shutdownPromise;
   }
 
   private request(request: PtyHostClientRequest): Promise<number | null> {
@@ -105,6 +142,7 @@ export class PtyHostClient extends TypedEventEmitter {
 
   private ensureChild(): ChildProcess {
     if (this.child && !this.child.killed) return this.child;
+    if (this.stopping) throw new Error("PTY host is shutting down.");
     const hostPath = path.join(__dirname, "pty-host.js");
     const child = fork(hostPath, [], {
       execPath: process.execPath,

@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import { registerIpcHandlers } from "./ipc-handlers.js";
-import { hasPendingEmbeddedTerminalRestoreAttempts, prepareEmbeddedTerminalRestoreForQuit } from "./embedded-terminal.js";
+import {
+  confirmEmbeddedTerminalRestoreShutdown,
+  hasPendingEmbeddedTerminalRestoreAttempts,
+  prepareEmbeddedTerminalRestoreForQuit,
+} from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
@@ -14,6 +18,18 @@ import { checkDiskSpace, formatBytes, DISK_WARN_BYTES } from "./disk-guard.js";
 import { installManagedAgentSkills } from "./agent-skills.js";
 import { installAthenaCli } from "./athena-cli.js";
 import { startAutoUpdates } from "./auto-update.js";
+import {
+  beginGraphicsLaunch,
+  chooseGraphicsMode,
+  GRAPHICS_PREFERENCE_KEY,
+  initializeOwnedGraphicsLaunch,
+  isGpuFailureReason,
+  markGraphicsLaunchClean,
+  parseGraphicsPreference,
+  quarantineGraphicsAcceleration,
+} from "./graphics-state.js";
+import { getPreferences } from "./preferences.js";
+import { shouldConfirmEmbeddedTerminalRestoreShutdown } from "./terminal-restore-policy.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,6 +38,8 @@ const appRoot = path.resolve(__dirname, "..");
 
 let mainWindow: BrowserWindow | null = null;
 let viteProc: ChildProcess | null = null;
+let shutdownStarted = false;
+let shutdownComplete = false;
 
 // Resolve the ATHENA app icon for the live window/taskbar/dock. The
 // electron-builder `icon` config only brands the *packaged* bundle, so without
@@ -203,31 +221,51 @@ function installExternalLinkHandler(window: BrowserWindow): void {
   });
 }
 
-// GPU-accelerated compositing in the browser process is the source of the
-// recurring `segfault at 0 ip 0` crashes on Linux (flaky Mesa/Intel drivers
-// call a null GL entry point). Disable hardware acceleration by default on
-// Linux and in headless mode; CPU paint is slightly less smooth but stable.
-// Set CONTEXT_WORKSPACE_ENABLE_GPU=1 to opt back in on machines with healthy
-// drivers. These switches must be set before app.whenReady() / window creation.
+// Healthy Linux machines start accelerated so xterm/Chromium painting does not
+// permanently saturate the software compositor. A marker written before GPU
+// startup and GPU-process crash events quarantine the next launch into safe
+// mode, preventing the native crash loops that motivated the old global flip.
 app.commandLine.appendSwitch("no-sandbox");
 const forceGpu = process.env.CONTEXT_WORKSPACE_ENABLE_GPU === "1";
-if (!forceGpu && (process.platform === "linux" || shouldUseHeadlessGraphicsMode())) {
-  app.commandLine.appendSwitch("disable-gpu");
-  app.commandLine.appendSwitch("disable-software-rasterizer");
-  app.commandLine.appendSwitch("disable-gpu-compositing");
-  app.commandLine.appendSwitch("disable-gpu-rasterization");
-  app.disableHardwareAcceleration();
-}
+const graphicsPreference = parseGraphicsPreference(getPreferences()[GRAPHICS_PREFERENCE_KEY]);
+const graphicsDecision = chooseGraphicsMode({
+  platform: process.platform,
+  preference: graphicsPreference,
+  forceGpu,
+  forceSafe: process.env.CONTEXT_WORKSPACE_SAFE_GRAPHICS === "1",
+  headless: shouldUseHeadlessGraphicsMode(),
+});
+initializeOwnedGraphicsLaunch(singleInstanceLock, () => {
+  beginGraphicsLaunch(graphicsDecision);
+  if (graphicsDecision.mode === "safe") {
+    app.commandLine.appendSwitch("disable-gpu");
+    app.commandLine.appendSwitch("disable-software-rasterizer");
+    app.commandLine.appendSwitch("disable-gpu-compositing");
+    app.commandLine.appendSwitch("disable-gpu-rasterization");
+    app.disableHardwareAcceleration();
+  }
 
-// Capture Chromium/GPU/V8 diagnostics to a file so the next crash leaves a
-// real stack instead of a bare null-pointer core dump.
-enableChromiumLogging();
+  app.on("child-process-gone", (_event, details) => {
+    if (
+      details.type !== "GPU"
+      || graphicsDecision.mode !== "accelerated"
+      || shutdownStarted
+      || !isGpuFailureReason(details.reason)
+    ) return;
+    quarantineGraphicsAcceleration(`${details.reason}${details.exitCode == null ? "" : ` (exit ${details.exitCode})`}`);
+  });
 
-app.on("second-instance", () => {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.focus();
+  // Capture Chromium/GPU/V8 diagnostics to a file so the next crash leaves a
+  // real stack instead of a bare null-pointer core dump. Only the instance
+  // owner may hold or replace this log.
+  enableChromiumLogging();
+
+  app.on("second-instance", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
 });
 
 if (singleInstanceLock) {
@@ -327,13 +365,42 @@ app.on("window-all-closed", () => {
   }
 });
 
-app.on("before-quit", () => {
-  markAthenaCleanExit();
-  prepareEmbeddedTerminalRestoreForQuit();
-  void stopBackend();
-  void stopControlServer();
+app.on("before-quit", (event) => {
+  // A packaged second instance calls app.quit() after losing the lock. Let it
+  // exit immediately: it does not own graphics/restore/process state and must
+  // never clear the primary instance's launch marker.
+  if (!singleInstanceLock) return;
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   if (viteProc) {
     viteProc.kill();
     viteProc = null;
   }
+  const shutdown = Promise.all([
+    Promise.resolve(prepareEmbeddedTerminalRestoreForQuit()).then(() => true, () => false),
+    stopBackend().catch(() => false),
+    stopControlServer().catch(() => false),
+  ]);
+  void Promise.race<{ completedBeforeDeadline: boolean; results: boolean[] | null }>([
+    shutdown.then((results) => ({ completedBeforeDeadline: true, results })),
+    new Promise((resolve) => setTimeout(
+      () => resolve({ completedBeforeDeadline: false, results: null }),
+      5_000,
+    )),
+  ]).then(({ completedBeforeDeadline, results }) => {
+    const ptyHostShutdownConfirmed = results?.[0] === true;
+    if (shouldConfirmEmbeddedTerminalRestoreShutdown(completedBeforeDeadline, ptyHostShutdownConfirmed)) {
+      confirmEmbeddedTerminalRestoreShutdown();
+    }
+    const cleanShutdown = completedBeforeDeadline && Boolean(results?.every(Boolean));
+    // Reaching this point proves the Electron/graphics process itself exited
+    // normally, even if an owned helper failed its cleanup deadline.
+    markGraphicsLaunchClean();
+    if (cleanShutdown) markAthenaCleanExit();
+    else console.error("Athena shutdown did not confirm cleanup of every owned process; leaving launch state unclean.");
+    shutdownComplete = true;
+    app.quit();
+  });
 });

@@ -1,7 +1,7 @@
 import { Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
-import type { AthenaLaunchState, PerformanceDiagnostics } from "../electron";
+import type { AthenaLaunchState, GraphicsPreference, GraphicsRuntimeStatus, PerformanceDiagnostics } from "../electron";
 import { formatAge, recallAuditLines } from "../session-utils";
 
 type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
@@ -35,6 +35,7 @@ export function SettingsRoom({
   terminalFocus,
   performance,
   launchState,
+  graphics,
   onSelectWorkspace,
   onRestartBackend,
   onRestartControl,
@@ -44,6 +45,7 @@ export function SettingsRoom({
   onInterfaceModeChange,
   onThemeChange,
   onTerminalFocusChange,
+  onGraphicsPreferenceChange,
 }: {
   workspace: string;
   backend: BackendStatus | null;
@@ -59,6 +61,7 @@ export function SettingsRoom({
   terminalFocus: boolean;
   performance: PerformanceDiagnostics | null;
   launchState: AthenaLaunchState | null;
+  graphics: GraphicsRuntimeStatus | null;
   onSelectWorkspace: () => Promise<void>;
   onRestartBackend: () => Promise<void>;
   onRestartControl: () => Promise<void>;
@@ -68,6 +71,7 @@ export function SettingsRoom({
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
   onTerminalFocusChange: (focused: boolean) => void;
+  onGraphicsPreferenceChange: (preference: GraphicsPreference) => void;
 }) {
   const backendStatus = backendStatusView(backend);
   const electronControlStatus = electronControlStatusView(electronControl);
@@ -96,6 +100,27 @@ export function SettingsRoom({
           <button className="ghostButton" type="button" onClick={() => void onSelectWorkspace()}>
             <FolderOpen size={14} /> Change
           </button>
+        </article>
+        <article className="settingsSection">
+          <div>
+            <strong>Graphics</strong>
+            <span>{graphics
+              ? `${graphics.mode === "accelerated" ? "Hardware acceleration active" : "Crash-safe software mode active"}. ${graphics.reason}${graphics.restartRequired ? " Restart Athena to apply the selected mode." : ""}`
+              : "Graphics status unavailable."}</span>
+          </div>
+          <div className="segmentedControl" role="group" aria-label="Graphics mode">
+            {(["auto", "safe", "accelerated"] as GraphicsPreference[]).map((preference) => (
+              <button
+                key={preference}
+                type="button"
+                className={graphics?.preference === preference ? "active" : ""}
+                onClick={() => onGraphicsPreferenceChange(preference)}
+                title={preference === "accelerated" ? "Retry acceleration and automatically quarantine it after a GPU-process crash" : undefined}
+              >
+                {preference === "safe" ? "Safe" : preference === "accelerated" ? "Accelerated" : "Auto"}
+              </button>
+            ))}
+          </div>
         </article>
         <article className="settingsSection">
           <div>
@@ -334,6 +359,15 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
     `Buffered: ${formatBytes(performance.bufferedTerminalChars)} chars across terminals`,
     `Pending renderer output: ${formatBytes(performance.pendingOutputBytes)}`,
     `Per-terminal cap: ${formatBytes(performance.maxBufferChars)} chars`,
+    `Visible renderer consumers: ${performance.rendererTerminalSubscribers}`,
+    `Hidden raw renderer IPC: ${formatBytes(performance.hiddenRawIpcBytes)}`,
+    `Output recovery: ${performance.terminalOutputRetries} retries, ${performance.terminalOutputResets} resets`,
+    `Explicitly truncated: ${formatBytes(performance.terminalOutputDroppedChars)} chars`,
+    `Delivered / acknowledged: ${formatBytes(performance.terminalOutputDeliveredChars)} / ${formatBytes(performance.terminalOutputAcknowledgedChars)} chars`,
+    `Attach replay: ${performance.terminalReplayCount} snapshots, ${formatBytes(performance.terminalReplayBytes)}, ${performance.terminalReplayDurationMs.toFixed(2)} ms total (${performance.terminalReplayMaxDurationMs.toFixed(2)} ms max)`,
+    performance.sessionIndex
+      ? `Session index: ${performance.sessionIndex.filesParsed} parsed / ${performance.sessionIndex.cacheHits} cached, ${formatBytes(performance.sessionIndex.bytesParsed)}, ${Math.round(performance.sessionIndex.durationMs)} ms${performance.sessionIndex.lastError ? ` · ${performance.sessionIndex.lastError}` : ""}`
+      : "Session index: not run yet",
     `Last batch: ${performance.lastOutputBatchAt ?? "none"}`,
   ].join("\n");
 }

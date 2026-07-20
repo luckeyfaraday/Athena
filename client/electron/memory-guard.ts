@@ -18,7 +18,7 @@ export type MemoryLevel = "ok" | "warn" | "critical";
 // A point-in-time read of the host's memory situation. Kept as plain numbers so
 // classification can be unit tested without a real /proc/meminfo.
 export type MemorySnapshot = {
-  /** MemAvailable + free swap: what can be allocated before the kernel swaps. Null if unreadable. */
+  /** Physical MemAvailable headroom. Swap is never launch capacity. Null if unreadable. */
   availableBytes: number | null;
   /** Genuinely free RAM (MemFree), ignoring reclaimable cache. */
   memFreeBytes: number | null;
@@ -28,7 +28,7 @@ export type MemorySnapshot = {
 
 export type MemoryStatus = {
   level: MemoryLevel;
-  /** MemAvailable + free swap, or null if the probe failed. */
+  /** Physical MemAvailable headroom, or null if the probe failed. */
   availableBytes: number | null;
   /** Total physical RAM, for context in user-facing messages. */
   totalBytes: number;
@@ -67,7 +67,10 @@ function readLinuxMemorySnapshot(): MemorySnapshot | null {
   const swapTotalKib = parseMeminfoKib(text, "SwapTotal") ?? 0;
   const swapFreeKib = parseMeminfoKib(text, "SwapFree") ?? 0;
   return {
-    availableBytes: (memAvailableKib + swapFreeKib) * 1024,
+    // Counting unused swap here admitted exactly the kind of burst that makes
+    // the desktop freeze: the agents fit only by pushing the app into swap.
+    // Keep swap as a pressure signal below, never as launch capacity.
+    availableBytes: memAvailableKib * 1024,
     memFreeBytes: memFreeKib * 1024,
     swapTotalBytes: swapTotalKib * 1024,
     swapFreeBytes: swapFreeKib * 1024,
@@ -76,8 +79,8 @@ function readLinuxMemorySnapshot(): MemorySnapshot | null {
 
 /**
  * Best estimate of the host's memory headroom. On Linux we read /proc/meminfo so
- * we account for reclaimable cache and swap; elsewhere os.freemem() is the only
- * portable signal, so swap pressure is treated as unknown (zero).
+ * we account for reclaimable cache and observe swap pressure separately;
+ * elsewhere os.freemem() is the only portable signal, so swap is unknown.
  */
 export function readMemorySnapshot(): MemorySnapshot {
   const linux = readLinuxMemorySnapshot();

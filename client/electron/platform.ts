@@ -123,11 +123,26 @@ export function wslPathToWindowsPath(value: string): string | null {
 }
 
 export function normalizeComparablePath(value: string): string {
-  const normalized = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
-  const wslDrive = /^\/mnt\/([a-zA-Z])\/(.+)$/.exec(normalized);
-  if (wslDrive) return `${wslDrive[1]}:/${wslDrive[2]}`.toLowerCase();
-  const windowsDrive = /^\/?([a-zA-Z]):\/(.+)$/.exec(normalized);
-  if (windowsDrive) return `${windowsDrive[1]}:/${windowsDrive[2]}`.toLowerCase();
+  const slashed = value.trim().replace(/\\/g, "/");
+  if (!slashed) return "";
+
+  // Keep drive roots canonical. Removing their trailing slash turns `C:/`
+  // into the drive-relative `C:` and breaks native/WSL descendant matching.
+  const wslDrive = /^\/mnt\/([a-zA-Z])(?:\/(.*))?$/.exec(slashed);
+  if (wslDrive) {
+    const rest = (wslDrive[2] ?? "").replace(/\/+$/, "");
+    return `${wslDrive[1]}:/${rest}`.toLowerCase();
+  }
+  const windowsDrive = /^\/?([a-zA-Z]):\/(.*)$/.exec(slashed);
+  if (windowsDrive) {
+    const rest = windowsDrive[2].replace(/\/+$/, "");
+    return `${windowsDrive[1]}:/${rest}`.toLowerCase();
+  }
+
+  const withoutTrailingSlashes = slashed.replace(/\/+$/, "");
+  const normalized = withoutTrailingSlashes || (slashed.startsWith("/") ? "/" : "");
+  // UNC server/share names follow Windows' case-insensitive path semantics.
+  if (/^\/\/[^/]+\/[^/]+/.test(normalized)) return normalized.toLowerCase();
   return normalized;
 }
 

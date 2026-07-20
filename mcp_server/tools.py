@@ -685,7 +685,7 @@ def _context_mode_or_none(value: Any) -> str | None:
     if mode is None:
         return None
     normalized = mode.lower()
-    if normalized not in {"none", "task", "curated"}:
+    if normalized not in {"none", "task", "curated", "immersive", "immersive_curated"}:
         raise ValueError(f"Unsupported context_mode: {value}")
     return normalized
 

@@ -59,7 +59,7 @@ The recall bridge workflow is:
    Codex/OpenCode/Athena Code/Claude session history would help.
 3. Hermes summarizes the useful result.
 4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
-5. Context Workspace includes that cache in future run `context.md` files.
+5. Context Workspace includes that cache in explicit immersive context bundles.
 
 Session discovery tools:
 
@@ -109,6 +109,9 @@ Context modes:
 - `curated`: task prompt plus context explicitly selected by Hermes in
   `context`. This is the default for batch specs that include `context` without
   an explicit `context_mode`.
+- `immersive`: create an Athena context bundle with project instructions,
+  project-scoped memory, session recall, and recent Athena runtime turns.
+- `immersive_curated`: immersive bundle plus caller-selected context.
 
 Use `context_workspace_spawn_terminal` only when Hermes needs lower-level
 terminal control, such as opening a shell, Hermes pane, grid, or explicit resume.

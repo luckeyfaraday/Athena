@@ -81,6 +81,19 @@ test("immersive mode points at an immutable context bundle", () => {
 
   assert.match(prompt, /^# Athena Immersive Launch/);
   assert.match(prompt, /Context bundle: ctx_123/);
-  assert.match(prompt, /Read the context file before making decisions/);
+  assert.match(prompt, /Read the context file before working on the task/);
   assert.doesNotMatch(prompt, /## Curated Context/);
+});
+
+test("immersive mode without a task waits after reading startup context", () => {
+  const prompt = buildAgentContextPrompt({
+    mode: "immersive",
+    workspace: "/repo",
+    agentLabel: "Codex",
+    bundleId: "ctx_123",
+    contextPath: "/repo/.context-workspace/context/ctx_123/context.md",
+  });
+
+  assert.match(prompt, /Read the context file as startup context, then wait/);
+  assert.doesNotMatch(prompt, /Task:/);
 });

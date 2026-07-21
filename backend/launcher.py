@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-access-log", action="store_true")
     parser.add_argument(
+        "--mcp-server",
+        action="store_true",
+        help="Run Athena's bundled stdio MCP server instead of the HTTP server.",
+    )
+    parser.add_argument(
         "--refresh-recall-script",
         metavar="PATH",
         help="Run Athena's bundled recall refresh script instead of the HTTP server.",
@@ -31,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.mcp_server:
+        from mcp_server.server import main as run_mcp_server
+
+        run_mcp_server()
+        return 0
     if args.refresh_recall_script:
         runpy.run_path(args.refresh_recall_script, run_name="__main__")
         return 0

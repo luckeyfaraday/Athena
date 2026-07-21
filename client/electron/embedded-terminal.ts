@@ -10,7 +10,9 @@ import {
   buildClaudeMcpConfig,
   buildCodexMcpConfigArgs,
   buildOpenCodeMcpConfigContent,
+  bundledMcpServerCommand,
   type AgentMcpLaunch,
+  type McpServerCommand,
 } from "./agent-mcp.js";
 import {
   agentMessageEnvelope,
@@ -85,6 +87,7 @@ import {
 } from "./terminal-output-stream.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
 import {
+  defaultPythonExecutable,
   resolveOpenCodeBaselineBinary,
   tempWorkspaceDirectory,
 } from "./platform.js";
@@ -1529,12 +1532,19 @@ function missingSession(id: string): EmbeddedTerminalSession {
   };
 }
 
-function resolveMcpServerPath(): string | null {
+function resolveMcpServerCommand(): McpServerCommand | null {
   if (!_appRoot) return null;
-  // Same logic as resolveBackendParent in backend.ts: one level up from appRoot covers both dev and packaged
   const parent = _appRoot.includes(".asar") ? path.dirname(_appRoot) : path.resolve(_appRoot, "..");
-  const candidate = path.join(parent, "mcp_server", "server.py");
-  return fs.existsSync(candidate) ? candidate : null;
+  const bundledRuntime = bundledMcpServerCommand(_appRoot);
+  if (bundledRuntime) {
+    return fs.existsSync(bundledRuntime.command)
+      ? bundledRuntime
+      : null;
+  }
+  const serverPath = path.join(parent, "mcp_server", "server.py");
+  return fs.existsSync(serverPath)
+    ? { command: defaultPythonExecutable(), args: [serverPath] }
+    : null;
 }
 
 // MCP wiring split: `launch` is threaded into the command builders (Claude's
@@ -1546,17 +1556,17 @@ type AgentMcpWiring = { launch: AgentMcpLaunch | null; env: Record<string, strin
 function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | null, controlUrl: string | null): AgentMcpWiring {
   const empty: AgentMcpWiring = { launch: null, env: {} };
   if (!isAgentKind(kind) || !backendUrl || !controlUrl) return empty;
-  const serverPath = resolveMcpServerPath();
-  if (!serverPath) return empty;
+  const server = resolveMcpServerCommand();
+  if (!server) return empty;
   try {
     if (kind === "claude") {
-      return { launch: { configPath: writeClaudeMcpConfigFile(serverPath, backendUrl, controlUrl) }, env: {} };
+      return { launch: { configPath: writeClaudeMcpConfigFile(server, backendUrl, controlUrl) }, env: {} };
     }
     if (kind === "codex") {
-      return { launch: { codexConfigArgs: buildCodexMcpConfigArgs(serverPath, backendUrl, controlUrl) }, env: {} };
+      return { launch: { codexConfigArgs: buildCodexMcpConfigArgs(server, backendUrl, controlUrl) }, env: {} };
     }
     if (kind === "opencode" || kind === "athena") {
-      return { launch: null, env: { OPENCODE_CONFIG_CONTENT: buildOpenCodeMcpConfigContent(serverPath, backendUrl, controlUrl) } };
+      return { launch: null, env: { OPENCODE_CONFIG_CONTENT: buildOpenCodeMcpConfigContent(server, backendUrl, controlUrl) } };
     }
     // Hermes is intentionally unwired: the context_workspace server proxies into
     // the backend (i.e. Hermes itself), so its memory/ask tools would be circular.
@@ -1572,9 +1582,9 @@ function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | 
   return empty;
 }
 
-function writeClaudeMcpConfigFile(serverPath: string, backendUrl: string, controlUrl: string): string {
+function writeClaudeMcpConfigFile(server: McpServerCommand, backendUrl: string, controlUrl: string): string {
   const configPath = path.join(tempWorkspaceDirectory(), `athena-claude-mcp-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
-  const config = buildClaudeMcpConfig(serverPath, backendUrl, controlUrl);
+  const config = buildClaudeMcpConfig(server, backendUrl, controlUrl);
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: "utf8", mode: 0o600 });
   return configPath;
 }

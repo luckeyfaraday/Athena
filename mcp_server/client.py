@@ -9,7 +9,10 @@ from urllib.request import Request, urlopen
 
 import httpx
 
-from config import Settings
+try:
+    from .config import Settings
+except ImportError:  # Preserve imports when mcp_server/ itself is on sys.path.
+    from config import Settings
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 

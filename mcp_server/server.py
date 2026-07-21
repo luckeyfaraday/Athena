@@ -8,7 +8,10 @@ import sys
 from collections.abc import Callable
 from typing import Any, get_args, get_origin, get_type_hints
 
-import tools
+try:
+    from . import tools
+except ImportError:  # Preserve direct `python mcp_server/server.py` launches.
+    import tools
 
 
 TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {

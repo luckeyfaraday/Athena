@@ -81,6 +81,70 @@ function isolatedRuntimeEnvironment() {
   };
 }
 
+async function smokeMcpServer() {
+  const stderr = { value: "" };
+  const child = childProcess.spawn(executable, ["--mcp-server"], {
+    cwd: repositoryRoot,
+    env: isolatedRuntimeEnvironment(),
+    windowsHide: true,
+  });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr.value = `${stderr.value}${chunk}`.slice(-16_384);
+  });
+
+  try {
+    const response = await new Promise((resolve, reject) => {
+      let stdout = "";
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve(value);
+      };
+      const timeout = setTimeout(
+        () => finish(new Error(`Bundled MCP server handshake timed out.\n${stderr.value}`)),
+        10_000,
+      );
+      child.once("error", (error) => finish(error));
+      child.once("exit", (code, signal) => {
+        if (!settled) {
+          finish(new Error(`Bundled MCP server exited before initialize: ${code ?? signal}.\n${stderr.value}`));
+        }
+      });
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        const newline = stdout.indexOf("\n");
+        if (newline < 0) return;
+        try {
+          finish(null, JSON.parse(stdout.slice(0, newline)));
+        } catch (error) {
+          finish(error);
+        }
+      });
+      child.stdin.end(`${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "athena-runtime-smoke", version: "1" },
+        },
+      })}\n`);
+    });
+    if (response?.id !== 1 || response?.result?.serverInfo?.name !== "context_workspace") {
+      throw new Error(`Bundled MCP server returned an invalid initialize response: ${JSON.stringify(response)}`);
+    }
+    console.log("Bundled MCP server initialize handshake passed.");
+  } finally {
+    await stopChild(child);
+  }
+}
+
 const port = await findFreePort();
 const stderr = { value: "" };
 const childError = { value: null };
@@ -107,3 +171,5 @@ try {
 } finally {
   await stopChild(child);
 }
+
+await smokeMcpServer();

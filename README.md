@@ -430,6 +430,10 @@ lets Hermes *drive* Athena (spawn terminals, read sessions, write recall).
 ## Hermes MCP Bridge
 
 Athena includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace.
+Packaged desktop builds automatically launch this bridge from Athena's bundled
+runtime for Codex, Claude, OpenCode, and Athena Code, so those agents do not
+need Python or MCP dependencies installed on the host. The manual setup below
+is only for a separately installed Hermes process that needs to drive Athena.
 
 Install the MCP server dependencies into the Python environment Hermes will use:
 

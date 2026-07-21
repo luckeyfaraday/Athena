@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend import launcher
+from mcp_server import server as mcp_server
 
 
 def test_launcher_starts_uvicorn_with_requested_options(monkeypatch) -> None:
@@ -33,3 +34,13 @@ def test_launcher_can_run_the_bundled_recall_refresh_script(tmp_path: Path) -> N
 
     assert result == 0
     assert marker.read_text(encoding="utf-8") == "refreshed"
+
+
+def test_launcher_can_run_the_bundled_mcp_server(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(mcp_server, "main", lambda: calls.append("mcp"))
+
+    result = launcher.main(["--mcp-server"])
+
+    assert result == 0
+    assert calls == ["mcp"]

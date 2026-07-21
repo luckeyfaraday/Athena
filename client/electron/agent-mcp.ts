@@ -8,8 +8,10 @@
 //   - opencode / athena-code -> the `OPENCODE_CONFIG_CONTENT` env var, which is
 //     deep-merged over the user's config so their providers/auth stay intact.
 //
-// All three point at the same stdio server (`python3 <server.py>`) and pass the
-// backend/control URLs through the environment the server reads on startup.
+// All three point at the same stdio server command and pass the backend/control
+// URLs through the environment the server reads on startup.
+
+import path from "node:path";
 
 export const MCP_SERVER_NAME = "context_workspace";
 
@@ -23,6 +25,24 @@ export type AgentMcpLaunch = {
   codexConfigArgs?: readonly string[] | null;
 };
 
+export type McpServerCommand = {
+  command: string;
+  args: string[];
+};
+
+export function bundledMcpServerCommand(
+  appRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): McpServerCommand | null {
+  if (!appRoot.includes(".asar")) return null;
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const executable = platform === "win32" ? "athena-backend.exe" : "athena-backend";
+  return {
+    command: pathApi.join(pathApi.dirname(appRoot), "backend-runtime", "athena-backend", executable),
+    args: ["--mcp-server"],
+  };
+}
+
 export type ClaudeMcpConfig = {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
 };
@@ -34,19 +54,19 @@ function mcpServerEnv(backendUrl: string, controlUrl: string): Record<string, st
   };
 }
 
-export function buildClaudeMcpConfig(serverPath: string, backendUrl: string, controlUrl: string): ClaudeMcpConfig {
+export function buildClaudeMcpConfig(server: McpServerCommand, backendUrl: string, controlUrl: string): ClaudeMcpConfig {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
-        command: "python3",
-        args: [serverPath],
+        command: server.command,
+        args: server.args,
         env: mcpServerEnv(backendUrl, controlUrl),
       },
     },
   };
 }
 
-export function buildCodexMcpConfigArgs(serverPath: string, backendUrl: string, controlUrl: string): string[] {
+export function buildCodexMcpConfigArgs(server: McpServerCommand, backendUrl: string, controlUrl: string): string[] {
   // Codex parses the value after each `=` as TOML, falling back to a literal
   // string. Basic (double-quoted) TOML strings share JSON's escaping rules for
   // the paths and URLs used here, so JSON.stringify produces a valid TOML value.
@@ -57,13 +77,13 @@ export function buildCodexMcpConfigArgs(serverPath: string, backendUrl: string, 
     .map(([name, value]) => `${name}=${toml(value)}`)
     .join(",");
   return [
-    `${key}.command=${toml("python3")}`,
-    `${key}.args=[${toml(serverPath)}]`,
+    `${key}.command=${toml(server.command)}`,
+    `${key}.args=[${server.args.map(toml).join(",")}]`,
     `${key}.env={${envTable}}`,
   ];
 }
 
-export function buildOpenCodeMcpConfigContent(serverPath: string, backendUrl: string, controlUrl: string): string {
+export function buildOpenCodeMcpConfigContent(server: McpServerCommand, backendUrl: string, controlUrl: string): string {
   // opencode (and the athena-code fork) deep-merge OPENCODE_CONFIG_CONTENT over
   // the resolved config, so injecting only the `mcp` block leaves the user's
   // providers, agents, and auth untouched.
@@ -71,7 +91,7 @@ export function buildOpenCodeMcpConfigContent(serverPath: string, backendUrl: st
     mcp: {
       [MCP_SERVER_NAME]: {
         type: "local",
-        command: ["python3", serverPath],
+        command: [server.command, ...server.args],
         enabled: true,
         environment: mcpServerEnv(backendUrl, controlUrl),
       },

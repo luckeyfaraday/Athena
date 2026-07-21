@@ -14,6 +14,14 @@ export type BackendState = {
   lastError: string | null;
 };
 
+export type BackendLaunch = {
+  command: string;
+  args: string[];
+  bundled: boolean;
+};
+
+const BACKEND_STDERR_LIMIT = 16_384;
+
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
 let startedAt: string | null = null;
 let state: BackendState = {
@@ -35,14 +43,14 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
 
   const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
-  const python = defaultPythonExecutable();
+  const launch = resolveBackendLaunch(appRoot, port);
   const backendParent = resolveBackendParent(appRoot);
   const hermesRefreshCommand = process.env.CONTEXT_WORKSPACE_HERMES_REFRESH_CMD?.trim()
-    || defaultHermesRefreshCommand(appRoot, python);
+    || defaultHermesRefreshCommand(appRoot, launch);
 
   backendProcess = spawn(
-    python,
-    ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
+    launch.command,
+    launch.args,
     {
       cwd: backendParent,
       // POSIX group ownership lets shutdown signal uvicorn and every child it
@@ -52,7 +60,9 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
         ...process.env,
         CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
         CONTEXT_WORKSPACE_HERMES_REFRESH_CMD: hermesRefreshCommand,
-        PYTHONPATH: mergePythonPath(backendParent, process.env.PYTHONPATH),
+        // Frozen runtimes already contain the backend package and dependencies.
+        // Keep host modules from shadowing that tested bundle at runtime.
+        PYTHONPATH: launch.bundled ? "" : mergePythonPath(backendParent, process.env.PYTHONPATH),
       },
       windowsHide: true,
     },
@@ -72,8 +82,11 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
     // Drain stdout so a verbose backend cannot block on pipe backpressure.
   });
 
+  let stderrTail = "";
   backendProcess.stderr.on("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf8").trim();
+    const rawText = chunk.toString("utf8");
+    stderrTail = `${stderrTail}${rawText}`.slice(-BACKEND_STDERR_LIMIT);
+    const text = rawText.trim();
     for (const line of text.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean)) {
       if (isBackendErrorLine(line)) {
         state = { ...state, lastError: line };
@@ -87,18 +100,19 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       ...state,
       healthy: false,
       running: false,
-      lastError: `Backend failed to start with ${python}: ${error.message}`,
+      lastError: `Backend failed to start with ${launch.command}: ${error.message}`,
     };
     writeBackendDiscovery();
     if (backendProcess === launchedProcess) backendProcess = null;
   });
 
   backendProcess.on("exit", (code, signal) => {
+    const exitSummary = `Backend exited: ${code ?? signal ?? "unknown"}`;
     state = {
       ...state,
       healthy: false,
       running: false,
-      lastError: `Backend exited: ${code ?? signal ?? "unknown"}`,
+      lastError: formatBackendExitError(exitSummary, stderrTail),
     };
     writeBackendDiscovery();
     if (backendProcess === launchedProcess) backendProcess = null;
@@ -258,13 +272,40 @@ function resolveBackendParent(appRoot: string): string {
   return path.resolve(appRoot, "..");
 }
 
+export function resolveBackendLaunch(appRoot: string, port: number): BackendLaunch {
+  const configuredPython = process.env.CONTEXT_WORKSPACE_PYTHON?.trim();
+  if (configuredPython) {
+    return pythonBackendLaunch(configuredPython, port);
+  }
+  if (appRoot.includes(".asar")) {
+    const executable = process.platform === "win32" ? "athena-backend.exe" : "athena-backend";
+    return {
+      command: path.join(path.dirname(appRoot), "backend-runtime", "athena-backend", executable),
+      args: ["--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
+      bundled: true,
+    };
+  }
+  return pythonBackendLaunch(defaultPythonExecutable(), port);
+}
+
+function pythonBackendLaunch(python: string, port: number): BackendLaunch {
+  return {
+    command: python,
+    args: ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
+    bundled: false,
+  };
+}
+
 function mergePythonPath(backendParent: string, existing: string | undefined): string {
   return existing ? `${backendParent}${path.delimiter}${existing}` : backendParent;
 }
 
-function defaultHermesRefreshCommand(appRoot: string, python: string): string {
+export function defaultHermesRefreshCommand(appRoot: string, launch: BackendLaunch): string {
   const scriptPath = resolveRefreshScriptPath(appRoot);
-  return `${quoteCommandArg(python)} ${quoteCommandArg(scriptPath)}`;
+  const command = quoteCommandArg(launch.command);
+  return launch.bundled
+    ? `${command} --refresh-recall-script ${quoteCommandArg(scriptPath)}`
+    : `${command} ${quoteCommandArg(scriptPath)}`;
 }
 
 function resolveRefreshScriptPath(appRoot: string): string {
@@ -295,6 +336,11 @@ function fetchHealthStatus(baseUrl: string): Promise<number> {
 
 function isBackendErrorLine(line: string): boolean {
   return /^(ERROR|CRITICAL):/.test(line) || line.startsWith("Traceback ");
+}
+
+export function formatBackendExitError(exitSummary: string, stderr: string): string {
+  const detail = stderr.trim();
+  return detail ? `${exitSummary}\n${detail}` : exitSummary;
 }
 
 function writeBackendDiscovery(): void {

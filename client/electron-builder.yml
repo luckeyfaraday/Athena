@@ -16,6 +16,10 @@ files:
   - build/icon.png
   - package.json
 extraResources:
+  - from: backend-runtime/athena-backend
+    to: backend-runtime/athena-backend
+    filter:
+      - "**/*"
   - from: ../backend
     to: backend
     filter:

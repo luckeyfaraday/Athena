@@ -14,12 +14,14 @@
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "tsc -p tsconfig.json && vite build && npm run build:electron",
     "build:electron": "tsc -p tsconfig.electron.json",
+    "build:backend-runtime": "node ../scripts/build-backend-runtime.mjs",
     "test:chat": "node --test tests/app-state.test.mjs tests/chat-mode.test.mjs tests/embedded-scroll.test.mjs tests/workspace-attention.test.mjs tests/session-utils.test.mjs tests/pane-layout.test.mjs tests/workspace-utils.test.mjs",
-    "test:electron": "npm run build:electron && node --test tests/platform.test.mjs tests/input-sequencing.test.mjs tests/pty-write.test.mjs tests/agent-context.test.mjs tests/agent-routing.test.mjs tests/agent-skills.test.mjs tests/agent-mcp.test.mjs tests/athena-cli.test.mjs tests/agent-sessions.test.mjs tests/hermes-session-index.test.mjs tests/session-index-client.test.mjs tests/terminal-activity.test.mjs tests/terminal-attention.test.mjs tests/terminal-env.test.mjs tests/external-links.test.mjs tests/terminal-restore.test.mjs tests/launch-state.test.mjs tests/graphics-state.test.mjs tests/terminal-launch.test.mjs tests/terminal-buffer.test.mjs tests/terminal-output-ack.test.mjs tests/file-prefix.test.mjs tests/ttl-cache.test.mjs tests/control-access.test.mjs tests/terminal-input.test.mjs tests/disk-guard.test.mjs tests/memory-guard.test.mjs tests/update-mode.test.mjs",
+    "test:electron": "npm run build:electron && node --test tests/backend.test.mjs tests/platform.test.mjs tests/input-sequencing.test.mjs tests/pty-write.test.mjs tests/agent-context.test.mjs tests/agent-routing.test.mjs tests/agent-skills.test.mjs tests/agent-mcp.test.mjs tests/athena-cli.test.mjs tests/agent-sessions.test.mjs tests/hermes-session-index.test.mjs tests/session-index-client.test.mjs tests/terminal-activity.test.mjs tests/terminal-attention.test.mjs tests/terminal-env.test.mjs tests/external-links.test.mjs tests/terminal-restore.test.mjs tests/launch-state.test.mjs tests/graphics-state.test.mjs tests/terminal-launch.test.mjs tests/terminal-buffer.test.mjs tests/terminal-output-ack.test.mjs tests/file-prefix.test.mjs tests/ttl-cache.test.mjs tests/control-access.test.mjs tests/terminal-input.test.mjs tests/disk-guard.test.mjs tests/memory-guard.test.mjs tests/update-mode.test.mjs",
+    "test:backend-runtime": "node ../scripts/smoke-backend-runtime.mjs",
     "test:regression": "npm run build:electron && node tests/run-regressions.mjs",
     "start": "electron .",
-    "package": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder"
+    "package": "npm run build:backend-runtime && npm run build && electron-builder --dir",
+    "dist": "npm run build:backend-runtime && npm run test:backend-runtime && npm run build && electron-builder"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",

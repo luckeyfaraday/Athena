@@ -9,7 +9,10 @@ from typing import Any
 
 import httpx
 
-from client import ContextWorkspaceClient, ContextWorkspaceElectronClient, get_electron_control_status
+try:
+    from .client import ContextWorkspaceClient, ContextWorkspaceElectronClient, get_electron_control_status
+except ImportError:  # Preserve direct `python mcp_server/server.py` launches.
+    from client import ContextWorkspaceClient, ContextWorkspaceElectronClient, get_electron_control_status
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

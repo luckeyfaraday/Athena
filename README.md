@@ -184,7 +184,10 @@ If your preferred Python is not `python3`, set:
 export CONTEXT_WORKSPACE_PYTHON=/absolute/path/to/python
 ```
 
-The Electron app uses this value when spawning the FastAPI backend.
+Development builds use this value when spawning the FastAPI backend. Packaged
+desktop releases include a self-contained backend runtime and do not require
+FastAPI, Uvicorn, or Python to be installed on the host. Setting
+`CONTEXT_WORKSPACE_PYTHON` explicitly overrides that bundled runtime.
 
 ## Running The Desktop App
 
@@ -211,9 +214,14 @@ npm run build
 To build an AppImage on Linux:
 
 ```bash
+python3 -m pip install -r backend/requirements-build.txt
 cd client
 npm run dist
 ```
+
+`npm run dist` builds and smoke-tests the bundled backend before packaging the
+desktop artifact. The same process runs natively for the Windows and macOS
+release jobs.
 
 To launch a previously built Electron app:
 
@@ -422,6 +430,10 @@ lets Hermes *drive* Athena (spawn terminals, read sessions, write recall).
 ## Hermes MCP Bridge
 
 Athena includes an MCP server under `mcp_server/` so Hermes can call into the running desktop workspace.
+Packaged desktop builds automatically launch this bridge from Athena's bundled
+runtime for Codex, Claude, OpenCode, and Athena Code, so those agents do not
+need Python or MCP dependencies installed on the host. The manual setup below
+is only for a separately installed Hermes process that needs to drive Athena.
 
 Install the MCP server dependencies into the Python environment Hermes will use:
 
@@ -557,7 +569,10 @@ bundle and hand the agent a bootstrap prompt that points at the bundle file.
 
 ### Backend does not start
 
-Check that backend dependencies are installed and that Electron is using the expected Python:
+Packaged releases use Athena's bundled backend. Check
+`~/.context-workspace/backend.json` for the captured startup error. For local
+development, verify that backend dependencies are installed and Electron is
+using the expected Python:
 
 ```bash
 export CONTEXT_WORKSPACE_PYTHON=/path/to/python

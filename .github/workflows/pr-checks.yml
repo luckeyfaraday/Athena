@@ -29,7 +29,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt -r mcp_server/requirements.txt pytest httpx
+          python -m pip install -r backend/requirements-build.txt -r mcp_server/requirements.txt pytest httpx
 
       - name: Run backend tests
         run: python -m pytest
@@ -53,6 +53,12 @@ jobs:
       - name: Build client
         working-directory: client
         run: npm run build
+
+      - name: Build and smoke-test bundled backend
+        working-directory: client
+        run: |
+          npm run build:backend-runtime
+          npm run test:backend-runtime
 
       - name: Run permanent regression suite
         run: python scripts/run_regression_checks.py

@@ -7,6 +7,7 @@ import {
   isWindowsPath,
   isWslPath,
   normalizeComparablePath,
+  preferredWindowsPowerShell,
   scriptExtensionForPlatform,
   toWorkspacePath,
   windowsPathToWslPath,
@@ -66,6 +67,11 @@ test("selects platform-specific command lookup and script conventions", () => {
   assert.equal(commandLookupTool("darwin"), "which");
   assert.equal(scriptExtensionForPlatform("win32"), ".ps1");
   assert.equal(scriptExtensionForPlatform("linux"), ".sh");
+});
+
+test("prefers PowerShell 7 on Windows and falls back to Windows PowerShell", () => {
+  assert.equal(preferredWindowsPowerShell((command) => command === "pwsh.exe"), "pwsh.exe");
+  assert.equal(preferredWindowsPowerShell(() => false), "powershell.exe");
 });
 
 test("generates Windows Terminal split-pane arguments", () => {

@@ -7,6 +7,7 @@ import {
   commandExists,
   isWindows,
   nativeTerminalLaunch,
+  preferredWindowsPowerShell,
   quotePowerShell,
   quoteShell,
   scriptExtension,
@@ -76,7 +77,7 @@ export async function startCodexTerminal(workspace: string, window: BrowserWindo
   };
 
   const launch = isWindows
-    ? { command: "powershell.exe", args: ["-NoLogo", "-NoExit", "-Command", "codex"] }
+    ? { command: preferredWindowsPowerShell(), args: ["-NoLogo", "-NoExit", "-Command", "codex"] }
     : { command: "script", args: ["-qfec", "codex", "/dev/null"] };
 
   const terminalEnv = sanitizedTerminalEnv();

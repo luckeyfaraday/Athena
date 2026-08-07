@@ -17,6 +17,7 @@ import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
 import {
   defaultShell,
   isWindows,
+  preferredWindowsPowerShell,
   quotePowerShell,
   quoteShell,
 } from "./platform.js";
@@ -98,27 +99,28 @@ export function terminalLaunch(
   model?: string | null,
 ): { command: string; args: string[] } {
   if (isWindows) {
+    const shell = preferredWindowsPowerShell();
     if (kind === "hermes" && resumeSessionId) {
       return {
-        command: "powershell.exe",
+        command: shell,
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchHermesPowerShellCommand(cwd, resumeSessionId)],
       };
     }
     if (kind === "hermes") {
       return {
-        command: "powershell.exe",
+        command: shell,
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchHermesPowerShellCommand(cwd)],
       };
     }
     if (kind !== "shell" && resumeSessionId) {
       return {
-        command: "powershell.exe",
+        command: shell,
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcp)],
       };
     }
     if (kind !== "shell") {
       return {
-        command: "powershell.exe",
+        command: shell,
         args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcp, newSessionId, model)],
       };
     }

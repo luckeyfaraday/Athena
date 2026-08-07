@@ -26,8 +26,14 @@ export type TerminalLauncher = {
 };
 
 export function defaultShell(): TerminalLaunch {
-  if (isWindows) return { command: "cmd.exe", args: [] };
+  if (isWindows) return { command: preferredWindowsPowerShell(), args: ["-NoLogo"] };
   return { command: "bash", args: ["-l"] };
+}
+
+export function preferredWindowsPowerShell(
+  exists: (command: string) => boolean = commandExists,
+): "pwsh.exe" | "powershell.exe" {
+  return exists("pwsh.exe") ? "pwsh.exe" : "powershell.exe";
 }
 
 export function defaultPythonExecutable(): string {

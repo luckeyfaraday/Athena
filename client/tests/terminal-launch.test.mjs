@@ -20,7 +20,7 @@ const INJECTION = "'; rm -rf ~; echo '";
 test("terminalLaunch uses the platform launch shell", () => {
   const launch = terminalLaunch("codex", "/home/dev/project", "/tmp/prompt.md");
   if (process.platform === "win32") {
-    assert.equal(launch.command, "powershell.exe");
+    assert.equal(["pwsh.exe", "powershell.exe"].includes(launch.command), true);
     assert.equal(launch.args[0], "-NoLogo");
     assert.equal(launch.args[4], "-Command");
     assert.equal(typeof launch.args[5], "string");

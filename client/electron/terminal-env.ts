@@ -11,13 +11,39 @@ const NVM_INCOMPATIBLE_NPM_ENV = [
 
 export function sanitizedTerminalEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
+  removeInheritedVirtualEnvironment(env);
   for (const key of NVM_INCOMPATIBLE_NPM_ENV) {
     delete env[key];
   }
   const prefix = npmGlobalPrefix(source);
   env.CONTEXT_WORKSPACE_NPM_PREFIX = prefix;
   prependPathEntry(env, npmGlobalBinPath(prefix));
+  prependSelectedPython(env, source.CONTEXT_WORKSPACE_PYTHON);
   return env;
+}
+
+function removeInheritedVirtualEnvironment(env: NodeJS.ProcessEnv): void {
+  const virtualEnv = env.VIRTUAL_ENV?.trim();
+  delete env.VIRTUAL_ENV;
+  delete env.PYTHONHOME;
+  if (!virtualEnv) return;
+
+  const pathKey = "Path" in env && !("PATH" in env) ? "Path" : "PATH";
+  const current = env[pathKey];
+  if (!current) return;
+  const virtualEnvBin = process.platform === "win32"
+    ? path.join(virtualEnv, "Scripts")
+    : path.join(virtualEnv, "bin");
+  env[pathKey] = current
+    .split(path.delimiter)
+    .filter((entry) => normalizePathEntry(entry) !== normalizePathEntry(virtualEnvBin))
+    .join(path.delimiter);
+}
+
+function prependSelectedPython(env: NodeJS.ProcessEnv, executable: string | undefined): void {
+  const selected = executable?.trim();
+  if (!selected || !path.isAbsolute(selected)) return;
+  prependPathEntry(env, path.dirname(selected));
 }
 
 function npmGlobalPrefix(source: NodeJS.ProcessEnv): string {

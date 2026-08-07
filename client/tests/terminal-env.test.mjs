@@ -60,3 +60,29 @@ test("terminal env preserves Windows-style Path key", () => {
   assert.equal(env.Path, [npmGlobalBinPath(prefix), "C:\\Windows\\System32"].join(path.delimiter));
   assert.equal("PATH" in env, false);
 });
+
+test("terminal env removes an inherited Python virtual environment", () => {
+  const virtualEnv = path.join(os.homedir(), "tool-venv");
+  const virtualEnvBin = process.platform === "win32"
+    ? path.join(virtualEnv, "Scripts")
+    : path.join(virtualEnv, "bin");
+  const env = sanitizedTerminalEnv({
+    PATH: [virtualEnvBin, "/usr/bin"].join(path.delimiter),
+    VIRTUAL_ENV: virtualEnv,
+    PYTHONHOME: virtualEnv,
+  });
+
+  assert.equal("VIRTUAL_ENV" in env, false);
+  assert.equal("PYTHONHOME" in env, false);
+  assert.equal(env.PATH?.split(path.delimiter).includes(virtualEnvBin), false);
+});
+
+test("terminal env puts the configured Athena Python first on PATH", () => {
+  const python = path.resolve("selected-python", process.platform === "win32" ? "python.exe" : "python");
+  const env = sanitizedTerminalEnv({
+    PATH: "/usr/bin",
+    CONTEXT_WORKSPACE_PYTHON: python,
+  });
+
+  assert.equal(env.PATH?.split(path.delimiter).at(0), path.dirname(python));
+});

@@ -464,6 +464,17 @@ env:
   CONTEXT_WORKSPACE_BACKEND_URL: "http://127.0.0.1:8000"
 ```
 
+**Windows notes:**
+
+- Launch the backend as a module from the repo root: `python -m backend.launcher --host 127.0.0.1 --port 8000`. Running the file path directly (`python backend/launcher.py`) fails with `ModuleNotFoundError: No module named 'backend'`, because the repo root never lands on `sys.path`.
+- When a system-wide proxy is active (Clash, v2rayN, etc.), `httpx` in the MCP bridge picks up the Windows system proxy and sends localhost traffic through it, producing `502 Bad Gateway` even though the backend is running. Exclude loopback via `NO_PROXY` in the bridge env:
+
+```yaml
+env:
+  CONTEXT_WORKSPACE_BACKEND_URL: "http://127.0.0.1:8000"
+  NO_PROXY: "127.0.0.1,localhost"
+```
+
 The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, visible embedded terminal spawning, legacy agent run management, artifact reads, transcript reads, and project-local recall cache management.
 
 Visible terminal tools require the Electron app itself, not only the FastAPI backend. Electron writes control discovery state to:

@@ -87,6 +87,7 @@ class FakeHermesManager:
         question: str,
         context: str | None = None,
         timeout_seconds: float = 120,
+        session_id: str | None = None,
     ) -> HermesAskResult:
         if not self.installed:
             raise RuntimeError("Hermes Agent is not installed.")

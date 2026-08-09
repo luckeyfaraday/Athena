@@ -1,9 +1,18 @@
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from backend import hermes as hermes_module
 from backend.hermes import HermesManager
+
+
+@pytest.fixture(autouse=True)
+def _clear_ask_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ask provider/model flags default to the user's Hermes config."""
+    monkeypatch.delenv(hermes_module.HERMES_ASK_MODEL_ENV, raising=False)
+    monkeypatch.delenv(hermes_module.HERMES_ASK_PROVIDER_ENV, raising=False)
 
 
 def test_status_reports_missing_native_windows_as_uninstalled(
@@ -173,3 +182,215 @@ def test_ask_runs_on_native_windows(
     assert calls[-1]["args"][0] == "hermes"
     assert calls[-1]["args"][1] == "--oneshot"
     assert calls[-1]["cwd"] == tmp_path
+
+
+def _installed_hermes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> HermesManager:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text("model: test\n", encoding="utf-8")
+    monkeypatch.setattr(hermes_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        hermes_module.shutil,
+        "which",
+        lambda command: f"/usr/bin/{command}" if command == "hermes" else None,
+    )
+    monkeypatch.setattr(hermes_module, "_hermes_version", lambda: "hermes 0.12.0")
+    return HermesManager(hermes_home=hermes_home)
+
+
+def _fake_run(calls: list[dict[str, object]]) -> Callable[..., object]:
+    def fake_run(*args: object, **kwargs: object) -> object:
+        calls.append({"args": args[0], **kwargs})
+        return hermes_module.subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="OK\n",
+            stderr="",
+        )
+
+    return fake_run
+
+
+def _make_session_db(hermes_home: Path, rows: list[tuple[object, ...]]) -> None:
+    """Create a minimal Hermes state.db.
+
+    Rows are (id, cwd, git_repo_root, started_at, last_activity_at,
+    ended_at, archived).
+    """
+    db = hermes_home / "state.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db))
+    con.execute(
+        "CREATE TABLE sessions ("
+        " id TEXT PRIMARY KEY, cwd TEXT, git_repo_root TEXT,"
+        " started_at REAL, last_activity_at REAL, ended_at REAL, archived INTEGER)"
+    )
+    con.executemany(
+        "INSERT INTO sessions "
+        "(id, cwd, git_repo_root, started_at, last_activity_at, ended_at, archived) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    con.commit()
+    con.close()
+
+
+def test_ask_adds_provider_model_flags_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+    monkeypatch.setenv(hermes_module.HERMES_ASK_PROVIDER_ENV, "deepseek")
+    monkeypatch.setenv(hermes_module.HERMES_ASK_MODEL_ENV, "deepseek-v4-flash")
+
+    manager.ask(project_dir=tmp_path, question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert args[1] == "--oneshot"
+    provider_index = args.index("--provider")
+    model_index = args.index("--model")
+    assert args[provider_index + 1] == "deepseek"
+    assert args[model_index + 1] == "deepseek-v4-flash"
+    # The prompt must immediately follow --oneshot; flags come after it.
+    assert provider_index > 2 and model_index > 2
+    assert "--resume" not in args
+
+
+def test_ask_without_env_uses_hermes_default_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=tmp_path, question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert args == ["hermes", "--oneshot", args[2]]
+    assert "--provider" not in args and "--model" not in args
+
+
+def test_ask_resumes_explicit_session_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=tmp_path, question="Hi", session_id="abc123")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert args[args.index("--resume") + 1] == "abc123"
+
+
+def test_ask_resumes_newest_session_for_project_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    _make_session_db(
+        hermes_home,
+        [
+            # More recent, but belongs to an unrelated project.
+            ("other-project", "D:/Other/Project", None, 1000.0, 2000.0, None, 0),
+            ("same-project-old", "D:/My/Project", None, 500.0, 600.0, None, 0),
+            ("same-project-new", "D:/My/Project", None, 700.0, 800.0, None, 0),
+        ],
+    )
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=Path("D:/My/Project"), question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert args[args.index("--resume") + 1] == "same-project-new"
+
+
+def test_ask_matches_windows_path_and_subdirectory_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    _make_session_db(
+        hermes_home,
+        [
+            # Windows-style backslashes, launched from a subdirectory of the project.
+            ("win-session", "D:\\My\\Project\\subdir", None, 1000.0, 1001.0, None, 0),
+        ],
+    )
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=Path("D:/My/Project"), question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert args[args.index("--resume") + 1] == "win-session"
+
+
+def test_ask_resumes_session_matching_git_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    _make_session_db(
+        hermes_home,
+        [("git-session", None, "D:/My/Project", 1000.0, 1001.0, None, 0)],
+    )
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=Path("D:/My/Project"), question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert args[args.index("--resume") + 1] == "git-session"
+
+
+def test_ask_skips_resume_when_no_session_for_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    _make_session_db(
+        hermes_home,
+        [("other-project", "D:/Other/Project", None, 1000.0, 2000.0, None, 0)],
+    )
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=Path("D:/My/Project"), question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert "--resume" not in args
+
+
+def test_ask_ignores_malformed_session_db(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "state.db").write_bytes(b"not a sqlite file")
+    manager = _installed_hermes(tmp_path, monkeypatch)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(hermes_module.subprocess, "run", _fake_run(calls))
+
+    manager.ask(project_dir=Path("D:/My/Project"), question="Hi")
+
+    args = calls[-1]["args"]
+    assert isinstance(args, list)
+    assert "--resume" not in args

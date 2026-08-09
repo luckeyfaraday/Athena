@@ -17,6 +17,13 @@ INSTALL_COMMAND = (
     "| bash"
 )
 
+# Operators may pin the provider/model used for /hermes/ask one-shots. When
+# either env var is unset, hermes falls back to the user's own config default,
+# so a host without a key for a specific provider is not forced onto one it
+# cannot reach.
+HERMES_ASK_MODEL_ENV = "HERMES_ASK_MODEL"
+HERMES_ASK_PROVIDER_ENV = "HERMES_ASK_PROVIDER"
+
 
 @dataclass(frozen=True)
 class HermesStatus:
@@ -48,37 +55,23 @@ class HermesAskResult:
     stderr: str
 
 
-def _hermes_home() -> Path:
-    raw = os.environ.get("HERMES_HOME")
-    return Path(raw).expanduser() if raw else Path.home() / ".hermes"
+def _session_db_candidates(hermes_home: Path) -> list[Path]:
+    """Possible Hermes session database locations, most recent layout first.
 
-
-def _latest_active_session_id() -> str | None:
-    """Return the most recently active, still-open Hermes session id.
-
-    Reads Hermes's own state.db (``HERMES_HOME/runtime-data/state.db``).
-    A session is "active" when ``ended_at`` is NULL (never finalized).
-    This lets /hermes/ask answer with the live conversation context via
-    ``hermes -z ... --resume <id>`` instead of a context-free one-shot.
+    Current builds keep the database at ``HERMES_HOME/state.db``; the earliest
+    builds used ``HERMES_HOME/runtime-data/state.db``.
     """
-    import sqlite3
+    return [hermes_home / "state.db", hermes_home / "runtime-data" / "state.db"]
 
-    db = _hermes_home() / "runtime-data" / "state.db"
-    if not db.is_file():
-        return None
-    try:
-        con = sqlite3.connect(str(db), timeout=5)
-        try:
-            row = con.execute(
-                "SELECT id FROM sessions "
-                "WHERE ended_at IS NULL AND archived = 0 "
-                "ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-            return row[0] if row else None
-        finally:
-            con.close()
-    except (sqlite3.Error, OSError):
-        return None
+
+def _normalize_path(path: str) -> str:
+    """Lowercase and unify separators so Windows/Unix cwd values compare equal."""
+    return path.strip().lower().replace("\\", "/").rstrip("/")
+
+
+def _paths_overlap(a: str, b: str) -> bool:
+    """True when one normalized path equals or contains the other."""
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
 
 
 class HermesManager:
@@ -169,14 +162,21 @@ class HermesManager:
             raise RuntimeError("Hermes Agent setup has not completed.")
 
         prompt = _ask_prompt(question, context)
-        # Pin the DeepSeek official provider: the config default
-        # (opencode-go / Zen free tier) can hit IP rate limits and leave
-        # oneshot stuck in retry backoff for minutes (no response ever
-        # surfaces; oneshot silences its own logs).
-        cmd = ["hermes", "--oneshot", prompt, "--model", "deepseek-v4-flash", "--provider", "deepseek"]
-        # Resume the caller's (or the most recent live) session so the
-        # one-shot answers with real conversation context, not in a vacuum.
-        resume_id = session_id or _latest_active_session_id()
+        # Provider/model pinning is an operator choice via
+        # HERMES_ASK_PROVIDER/HERMES_ASK_MODEL; when unset the one-shot uses
+        # the user's own Hermes config default. The prompt must immediately
+        # follow --oneshot: the CLI parses it as a value-taking option.
+        cmd = ["hermes", "--oneshot", prompt]
+        provider = os.environ.get(HERMES_ASK_PROVIDER_ENV, "").strip()
+        if provider:
+            cmd.extend(["--provider", provider])
+        model = os.environ.get(HERMES_ASK_MODEL_ENV, "").strip()
+        if model:
+            cmd.extend(["--model", model])
+        # Resume is opt-in: an explicit session_id is honored as-is; without
+        # one we only resume a still-open session tied to this project, so the
+        # one-shot never inherits context from an unrelated project.
+        resume_id = session_id or self._active_session_id_for_project(project_dir)
         if resume_id:
             cmd.extend(["--resume", resume_id])
         completed = subprocess.run(
@@ -198,6 +198,71 @@ class HermesManager:
             returncode=completed.returncode,
             stderr=stderr,
         )
+
+    def _active_session_id_for_project(self, project_dir: Path) -> str | None:
+        """Return the most recent still-open session id tied to ``project_dir``.
+
+        Reads Hermes's own session database and matches on the session's
+        recorded ``cwd`` or ``git_repo_root``, so a /hermes/ask one-shot can
+        ``--resume`` the caller's live conversation without ever pulling a
+        session from an unrelated project. ``None`` means "no resume": the
+        caller then runs the one-shot without context.
+
+        Deliberately defensive — missing database, unexpected schema, or a
+        read error all degrade to ``None`` rather than failing the ask.
+        """
+        db = next(
+            (candidate for candidate in _session_db_candidates(self.hermes_home) if candidate.is_file()),
+            None,
+        )
+        if db is None:
+            return None
+
+        import sqlite3
+
+        try:
+            con = sqlite3.connect(str(db), timeout=5)
+        except sqlite3.Error:
+            return None
+        try:
+            columns = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
+            if not {"id", "cwd", "ended_at", "archived", "started_at"}.issubset(columns):
+                return None
+            select_cols = ["id", "cwd", "started_at"]
+            if "git_repo_root" in columns:
+                select_cols.append("git_repo_root")
+            if "last_activity_at" in columns:
+                select_cols.append("last_activity_at")
+            rows = [
+                {name: values[index] for index, name in enumerate(select_cols)}
+                for values in con.execute(
+                    "SELECT {} FROM sessions WHERE ended_at IS NULL AND archived = 0".format(
+                        ", ".join(select_cols)
+                    )
+                ).fetchall()
+            ]
+        except (sqlite3.Error, OSError):
+            return None
+        finally:
+            con.close()
+
+        target = _normalize_path(str(project_dir))
+        best_id: str | None = None
+        best_activity: float | None = None
+        for row in rows:
+            cwd = _normalize_path(row["cwd"]) if row.get("cwd") else ""
+            git_root = _normalize_path(row["git_repo_root"]) if row.get("git_repo_root") else ""
+            if not (cwd and _paths_overlap(cwd, target)) and not (
+                git_root and _paths_overlap(git_root, target)
+            ):
+                continue
+            activity = row.get("last_activity_at") or row["started_at"]
+            if best_id is None or (
+                activity is not None and (best_activity is None or activity > best_activity)
+            ):
+                best_id = row["id"]
+                best_activity = activity
+        return best_id
 
     def _memory_path(self, hermes_home: Path) -> Path | None:
         candidates = [

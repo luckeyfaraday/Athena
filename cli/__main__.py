@@ -217,8 +217,10 @@ def cmd_ask(args: argparse.Namespace) -> int:
             "project_dir": _project_dir(args),
             "question": args.question,
             "context": context,
+            "session_id": args.session_id,
             "timeout_seconds": args.timeout,
         },
+        request_timeout_seconds=args.timeout + 5,
     )
     if args.json:
         _emit(payload, True)
@@ -522,6 +524,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("question")
     p.add_argument("--context", default=None, help="Inline extra context.")
     p.add_argument("--context-file", default=None, help="Read extra context from a file.")
+    p.add_argument("--session-id", default=None, help="Resume one explicit Hermes session.")
     p.add_argument("--timeout", type=float, default=120)
     p.set_defaults(func=cmd_ask)
 

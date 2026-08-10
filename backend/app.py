@@ -62,6 +62,7 @@ class HermesAskRequest(BaseModel):
     project_dir: str
     question: str = Field(min_length=1, max_length=20000)
     context: str | None = Field(default=None, max_length=100000)
+    session_id: str | None = Field(default=None, max_length=200)
     timeout_seconds: float = Field(default=120, gt=0, le=600)
 
 
@@ -335,6 +336,7 @@ def create_app(
                 project_dir=project,
                 question=request.question,
                 context=context,
+                session_id=request.session_id,
                 timeout_seconds=request.timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:

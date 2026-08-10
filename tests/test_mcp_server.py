@@ -56,6 +56,9 @@ def test_ask_hermes_tool_schema_requires_project_and_question() -> None:
     assert schema["properties"]["context"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
+    assert schema["properties"]["session_id"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
     assert schema["properties"]["timeout_seconds"] == {"type": "number"}
     assert schema["required"] == ["project_dir", "question"]
 

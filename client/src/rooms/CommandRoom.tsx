@@ -676,16 +676,16 @@ function NewLaunchMenu({
   const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number; contextMode?: AgentContextMode; disabled?: boolean }> = [
     { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
     { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
-    { label: "Athena Code", detail: "Spawn one Athena Code agent", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
-    { label: "Athena Code Grid", detail: "Spawn four Athena Code panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
+    { label: "Athena Code", detail: "Spawn external Athena Code CLI", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
+    { label: "Athena Code Grid", detail: "Spawn four external CLI panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
     { label: "Codex", detail: "Spawn one Codex agent", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1 },
     { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <OpenAIIcon size={14} />, kind: "codex", count: 4 },
     { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1 },
     { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 4 },
     { label: "Claude", detail: "Spawn one Claude agent", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1 },
     { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ClaudeIcon size={14} />, kind: "claude", count: 4 },
-    { label: "Grok", detail: "Spawn one Grok agent", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
-    { label: "Grok Grid", detail: "Spawn four Grok panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
+    { label: "Grok", detail: "Spawn external Grok Build CLI", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
+    { label: "Grok Grid", detail: "Spawn four external CLI panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
   ];
   const recallActions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number; contextMode: AgentContextMode; disabled?: boolean }> = [
     { label: "Athena Code + Recall", detail: "Use workspace recall", icon: <AthenaIcon size={14} />, kind: "athena", count: 1, contextMode: "immersive", disabled: !recallAvailable },

@@ -199,6 +199,10 @@ test("repairClaudeBinaryPowerShell only restores when the exe is missing but a b
   assert.match(snippet, /-not \(Test-Path -LiteralPath \$claudeExe\)/);
   // Picks the newest backup deterministically.
   assert.match(snippet, /Sort-Object LastWriteTime -Descending \| Select-Object -First 1/);
+  // Verify the restored/current shim and fall back to another runnable install.
+  assert.match(snippet, /\& \$agentCommand --version/);
+  assert.match(snippet, /Get-Command claude -All/);
+  assert.match(snippet, /Claude Code is installed but not runnable/);
 });
 
 test("agentConfig opencode collapses prompt whitespace and quotes the path", () => {
@@ -235,6 +239,14 @@ test("launchCommand treats Grok as a PATH-installed agent", () => {
   const command = launchCommand("grok", "/home/dev/project", null);
   assert.match(command, /command -v 'grok'/);
   assert.match(command, /grok --cwd '\/home\/dev\/project'/);
+  assert.match(command, /https:\/\/docs\.x\.ai\/build\/overview/);
+});
+
+test("missing Athena Code guidance links both platform installers", () => {
+  const bash = launchCommand("athena", "/home/dev/project", null);
+  const powershell = launchPowerShellCommand("athena", "C:\\ws", null);
+  assert.match(bash, /athena-code\/main\/scripts\/install\.sh/);
+  assert.match(powershell, /athena-code\/main\/scripts\/install\.ps1/);
 });
 
 test("PowerShell builders pass values through quotePowerShell, not raw interpolation", () => {
@@ -251,12 +263,19 @@ test("PowerShell builders pass values through quotePowerShell, not raw interpola
   assert.match(command, /\$modelArgs = @\(\)/);
 });
 
-test("PowerShell codex builder splats MCP -c overrides through a quoted array", () => {
+test("Windows PowerShell codex builder preserves TOML quotes through the npm shim", () => {
   const command = launchPowerShellCommand("codex", "C:\\ws", "C:\\tmp\\p.md", {
     codexConfigArgs: [`mcp_servers.context_workspace.command="python3"`],
-  });
-  // quotePowerShell wraps in single quotes; embedded double quotes stay literal.
-  assert.match(command, /\$mcpConfigArgs = @\('-c', 'mcp_servers.context_workspace.command="python3"'\)/);
+  }, null, null, "powershell.exe");
+  assert.match(command, /\$mcpConfigArgs = @\('-c', 'mcp_servers\.context_workspace\.command=\\"python3\\"'\)/);
+});
+
+test("PowerShell 7 codex builder relies on standard native argument forwarding", () => {
+  const command = launchPowerShellCommand("codex", "C:\\ws", null, {
+    codexConfigArgs: [`mcp_servers.context_workspace.args=["C:\\\\app\\\\server.py"]`],
+  }, null, null, "pwsh.exe");
+  assert.match(command, /mcp_servers\.context_workspace\.args=\["C:\\\\app\\\\server\.py"\]/);
+  assert.doesNotMatch(command, /args=\[\\"/);
 });
 
 test("PowerShell builder escapes embedded double-quotes in the prompt for the native arg hop", () => {

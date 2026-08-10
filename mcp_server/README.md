@@ -71,7 +71,7 @@ context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit
 Direct Hermes request/response tool:
 
 ```text
-context_workspace_ask_hermes(project_dir, question, context?, timeout_seconds?)
+context_workspace_ask_hermes(project_dir, question, context?, timeout_seconds?, session_id?)
 ```
 
 Use `context_workspace_ask_hermes` when the user says "ask Hermes ...". It

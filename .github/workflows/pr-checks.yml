@@ -62,3 +62,47 @@ jobs:
 
       - name: Run permanent regression suite
         run: python scripts/run_regression_checks.py
+
+  windows-regressions:
+    name: Windows launch regressions
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements-build.txt -r mcp_server/requirements.txt pytest httpx
+
+      - name: Run Windows-sensitive backend tests
+        run: >-
+          python -m pytest
+          tests/test_hermes.py
+          tests/test_app.py
+          tests/test_mcp_client.py
+          tests/test_mcp_server.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Run Electron launch tests
+        working-directory: client
+        run: npm run test:electron
+
+      - name: Build client
+        working-directory: client
+        run: npm run build

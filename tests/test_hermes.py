@@ -335,8 +335,8 @@ def test_ask_does_not_guess_between_multiple_project_sessions(
 
 def test_session_matching_preserves_posix_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manager = _installed_manager(tmp_path, monkeypatch)
-    upper_project = tmp_path / "Repo"
-    lower_project = tmp_path / "repo"
+    upper_project = Path("/home/dev/Repo")
+    lower_project = Path("/home/dev/repo")
     _make_session_db(
         manager.hermes_home,
         [("wrong-case", str(lower_project), str(lower_project), 1.0, 2.0, None, 0)],

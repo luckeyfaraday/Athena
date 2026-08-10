@@ -139,6 +139,7 @@ tests/                   Backend, MCP, native session, and adapter tests
   - `opencode`
   - `claude`
   - `athena-code`
+  - `grok`
   - `hermes`
 - Optional Hermes Agent install for real shared memory integration
 
@@ -415,7 +416,13 @@ can.
    (Linux and macOS with `bash` and `curl`), the Hermes card shows an **Install
    Hermes** button wired to `POST /hermes/install`. On native Windows, install
    the native Hermes build separately and make sure `hermes` is on your `PATH`.
-   Athena detects Hermes through `shutil.which("hermes")` plus `~/.hermes`.
+   Athena resolves `HERMES_BIN` first, then PATH and known Hermes-managed
+   virtual-environment locations. `HERMES_HOME` overrides `~/.hermes`.
+
+   Athena's one-shot `/hermes/ask` endpoint uses the provider and model from
+   the user's Hermes config by default. Operators can pin that path with
+   `HERMES_ASK_PROVIDER` and `HERMES_ASK_MODEL`. One-shot processes and their
+   retrying descendants are terminated when the request timeout expires.
 
 2. **Point Hermes at the Athena MCP bridge.** So Hermes can call Athena's
    `context_workspace_*` tools, add the bridge block to your Hermes config
@@ -566,11 +573,24 @@ Athena owns these app-side tools. Hermes still owns its own config, `session_sea
 
 ## Athena Code
 
-Athena Code is a standalone opencode fork that lives in its own repository and
-installs its own `athena-code` CLI. Athena treats it exactly like Codex,
+Athena Code is a standalone opencode fork in the
+[luckeyfaraday/athena-code](https://github.com/luckeyfaraday/athena-code)
+repository and installs its own `athena-code` CLI. Athena treats it exactly like Codex,
 OpenCode, and Claude Code: the Command Room launches it from the **New** menu
 as a regular embedded PTY, it must be on `PATH`, and it participates in the
 same clean/task/curated/immersive context modes as every other agent.
+
+Install Athena Code:
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.ps1 | iex
+```
 
 Every agent launch starts **Clean** unless an explicit context mode is
 selected. Immersive launches create a fresh immutable project-scoped context
@@ -600,8 +620,23 @@ which codex
 which opencode
 which claude
 which athena-code
+which grok
 which hermes
 ```
+
+Grok Build installers:
+
+```bash
+# macOS / Linux / WSL
+curl -fsSL https://x.ai/cli/install.sh | bash
+```
+
+```powershell
+# Windows PowerShell
+irm https://x.ai/cli/install.ps1 | iex
+```
+
+See the [Grok Build documentation](https://docs.x.ai/build/overview).
 
 ### Multiple Athena windows show stale UI
 

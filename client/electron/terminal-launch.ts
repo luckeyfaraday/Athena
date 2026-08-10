@@ -50,10 +50,29 @@ function codexMcpBashArgs(mcp?: AgentMcpLaunch | null): string {
 
 // PowerShell: render Codex's MCP overrides as the inside of an `@(...)` array,
 // e.g. `'-c', '<override>'`. Empty string yields `@()`.
-function codexMcpPowerShellArray(mcp?: AgentMcpLaunch | null): string {
+function codexMcpPowerShellArray(
+  mcp?: AgentMcpLaunch | null,
+  powerShellExecutable: "pwsh.exe" | "powershell.exe" = preferredWindowsPowerShell(),
+): string {
   const overrides = mcp?.codexConfigArgs;
   if (!overrides || overrides.length === 0) return "";
-  return overrides.flatMap((override) => ["'-c'", quotePowerShell(override)]).join(", ");
+  // Windows PowerShell 5.1 loses embedded quotes while forwarding arguments
+  // through npm's .ps1 shim to a native executable. PowerShell 7 preserves
+  // them, so only pre-escape the legacy path.
+  const escapeNativeQuotes = powerShellExecutable.toLowerCase() === "powershell.exe";
+  return overrides
+    .flatMap((override) => ["'-c'", quotePowerShell(escapeNativeQuotes ? override.replaceAll('"', '\\"') : override)])
+    .join(", ");
+}
+
+function missingAgentMessage(kind: EmbeddedTerminalKind, executable: string): string {
+  if (kind === "grok") {
+    return `${executable} is not installed or not on PATH. Install Grok Build: macOS/Linux curl -fsSL https://x.ai/cli/install.sh | bash; Windows PowerShell irm https://x.ai/cli/install.ps1 | iex. Docs: https://docs.x.ai/build/overview`;
+  }
+  if (kind === "athena") {
+    return `${executable} is an optional external CLI and is not bundled with Athena. Install: macOS/Linux curl -fsSL https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.sh | bash; Windows PowerShell irm https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.ps1 | iex`;
+  }
+  return `${executable} is not installed or not on PATH.`;
 }
 
 // nvm installs each Node version's bin -- and the global CLIs linked into it
@@ -115,13 +134,13 @@ export function terminalLaunch(
     if (kind !== "shell" && resumeSessionId) {
       return {
         command: shell,
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcp)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchResumePowerShellCommand(kind, cwd, resumeSessionId, mcp, shell)],
       };
     }
     if (kind !== "shell") {
       return {
         command: shell,
-        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcp, newSessionId, model)],
+        args: ["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", launchPowerShellCommand(kind, cwd, promptPath, mcp, newSessionId, model, shell)],
       };
     }
     return defaultShell();
@@ -157,7 +176,7 @@ export function launchCommand(
       promptPath
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
-      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage(kind, agent.executable))}; exec bash -l; fi`,
       kind === "codex" ? codexNpmPrefixBashCommand() : "",
       `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId, model)}`.trimEnd(),
       "exec bash -l",
@@ -204,14 +223,20 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
     `cd ${quoteShell(cwd)}`,
     nvmLoadBashCommand(),
     `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
-    `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s is not installed or not on PATH.\\033[0m\\n' ${quoteShell(agent.executable)}; exec bash -l; fi`,
+    `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage(kind, agent.executable))}; exec bash -l; fi`,
     kind === "codex" ? codexNpmPrefixBashCommand() : "",
     agent.resumeArgs(cwd, resumeSessionId, "bash", mcp),
     "exec bash -l",
   ].filter(Boolean).join("; ");
 }
 
-export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, resumeSessionId: string, mcp?: AgentMcpLaunch | null): string {
+export function launchResumePowerShellCommand(
+  kind: EmbeddedTerminalKind,
+  cwd: string,
+  resumeSessionId: string,
+  mcp?: AgentMcpLaunch | null,
+  powerShellExecutable: "pwsh.exe" | "powershell.exe" = preferredWindowsPowerShell(),
+): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -219,19 +244,27 @@ export function launchResumePowerShellCommand(kind: EmbeddedTerminalKind, cwd: s
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
-    kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
+    kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp, powerShellExecutable)})` : "",
     kind === "codex" ? codexNpmPrefixPowerShellCommand() : "",
     "Set-Location -LiteralPath $workspace",
     "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
-    "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable))} -ForegroundColor Red; return }`,
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     agent.resumePowerShellCommand,
   ].filter(Boolean).join("; ");
 }
 
-export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string, promptPath: string | null, mcp?: AgentMcpLaunch | null, newSessionId?: string | null, model?: string | null): string {
+export function launchPowerShellCommand(
+  kind: EmbeddedTerminalKind,
+  cwd: string,
+  promptPath: string | null,
+  mcp?: AgentMcpLaunch | null,
+  newSessionId?: string | null,
+  model?: string | null,
+  powerShellExecutable: "pwsh.exe" | "powershell.exe" = preferredWindowsPowerShell(),
+): string {
   const agent = agentConfig(kind);
   return [
     `$workspace = ${quotePowerShell(cwd)}`,
@@ -240,7 +273,7 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
     `$agentCommand = ${quotePowerShell(agent.executable)}`,
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
-    kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp)})` : "",
+    kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp, powerShellExecutable)})` : "",
     kind === "codex" ? codexNpmPrefixPowerShellCommand() : "",
     // $modelArgs is spliced into every agent's argument array; @() when no model
     // was explicitly requested, so the agent CLI keeps its own default.
@@ -250,7 +283,7 @@ export function launchPowerShellCommand(kind: EmbeddedTerminalKind, cwd: string,
       ? "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan"
       : "Write-Host \"[Context Workspace] Launching $agentLabel\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
-    "if (-not $resolvedAgent) { Write-Host \"$agentCommand is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable))} -ForegroundColor Red; return }`,
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     // Windows PowerShell 5.1 wraps space-containing native args in quotes but does NOT escape
@@ -389,6 +422,29 @@ export function repairClaudeBinaryPowerShell(): string {
     "        }",
     "      }",
     "    }",
+    "  }",
+    "  $claudeLaunchReady = $false",
+    "  try {",
+    "    & $agentCommand --version 2>$null | Out-Null",
+    "    $claudeLaunchReady = ($LASTEXITCODE -eq 0)",
+    "  } catch { $claudeLaunchReady = $false }",
+    "  if (-not $claudeLaunchReady) {",
+    "    foreach ($claudeCandidate in @(Get-Command claude -All -ErrorAction SilentlyContinue)) {",
+    "      if (-not $claudeCandidate.Path) { continue }",
+    "      try {",
+    "        & $claudeCandidate.Path --version 2>$null | Out-Null",
+    "        if ($LASTEXITCODE -eq 0) {",
+    "          $agentCommand = $claudeCandidate.Path",
+    "          $resolvedAgent = $claudeCandidate",
+    "          $claudeLaunchReady = $true",
+    "          break",
+    "        }",
+    "      } catch { continue }",
+    "    }",
+    "  }",
+    "  if (-not $claudeLaunchReady) {",
+    "    Write-Host \"Claude Code is installed but not runnable. Repair or reinstall it: https://docs.anthropic.com/en/docs/claude-code/setup\" -ForegroundColor Red",
+    "    return",
     "  }",
     "}",
   ].join("\n");

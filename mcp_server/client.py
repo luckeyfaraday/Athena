@@ -187,8 +187,15 @@ class ContextWorkspaceClient:
                 return response.text
             return response.json()
 
-    async def post(self, path: str, json_body: dict[str, Any] | None = None) -> Any:
-        async with httpx.AsyncClient(timeout=self.settings.request_timeout_seconds) as client:
+    async def post(
+        self,
+        path: str,
+        json_body: dict[str, Any] | None = None,
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> Any:
+        timeout = max(self.settings.request_timeout_seconds, request_timeout_seconds or 0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(f"{self.base_url}{path}", json=json_body or {})
             response.raise_for_status()
             return response.json()

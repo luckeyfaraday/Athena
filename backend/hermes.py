@@ -1,9 +1,15 @@
-"""Hermes Agent installation and configuration probing."""
+"""Hermes Agent installation, command resolution, and one-shot asking."""
 
 from __future__ import annotations
 
+import base64
+import json
+import os
 import platform
+import re
 import shutil
+import signal
+import sqlite3
 import subprocess
 import time
 from dataclasses import dataclass
@@ -15,6 +21,9 @@ INSTALL_COMMAND = (
     "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh "
     "| bash"
 )
+HERMES_BIN_ENV = "HERMES_BIN"
+HERMES_ASK_MODEL_ENV = "HERMES_ASK_MODEL"
+HERMES_ASK_PROVIDER_ENV = "HERMES_ASK_PROVIDER"
 
 
 @dataclass(frozen=True)
@@ -47,9 +56,73 @@ class HermesAskResult:
     stderr: str
 
 
+def _default_hermes_home() -> Path:
+    configured = os.environ.get("HERMES_HOME", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".hermes"
+
+
+def _resolve_hermes_command(hermes_home: Path) -> str | None:
+    """Resolve Hermes from an explicit override, PATH, or managed venvs."""
+    configured = os.environ.get(HERMES_BIN_ENV, "").strip()
+    if configured:
+        expanded = Path(configured).expanduser()
+        if expanded.is_file():
+            return str(expanded)
+        resolved = shutil.which(configured)
+        if resolved:
+            return resolved
+        # An explicit but invalid HERMES_BIN must not silently select a
+        # different executable from PATH.
+        return None
+
+    names = ["hermes.exe", "hermes.cmd", "hermes"] if _is_native_windows() else ["hermes"]
+    for name in names:
+        resolved = shutil.which(name)
+        if resolved:
+            return resolved
+
+    bin_dir = "Scripts" if _is_native_windows() else "bin"
+    managed_roots = [
+        hermes_home / "runtime-data" / "hermes-agent" / ".venv" / bin_dir,
+        hermes_home / ".venv" / bin_dir,
+        hermes_home.parent / "runtime-data" / "hermes-agent" / ".venv" / bin_dir,
+    ]
+    for root in managed_roots:
+        for name in names:
+            candidate = root / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def _session_db_candidates(hermes_home: Path) -> list[Path]:
+    return [hermes_home / "state.db", hermes_home / "runtime-data" / "state.db"]
+
+
+def _normalize_session_path(value: str) -> str:
+    """Normalize separators while preserving POSIX case sensitivity."""
+    slashed = value.strip().replace("\\", "/").rstrip("/")
+    if not slashed:
+        return ""
+    wsl_drive = re.fullmatch(r"/mnt/([A-Za-z])(?:/(.*))?", slashed)
+    if wsl_drive:
+        rest = wsl_drive.group(2) or ""
+        return f"{wsl_drive.group(1)}:/{rest}".lower().rstrip("/")
+    windows_drive = re.fullmatch(r"/?([A-Za-z]):/(.*)", slashed)
+    if windows_drive:
+        return f"{windows_drive.group(1)}:/{windows_drive.group(2)}".lower().rstrip("/")
+    if slashed.startswith("//"):
+        return slashed.lower()
+    return slashed
+
+
+def _same_or_descendant(candidate: str, project: str) -> bool:
+    return candidate == project or candidate.startswith(project + "/")
+
+
 class HermesManager:
     def __init__(self, *, hermes_home: Path | None = None) -> None:
-        self.hermes_home = hermes_home or Path.home() / ".hermes"
+        self.hermes_home = (hermes_home or _default_hermes_home()).expanduser()
         self._cached_status: HermesStatus | None = None
         self._cached_at = 0.0
 
@@ -59,14 +132,11 @@ class HermesManager:
             return self._cached_status
 
         native_windows = _is_native_windows()
-        command_path = shutil.which("hermes")
-        version = _hermes_version() if command_path else None
         hermes_home = self.hermes_home
+        command_path = _resolve_hermes_command(hermes_home)
+        version = _hermes_version(command_path) if command_path else None
         config_exists = (hermes_home / "config.yaml").exists()
         memory_path = self._memory_path(hermes_home)
-        # The bundled installer is a Unix bash/curl script. Native Windows now
-        # ships its own Hermes build that users install separately, so the in-app
-        # installer stays Unix-only while detection works on every platform.
         install_supported = not native_windows and shutil.which("bash") is not None and shutil.which("curl") is not None
         installed = command_path is not None and hermes_home.exists()
         setup_required = installed and not config_exists
@@ -75,8 +145,13 @@ class HermesManager:
             message = "Hermes Agent is installed, but setup has not completed."
         elif installed:
             message = "Hermes Agent is installed."
+        elif os.environ.get(HERMES_BIN_ENV, "").strip():
+            message = f"Hermes Agent was not found at {HERMES_BIN_ENV}. Check the configured executable path."
         elif native_windows:
-            message = "Hermes Agent is not installed. Install the native Windows build and make sure `hermes` is on your PATH."
+            message = (
+                "Hermes Agent is not installed. Install the native Windows build, add `hermes` to PATH, "
+                f"or set {HERMES_BIN_ENV} to hermes.exe."
+            )
         else:
             message = "Hermes Agent is not installed."
 
@@ -126,22 +201,30 @@ class HermesManager:
         question: str,
         context: str | None = None,
         timeout_seconds: float = 120,
+        session_id: str | None = None,
     ) -> HermesAskResult:
         status = self.status()
-        if not status.installed:
+        if not status.installed or not status.command_path:
             raise RuntimeError("Hermes Agent is not installed.")
         if status.setup_required:
             raise RuntimeError("Hermes Agent setup has not completed.")
 
         prompt = _ask_prompt(question, context)
-        completed = subprocess.run(
-            ["hermes", "--oneshot", prompt],
-            cwd=project_dir,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        command = [status.command_path, "--oneshot", prompt]
+        provider = os.environ.get(HERMES_ASK_PROVIDER_ENV, "").strip()
+        if provider:
+            command.extend(["--provider", provider])
+        model = os.environ.get(HERMES_ASK_MODEL_ENV, "").strip()
+        if model:
+            command.extend(["--model", model])
+
+        # Explicit identity is authoritative. Best-effort auto-resume is safe
+        # only when exactly one live Hermes session belongs to this project.
+        resume_id = session_id or self._sole_active_session_id_for_project(project_dir)
+        if resume_id:
+            command.extend(["--resume", resume_id])
+
+        completed = _run_hermes_command(command, cwd=project_dir, timeout_seconds=timeout_seconds)
         answer = completed.stdout.strip()
         stderr = completed.stderr.strip()
         if completed.returncode != 0:
@@ -154,6 +237,48 @@ class HermesManager:
             stderr=stderr,
         )
 
+    def _sole_active_session_id_for_project(self, project_dir: Path) -> str | None:
+        """Return one unambiguous active session for this project, if present."""
+        db = next((candidate for candidate in _session_db_candidates(self.hermes_home) if candidate.is_file()), None)
+        if db is None:
+            return None
+
+        try:
+            connection = sqlite3.connect(str(db), timeout=5)
+        except sqlite3.Error:
+            return None
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()}
+            required = {"id", "cwd", "ended_at", "archived"}
+            if not required.issubset(columns):
+                return None
+            select_columns = ["id", "cwd"]
+            if "git_repo_root" in columns:
+                select_columns.append("git_repo_root")
+            rows = [
+                dict(zip(select_columns, values, strict=True))
+                for values in connection.execute(
+                    f"SELECT {', '.join(select_columns)} FROM sessions WHERE ended_at IS NULL AND archived = 0"
+                ).fetchall()
+            ]
+        except (sqlite3.Error, OSError, TypeError, ValueError):
+            return None
+        finally:
+            connection.close()
+
+        target = _normalize_session_path(str(project_dir))
+        matches: list[str] = []
+        for row in rows:
+            session_id = row.get("id")
+            cwd = _normalize_session_path(str(row["cwd"])) if row.get("cwd") else ""
+            git_root = _normalize_session_path(str(row["git_repo_root"])) if row.get("git_repo_root") else ""
+            # A recorded repository root is stronger than cwd and must match
+            # exactly. Fall back to cwd only for older schemas/rows.
+            belongs = git_root == target if git_root else bool(cwd and _same_or_descendant(cwd, target))
+            if belongs and isinstance(session_id, str) and session_id:
+                matches.append(session_id)
+        return matches[0] if len(matches) == 1 else None
+
     def _memory_path(self, hermes_home: Path) -> Path | None:
         candidates = [
             hermes_home / "memories" / "MEMORY.md",
@@ -163,6 +288,89 @@ class HermesManager:
             if path.exists():
                 return path
         return None
+
+
+def _run_hermes_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run Hermes in an isolated process group and tear down retries on timeout."""
+    invocation, invocation_env = _prepare_hermes_invocation(command)
+    popen_options: dict[str, object] = {
+        "cwd": cwd,
+        "text": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
+    if invocation_env is not None:
+        popen_options["env"] = invocation_env
+    if _is_native_windows():
+        popen_options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_options["start_new_session"] = True
+    process = subprocess.Popen(invocation, **popen_options)  # type: ignore[arg-type]
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_tree(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(command, timeout_seconds, output=stdout, stderr=stderr) from exc
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _prepare_hermes_invocation(command: list[str]) -> tuple[list[str], dict[str, str] | None]:
+    """Wrap Windows batch shims without interpolating user input into shell code."""
+    if not _is_native_windows() or Path(command[0]).suffix.lower() not in {".cmd", ".bat"}:
+        return command, None
+
+    # CreateProcess cannot execute batch files directly. Transport every
+    # argument through JSON environment data so prompts containing quotes or
+    # cmd metacharacters never become PowerShell source text.
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$athenaArgs = @(ConvertFrom-Json -InputObject $env:ATHENA_HERMES_ARGS_JSON); "
+        "& $env:ATHENA_HERMES_COMMAND @athenaArgs; "
+        "exit $LASTEXITCODE"
+    )
+    encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    powershell = shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
+    child_env = os.environ.copy()
+    child_env["ATHENA_HERMES_COMMAND"] = command[0]
+    child_env["ATHENA_HERMES_ARGS_JSON"] = json.dumps(command[1:])
+    return (
+        [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_script],
+        child_env,
+    )
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if _is_native_windows():
+        try:
+            subprocess.run(
+                ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        if process.poll() is None:
+            process.kill()
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=1)
+    except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            process.kill()
 
 
 def _ask_prompt(question: str, context: str | None = None) -> str:
@@ -179,19 +387,13 @@ def _ask_prompt(question: str, context: str | None = None) -> str:
     )
     if not cleaned_context:
         return base
-    return "\n\n".join(
-        [
-            base,
-            "Athena context:",
-            cleaned_context,
-        ]
-    )
+    return "\n\n".join([base, "Athena context:", cleaned_context])
 
 
-def _hermes_version() -> str | None:
+def _hermes_version(command_path: str) -> str | None:
     try:
         completed = subprocess.run(
-            ["hermes", "--version"],
+            [command_path, "--version"],
             text=True,
             capture_output=True,
             timeout=10,

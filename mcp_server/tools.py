@@ -89,6 +89,7 @@ async def context_workspace_ask_hermes(
     question: str,
     context: str | None = None,
     timeout_seconds: float = 120,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Ask Hermes directly and return its final answer.
 
@@ -103,8 +104,10 @@ async def context_workspace_ask_hermes(
             "project_dir": project_dir,
             "question": question,
             "context": context,
+            "session_id": session_id,
             "timeout_seconds": timeout_seconds,
         },
+        request_timeout_seconds=timeout_seconds + 5,
     )
 
 

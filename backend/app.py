@@ -62,6 +62,7 @@ class HermesAskRequest(BaseModel):
     project_dir: str
     question: str = Field(min_length=1, max_length=20000)
     context: str | None = Field(default=None, max_length=100000)
+    session_id: str | None = Field(default=None, max_length=200)
     timeout_seconds: float = Field(default=120, gt=0, le=600)
 
 
@@ -335,6 +336,7 @@ def create_app(
                 project_dir=project,
                 question=request.question,
                 context=context,
+                session_id=request.session_id,
                 timeout_seconds=request.timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
@@ -1013,7 +1015,8 @@ def _write_recall_cache(
     recall_path = cache_dir / "session-recall.md"
     metadata_path = cache_dir / "last-refresh.json"
     text = markdown.rstrip() + "\n"
-    written_bytes = len(text.encode("utf-8"))
+    _atomic_write_text(recall_path, text)
+    written_bytes = recall_path.stat().st_size
     metadata = {
         "refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "source": source or "athena-session-handoff",
@@ -1033,7 +1036,6 @@ def _write_recall_cache(
         metadata["source_workspaces"] = _bounded_string_list(source_workspaces, limit=40, max_chars=300)
     if source_sessions:
         metadata["source_sessions"] = _bounded_source_sessions(source_sessions)
-    _atomic_write_text(recall_path, text)
     _atomic_write_text(metadata_path, json.dumps(metadata, indent=2) + "\n")
     return _recall_status_payload(project_dir)
 

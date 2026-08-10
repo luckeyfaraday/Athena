@@ -50,5 +50,13 @@ class Backend:
     def get(self, path: str, **params: Any) -> Any:
         return asyncio.run(self._client.get(path, **params))
 
-    def post(self, path: str, body: dict[str, Any] | None = None) -> Any:
-        return asyncio.run(self._client.post(path, body))
+    def post(
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> Any:
+        return asyncio.run(
+            self._client.post(path, body, request_timeout_seconds=request_timeout_seconds)
+        )

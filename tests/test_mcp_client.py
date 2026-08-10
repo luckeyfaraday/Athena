@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -168,3 +169,38 @@ def test_control_token_absent_returns_none(tmp_path: Path) -> None:
 def test_control_auth_headers_shape() -> None:
     assert client._control_auth_headers("abc") == {"Authorization": "Bearer abc"}
     assert client._control_auth_headers(None) == {}
+
+
+def test_backend_post_can_extend_http_timeout_for_long_running_ask(monkeypatch) -> None:
+    observed: list[float] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, bool]:
+            return {"ok": True}
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            observed.append(timeout)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url: str, *, json: dict[str, object]) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(client.httpx, "AsyncClient", FakeAsyncClient)
+    settings = Settings(backend_url="http://127.0.0.1:8000", request_timeout_seconds=60)
+    backend = client.ContextWorkspaceClient(settings)
+
+    result = asyncio.run(
+        backend.post("/hermes/ask", {}, request_timeout_seconds=125)
+    )
+
+    assert result == {"ok": True}
+    assert observed == [125]

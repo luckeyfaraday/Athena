@@ -87,12 +87,15 @@ class FakeHermesManager:
         question: str,
         context: str | None = None,
         timeout_seconds: float = 120,
+        session_id: str | None = None,
     ) -> HermesAskResult:
         if not self.installed:
             raise RuntimeError("Hermes Agent is not installed.")
         answer = f"answer: {question}"
         if context:
             answer += f" | context: {context}"
+        if session_id:
+            answer += f" | session: {session_id}"
         return HermesAskResult(answer=answer, project_dir=project_dir, returncode=0, stderr="")
 
 
@@ -260,6 +263,23 @@ def test_hermes_ask_endpoint_returns_recall_cache_without_oneshot(tmp_path: Path
     assert payload["returncode"] == 0
     assert "# Athena Recall" in payload["answer"]
     assert "Useful project context." in payload["answer"]
+
+
+def test_hermes_ask_endpoint_forwards_explicit_session_id(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post("/hermes/install", json={"confirm": True})
+
+    response = client.post(
+        "/hermes/ask",
+        json={
+            "project_dir": str(tmp_path),
+            "question": "Continue the active discussion.",
+            "session_id": "hermes-session-123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["answer"].endswith("| session: hermes-session-123")
 
 
 def test_hermes_ask_endpoint_reports_unavailable_hermes(tmp_path: Path) -> None:

@@ -9,7 +9,6 @@ import {
   Download,
   FolderOpen,
   Keyboard,
-  Maximize2,
   MessageSquare,
   Minus,
   Palette,
@@ -118,7 +117,6 @@ export function SettingsRoom({
   interfaceMode,
   uiTheme,
   resolvedTheme,
-  terminalFocus,
   performance,
   launchState,
   graphics,
@@ -133,7 +131,6 @@ export function SettingsRoom({
   onRefreshDiagnostics,
   onInterfaceModeChange,
   onThemeChange,
-  onTerminalFocusChange,
   onGraphicsPreferenceChange,
   notificationPreferences,
   onNotificationPreferencesChange,
@@ -156,7 +153,6 @@ export function SettingsRoom({
   uiTheme: ThemePreference;
   // what "system" currently resolves to
   resolvedTheme: ThemeId;
-  terminalFocus: boolean;
   performance: PerformanceDiagnostics | null;
   launchState: AthenaLaunchState | null;
   graphics: GraphicsRuntimeStatus | null;
@@ -173,7 +169,6 @@ export function SettingsRoom({
   onRefreshDiagnostics: () => Promise<void>;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: ThemePreference) => void;
-  onTerminalFocusChange: (focused: boolean) => void;
   onGraphicsPreferenceChange: (preference: GraphicsPreference) => void;
   notificationPreferences: NotificationPreferences;
   onNotificationPreferencesChange: (preferences: NotificationPreferences) => void;
@@ -245,12 +240,10 @@ export function SettingsRoom({
               resolvedTheme={resolvedTheme}
               density={density}
               interfaceMode={interfaceMode}
-              terminalFocus={terminalFocus}
               terminalAppearance={terminalAppearance}
               onThemeChange={onThemeChange}
               onDensityChange={onDensityChange}
               onInterfaceModeChange={onInterfaceModeChange}
-              onTerminalFocusChange={onTerminalFocusChange}
               onTerminalAppearanceChange={onTerminalAppearanceChange}
             />
           )}
@@ -415,24 +408,20 @@ function AppearanceSection({
   resolvedTheme,
   density,
   interfaceMode,
-  terminalFocus,
   terminalAppearance,
   onThemeChange,
   onDensityChange,
   onInterfaceModeChange,
-  onTerminalFocusChange,
   onTerminalAppearanceChange,
 }: {
   uiTheme: ThemePreference;
   resolvedTheme: ThemeId;
   density: Density;
   interfaceMode: "terminal" | "chat";
-  terminalFocus: boolean;
   terminalAppearance: TerminalAppearance;
   onThemeChange: (theme: ThemePreference) => void;
   onDensityChange: (density: Density) => void;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
-  onTerminalFocusChange: (focused: boolean) => void;
   onTerminalAppearanceChange: (next: TerminalAppearance) => void;
 }) {
   const cardRefs = useRef(new Map<ThemePreference, HTMLButtonElement>());
@@ -525,22 +514,6 @@ function AppearanceSection({
             </button>
             <button type="button" className={interfaceMode === "chat" ? "active" : ""} aria-pressed={interfaceMode === "chat"} onClick={() => onInterfaceModeChange("chat")}>
               <MessageSquare size={14} /> Chat
-            </button>
-          </div>
-        </SettingsRow>
-        <SettingsRow
-          label="Shell focus"
-          labelId="settingsFocusLabel"
-          help={terminalFocus
-            ? "Terminals fill the window and the surrounding chrome is hidden. Press Esc to bring it back."
-            : "The full workspace is visible around the terminal grid."}
-        >
-          <div className="segmentedControl" role="group" aria-labelledby="settingsFocusLabel">
-            <button type="button" className={!terminalFocus ? "active" : ""} aria-pressed={!terminalFocus} onClick={() => onTerminalFocusChange(false)}>
-              <TerminalSquare size={14} /> Normal
-            </button>
-            <button type="button" className={terminalFocus ? "active" : ""} aria-pressed={terminalFocus} onClick={() => onTerminalFocusChange(true)}>
-              <Maximize2 size={14} /> Focus
             </button>
           </div>
         </SettingsRow>
@@ -980,7 +953,7 @@ function ShortcutsSection() {
             </tr>
           ))}
           <tr>
-            <th scope="row">Leave shell focus, close menus and dialogs</th>
+            <th scope="row">Close menus, dialogs and the command palette</th>
             <td><span className="kbdGroup"><kbd className="kbd">Esc</kbd></span></td>
           </tr>
         </tbody>

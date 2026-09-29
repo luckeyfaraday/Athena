@@ -7,7 +7,6 @@ import {
   FolderOpen,
   FolderPlus,
   Keyboard,
-  Maximize2,
   MessageSquare,
   Minus,
   Palette,
@@ -70,7 +69,6 @@ import {
   sameJsonValue,
   samePerformanceDiagnostics,
 } from "./app-state";
-import { chatStreamEndForBuffer, recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import { playAttentionSound } from "./attention-sounds";
 import {
   attentionDelivery,
@@ -101,17 +99,14 @@ import {
   parseDensity,
   parseInterfaceMode,
   parseStoredWorkspace,
-  parseTerminalFocus,
   parseUiTheme,
   readDensity,
   readInterfaceMode,
   readNotificationPreferences,
-  readTerminalFocus,
   readUiTheme,
   readWorkspaceList,
   readWorkspaceListValue,
   storedValue,
-  terminalFocusStorageKey,
   uiThemeStorageKey,
   upsertWorkspace,
   workspaceListStorageKey,
@@ -121,7 +116,6 @@ import {
   writeNotificationPreferences,
   writeStorageValue,
   writeStoredWorkspace,
-  writeTerminalFocus,
   writeUiTheme,
   writeWorkspaceList,
   type Density,
@@ -162,10 +156,6 @@ function readTerminalAppearancePreference(read: (key: string) => string | null):
 
 function systemPrefersLight(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: light)").matches;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function documentVisible(): boolean {
@@ -216,7 +206,6 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
-  const [terminalFocus, setTerminalFocusState] = useState(() => readTerminalFocus());
   const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => readUiTheme());
   const [prefersLight, setPrefersLight] = useState(() => systemPrefersLight());
@@ -345,12 +334,6 @@ export function App() {
     writeNotificationPreferences(preferences);
     // Picking a sound plays it.
     if (preferences.sound !== previous.sound) playAttentionSound("action", preferences.sound, preferences.volume, { force: true });
-  }
-
-  function setTerminalFocus(focused: boolean) {
-    setTerminalFocusState(focused);
-    writeTerminalFocus(focused);
-    if (focused) setActiveRoom("command");
   }
 
   function clearWorkspaceAttention(nextWorkspace: WorkspacePath | string) {
@@ -550,12 +533,6 @@ export function App() {
         const fallbackMode = parseInterfaceMode(storedValue(interfaceModeStorageKey));
         if (fallbackMode) writeInterfaceMode(fallbackMode);
       }
-      const preferredFocus = parseTerminalFocus(preferences[terminalFocusStorageKey] ?? null);
-      if (preferredFocus != null) setTerminalFocusState(preferredFocus);
-      else {
-        const fallbackFocus = parseTerminalFocus(storedValue(terminalFocusStorageKey));
-        if (fallbackFocus != null) writeTerminalFocus(fallbackFocus);
-      }
       const preferredDensity = parseDensity(preferences[densityStorageKey] ?? null);
       if (preferredDensity) setDensityState(preferredDensity);
       else {
@@ -753,15 +730,6 @@ export function App() {
     }, 3_000);
     return () => window.clearInterval(timer);
   }, [backendHealthy, refreshBackend]);
-
-  useEffect(() => {
-    if (!terminalFocus) return undefined;
-    const exitOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setTerminalFocus(false);
-    };
-    document.addEventListener("keydown", exitOnEscape);
-    return () => document.removeEventListener("keydown", exitOnEscape);
-  }, [terminalFocus]);
 
   async function runBusy(action: () => Promise<void>) {
     setBusy(true);
@@ -1081,41 +1049,10 @@ export function App() {
     });
   }
 
-  async function broadcastPromptToAgents(prompt: string, sessionIds: string[]) {
-    const trimmed = prompt.trim();
-    if (!trimmed || sessionIds.length === 0) return;
-
-    const sessionById = new Map(embeddedSessions.map((session) => [session.id, session]));
-    const chatView = interfaceMode === "chat";
-    const results = await Promise.allSettled(sessionIds.map(async (id) => {
-      const session = sessionById.get(id);
-      if (!session) throw new Error(`Embedded session ${id} is no longer available.`);
-      // Only the chat view needs a buffer marker to anchor the prompt bubble;
-      // skip copying the whole terminal buffer over IPC otherwise.
-      const marker = chatView
-        ? await desktop.getEmbeddedTerminalBuffer(id).then((value) => chatStreamEndForBuffer(id, value)).catch(() => 0)
-        : 0;
-      await writePromptSequence(
-        session.kind,
-        trimmed,
-        (data) => desktop.writeEmbeddedTerminal(id, data),
-        delay,
-      );
-      if (chatView) recordChatPromptForSession(id, trimmed, marker);
-    }));
-    const failed = results.filter((result) => result.status === "rejected").length;
-    if (failed > 0) {
-      setError(`Prompt sent to ${sessionIds.length - failed} agents; ${failed} agent${failed === 1 ? "" : "s"} could not receive it.`);
-      return;
-    }
-    setError(null);
-  }
-
   const activeEmbeddedSessions = useMemo(
     () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
     [embeddedSessions, workspace],
   );
-  const shellFocus = terminalFocus && activeRoom === "command";
   const notice = error ?? (!backend?.healthy ? backend?.lastError : null) ?? (!electronControl?.running ? electronControl?.lastError : null) ?? null;
 
   function showCommandRoom(view?: "terminals" | "sessions") {
@@ -1157,7 +1094,6 @@ export function App() {
     shortcutHandlers.palette = () => (palette.open ? closePalette() : openPalette());
     if (!palette.open) {
       shortcutHandlers.settings = () => (activeRoom === "settings" ? showCommandRoom() : openSettings());
-      shortcutHandlers.shellFocus = () => setTerminalFocus(!terminalFocus);
       shortcutHandlers.newShell = () => {
         showCommandRoom("terminals");
         void launchEmbedded("shell", 1);
@@ -1284,7 +1220,6 @@ export function App() {
     commands.push(
       { id: "view:terminals", group: "View", title: "Show terminals", icon: <TerminalSquare size={15} />, run: () => showCommandRoom("terminals") },
       { id: "view:sessions", group: "View", title: "Show session history", icon: <Code2 size={15} />, keys: shortcutKeysFor("toggleSessions"), keywords: ["resume", "native", "history"], run: () => showCommandRoom("sessions") },
-      { id: "view:focus", group: "View", title: terminalFocus ? "Exit shell focus" : "Enter shell focus", icon: <Maximize2 size={15} />, keys: shortcutKeysFor("shellFocus"), keywords: ["zen", "fullscreen", "distraction"], run: () => setTerminalFocus(!terminalFocus) },
       {
         id: "view:mode",
         group: "View",
@@ -1375,8 +1310,9 @@ export function App() {
         onNavigate={setActiveRoom}
         onOpenPalette={() => openPalette()}
       />
-      <main className={shellFocus ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
-        <section className={shellFocus ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
+      {/* The Command Room fills the window edge to edge; Settings keeps the padded surface. */}
+      <main className={activeRoom === "command" ? "workspaceSurface commandSurface" : "workspaceSurface"}>
+        <section className="dashboardShell">
           <section className="dashboardGrid">
             <div className="commandColumn">
               {notice && (
@@ -1391,7 +1327,6 @@ export function App() {
                 </div>
               )}
               <WorkspaceTabs
-                className={shellFocus ? "focusWorkspaceTabs" : ""}
                 workspaces={workspaceTabs}
                 activeWorkspace={workspacePath}
                 terminalSessions={embeddedSessions}
@@ -1410,7 +1345,6 @@ export function App() {
                   sessions={activeEmbeddedSessions}
                   agentSessions={agentSessions}
                   busy={busy}
-                  focused={terminalFocus}
                   layoutResetNonce={layoutResetNonce}
                   interfaceMode={interfaceMode}
                   view={commandView}
@@ -1420,10 +1354,8 @@ export function App() {
                   onInterfaceModeChange={setInterfaceMode}
                   onToast={(message) => toasts.show(message)}
                   onAddWorkspace={() => void selectWorkspace()}
-                  onFocusChange={setTerminalFocus}
                   onLaunch={launchEmbedded}
                   onClose={closeEmbeddedTerminal}
-                  onBroadcastPrompt={broadcastPromptToAgents}
                   onResumeSession={resumeAgentSession}
                   onRenameEmbeddedSession={(session) => void renameEmbeddedSession(session)}
                   onRenameAgentSession={(session) => void renameAgentSession(session)}
@@ -1452,7 +1384,6 @@ export function App() {
                     density={density}
                     terminalAppearance={terminalAppearance}
                     section={settingsSection}
-                    terminalFocus={terminalFocus}
                     performance={performanceDiagnostics}
                     launchState={launchState}
                     graphics={graphicsStatus}
@@ -1466,7 +1397,6 @@ export function App() {
                     onDensityChange={setDensity}
                     onTerminalAppearanceChange={setTerminalAppearance}
                     onSectionChange={setSettingsSection}
-                    onTerminalFocusChange={setTerminalFocus}
                     onGraphicsPreferenceChange={updateGraphicsPreference}
                     notificationPreferences={notificationPreferences}
                     onNotificationPreferencesChange={setNotificationPreferences}

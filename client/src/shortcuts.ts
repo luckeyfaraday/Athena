@@ -6,7 +6,6 @@
 export type ShortcutId =
   | "palette"
   | "settings"
-  | "shellFocus"
   | "newShell"
   | "launchAgent"
   | "nextWorkspace"
@@ -40,7 +39,6 @@ const workspaceDigits = [1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
 export const shortcutDefinitions: readonly ShortcutDefinition[] = [
   { id: "palette", spec: { code: "KeyP", mod: true, shift: true }, label: "Open the command palette" },
   { id: "settings", spec: { code: "Comma", mod: true }, label: "Open Settings" },
-  { id: "shellFocus", spec: { code: "KeyF", mod: true, shift: true }, label: "Toggle shell focus" },
   { id: "newShell", spec: { code: "KeyT", mod: true, shift: true }, label: "New shell" },
   { id: "launchAgent", spec: { code: "KeyN", mod: true, shift: true }, label: "Launch an agent" },
   { id: "toggleSessions", spec: { code: "KeyS", mod: true, shift: true }, label: "Switch Terminals / Sessions" },

@@ -47,7 +47,7 @@ https://github.com/user-attachments/assets/70724e3c-f2c4-4e16-8dee-ab00e47a3485
 
 | Command Room | Agent Coverage | Desktop Runtime |
 |---|---|---|
-| Embedded PTY panes, shell focus, terminal/chat modes, native session history | Codex, OpenCode, Claude Code, Athena Code, Grok, Hermes, shell | Electron app with local FastAPI backend |
+| Embedded PTY panes edge to edge, terminal/chat modes, native session history | Codex, OpenCode, Claude Code, Athena Code, Grok, Hermes, shell | Electron app with local FastAPI backend |
 | ![Command Room](https://img.shields.io/badge/Command%20Room-embedded%20PTYs-2e5a46) | ![Agents](https://img.shields.io/badge/Agents-Codex%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Athena%20Code%20%7C%20Hermes-68c4ff) | ![Desktop](https://img.shields.io/badge/Desktop-AppImage%20ready-0f1c16) |
 
 ## LLM Summary
@@ -60,7 +60,6 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 
 - Start shell, Hermes, Codex, OpenCode, Claude, Athena Code, and Grok sessions from one UI, singly or as a four-pane grid.
 - Resume native agent sessions already stored on disk.
-- Broadcast one prompt to every ready agent pane.
 - Keep one tab per project workspace, with attention badges when a background workspace needs you.
 - Let Hermes use MCP tools to inspect sessions, message panes, and spawn visible Athena terminals.
 
@@ -83,14 +82,13 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 - Launch embedded shell, Hermes, Codex, OpenCode, Claude, Athena Code, and Grok panes.
 - Launch four-pane grids for parallel work; drag panes to reorder, resize, minimize, or maximize them (double-click a pane's title bar to maximize it).
 - Closing a running pane asks for a second click, so an agent is never killed by a stray click.
-- Shell Focus hides the surrounding chrome so terminals fill the window (Esc exits).
+- Panes always fill the window edge to edge, under the workspace tabs and a slim toolbar.
 - The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, with search, provider filters, and Resume, Rename, Focus, and Hide actions.
-- Broadcast a prompt to every ready agent pane, or pick which ones receive it.
 - Chat view reads native user and assistant messages for Codex, Claude Code, OpenCode, Athena Code, Grok, and Hermes, with terminal output as a fallback. Replies retain Markdown, code blocks, and short answers. Use the pane's **Terminal** button for approvals, menus, and live tool output, then **Back to chat** to continue with your draft intact.
 
 ### Subscription Usage
 
-- Title-bar chips show how much of each Claude and Codex subscription window is used; click one for the plan, account, every quota window with its reset countdown, and a manual refresh.
+- The title bar has one gauge control per provider (Claude, Codex). Each signed-in account is a ring: the outer ring is the window closest to its cap (its percentage is shown beside it), the inner ring the other open window. An amber dot marks numbers that are stale or rate limited, a red dot an account that cannot be read (for example an expired sign-in); hover for a one-line summary per account. Click for the plan, account, every quota window with its reset countdown, and a manual refresh.
 - Every signed-in account is shown separately, so several accounts can be watched side by side (config homes signed into the same account are merged). See [Subscription Usage](#subscription-usage).
 
 ### Command Palette and Shortcuts
@@ -103,7 +101,6 @@ Press **Ctrl+Shift+P** (**⌘⇧P** on macOS) for the command palette: launch an
 | Ctrl+, | Settings |
 | Ctrl+Shift+T | New shell |
 | Ctrl+Shift+N | Launch an agent (opens the palette on the launch commands) |
-| Ctrl+Shift+F | Toggle Shell Focus |
 | Ctrl+Shift+S | Switch Terminals / Sessions |
 | Ctrl+Shift+M | Switch agent panes between terminal and chat view |
 | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
@@ -123,7 +120,7 @@ Themes are sets of design tokens (`client/src/styles/themes.css`), so switching 
 
 ### Settings
 
-- Appearance: theme gallery, density, interface mode (terminal or chat), Shell Focus default, terminal font and size.
+- Appearance: theme gallery, density, interface mode (terminal or chat), terminal font and size.
 - Workspace, notifications, and terminal restore.
 - Agents: detected agent CLIs with Install and Update, Hermes status and install, and the MCP bridge connect helper.
 - System: graphics mode (auto, safe, accelerated), backend and Electron control status.

@@ -1,19 +1,27 @@
 /* ════════════════════════════════════════════════════════════════════════════
    COMMAND ROOM · toolbar, launch menu, terminal grid, pane chrome, empty
-   state, native sessions, broadcast composer. Tokens only (styles/tokens.css);
+   state, native sessions. Always edge to edge: the terminals are the room.
+   Tokens only (styles/tokens.css);
    overrides of shared primitives carry an extra class so load order between
    this file and styles.css never matters.
    ════════════════════════════════════════════════════════════════════════════ */
 
-.commandRoom { container: commandRoom / inline-size; }
+/* The room is not a card: it fills the surface under the workspace tabs. */
+.roomPanel.commandRoom {
+  container: commandRoom / inline-size;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
 
 /* ── TOOLBAR ──────────────────────────────────────────────────────────────── */
 .roomPanelHeader.commandToolbar {
-  min-height: 50px;
-  padding: var(--space-2) var(--space-3);
+  min-height: 42px;
+  padding: 4px var(--space-2);
   flex-wrap: nowrap;
   gap: var(--space-3);
-  background: color-mix(in srgb, var(--surface-2) 45%, var(--surface-1));
+  background: var(--surface-1);
 }
 .commandRoomTabs {
   flex: 0 0 auto;
@@ -72,11 +80,6 @@
   min-width: 0;
   width: calc(var(--control-h) - 4px);
   padding: 0;
-}
-.commandToolbar .focusToggle.active {
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-  color: var(--text);
 }
 @container commandRoom (max-width: 760px) {
   .commandToolbar .toolbarLabel { display: none; }
@@ -147,12 +150,12 @@
 .terminalStage {
   flex: 1;
   min-height: 0;
-  padding: var(--space-3);
+  padding: 4px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(205px, 1fr);
+  grid-auto-rows: minmax(0, 1fr);
   align-content: stretch;
-  gap: var(--space-3);
+  gap: 4px;
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -173,9 +176,8 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: var(--terminal);
-  box-shadow: var(--shadow-sm);
   transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease, opacity var(--dur-1) ease;
 }
 .terminalPane.workspaceHidden { display: none; }
@@ -341,7 +343,7 @@
   justify-content: center;
   gap: var(--space-5);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background:
     radial-gradient(ellipse at 50% 0%, var(--accent-soft), transparent 62%),
     var(--surface-sunken);
@@ -462,7 +464,7 @@
 .agentSessionsPanel {
   flex: 1;
   min-height: 0;
-  margin: var(--space-3);
+  margin: 4px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -613,84 +615,3 @@
 .agentSessionsEmpty > svg { color: var(--text-faint); }
 .agentSessionsEmpty strong { color: var(--text); font-size: var(--fs-lg); font-weight: var(--weight-strong); }
 .agentSessionsEmpty span { max-width: 440px; font-size: var(--fs-sm); line-height: 1.55; }
-
-/* ── BROADCAST COMPOSER ───────────────────────────────────────────────────── */
-.broadcastComposer {
-  flex: 0 0 auto;
-  margin: 0 var(--space-3) var(--space-3);
-  padding: 8px;
-  display: grid;
-  gap: 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-2);
-  transition: border-color var(--dur-1) ease, box-shadow var(--dur-1) ease;
-}
-.broadcastComposer:focus-within {
-  border-color: var(--accent-line);
-  box-shadow: var(--focus-ring);
-}
-.broadcastTargets {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.broadcastTargets::-webkit-scrollbar { display: none; }
-.broadcastTargets .eyebrow { flex: 0 0 auto; margin: 0 4px 0 2px; }
-.broadcastTargets .chip {
-  height: 24px;
-  padding: 0 9px 0 4px;
-  gap: 5px;
-}
-.broadcastTargets .chip:not(.active) .agentGlyph { opacity: .55; }
-.broadcastNote { color: var(--text-muted); font-size: var(--fs-xs); white-space: nowrap; }
-.broadcastInputRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 8px;
-}
-.broadcastInputRow textarea {
-  min-width: 0;
-  min-height: 34px;
-  max-height: 136px;
-  padding: 7px 4px 7px 6px;
-  border: 0;
-  outline: 0;
-  resize: none;
-  background: transparent;
-  color: var(--text);
-  font-size: var(--fs-md);
-  line-height: 20px;
-}
-.broadcastInputRow textarea::placeholder { color: var(--text-faint); }
-.broadcastInputRow textarea:disabled { cursor: not-allowed; }
-.broadcastInputRow .primaryButton { font-variant-numeric: tabular-nums; }
-
-/* ── SHELL FOCUS: chrome-less, panes edge to edge ─────────────────────────── */
-.commandRoom.focused {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.commandRoom.focused .roomPanelHeader.commandToolbar {
-  min-height: 42px;
-  padding: 4px var(--space-2);
-  background: var(--surface-1);
-}
-.commandRoom.focused .terminalStage {
-  padding: 4px;
-  gap: 4px;
-  grid-auto-rows: minmax(0, 1fr);
-}
-.commandRoom.focused .terminalPane {
-  border-radius: var(--radius-sm);
-  box-shadow: none;
-}
-.commandRoom.focused .terminalEmptyState { border-radius: var(--radius-sm); }
-.commandRoom.focused .agentSessionsPanel { margin: 4px; }
-.commandRoom.focused .broadcastComposer { display: none; }

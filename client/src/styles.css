@@ -733,6 +733,62 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   min-width: 0;
   flex: 1 1 0;
 }
+/* Notifications settings: labelled rows spanning the section. Selectors carry
+   .settingsSection so theme stylesheets (loaded later) do not pull the
+   controls back into the section's second column. */
+.notificationSettingsRows {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+.notificationSettingsRow {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.notificationSettingsRow > label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.settingsSection .notificationSettingsRow .segmentedControl {
+  grid-column: auto;
+  width: 100%;
+  min-width: 0;
+}
+.settingsSection .notificationSettingsRow .segmentedControl button {
+  min-width: 0;
+  flex: 1 1 0;
+}
+.settingsSection .notificationSettingsRow .segmentedControl button:disabled,
+.settingsSection .notificationSettingsRow input:disabled {
+  opacity: .45;
+  cursor: default;
+}
+.notificationVolume {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.notificationVolume input[type="range"] {
+  flex: 1 1 160px;
+  min-width: 110px;
+  accent-color: var(--orange);
+}
+.notificationVolume output {
+  min-width: 34px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.settingsSection .notificationSettingsRow .ghostButton {
+  grid-column: auto;
+}
 .commandRoomTabs {
   padding: 3px;
   display: inline-flex;

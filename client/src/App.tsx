@@ -32,7 +32,17 @@ import {
   samePerformanceDiagnostics,
 } from "./app-state";
 import { chatStreamEndForBuffer, recordChatPromptForSession, writePromptSequence } from "./chat-mode";
-import { mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
+import { playAttentionSound } from "./attention-sounds";
+import {
+  attentionDelivery,
+  attentionHeadline,
+  mergeWorkspaceAttention,
+  parseNotificationPreferences,
+  type NotificationPreferences,
+  type TerminalAttentionEvent,
+  type WorkspaceAttention,
+  type WorkspaceAttentionKind,
+} from "./workspace-attention";
 import {
   applyAgentSessionRenames,
   applyEmbeddedSessionRenames,
@@ -46,11 +56,13 @@ import {
 } from "./session-utils";
 import {
   interfaceModeStorageKey,
+  notificationsStorageKey,
   parseInterfaceMode,
   parseStoredWorkspace,
   parseTerminalFocus,
   parseUiTheme,
   readInterfaceMode,
+  readNotificationPreferences,
   readTerminalFocus,
   readUiTheme,
   readWorkspaceList,
@@ -62,6 +74,7 @@ import {
   workspaceListStorageKey,
   workspaceStorageKey,
   writeInterfaceMode,
+  writeNotificationPreferences,
   writeStoredWorkspace,
   writeTerminalFocus,
   writeUiTheme,
@@ -75,6 +88,8 @@ import { normalizeWorkspaceKey, sameWorkspacePath, workspaceDisplayName, workspa
 // subprocesses (Hermes/adapter detection) is fetched on demand instead.
 const statusPollIntervalMs = 15_000;
 const agentSessionMaxAgeMs = 60_000;
+// Main reports each prompt or finished turn once; this only keeps a flapping terminal from alerting in a loop.
+const attentionAlertThrottleMs = 5_000;
 const uiThemeStyleElementId = "athena-selected-ui-theme";
 
 const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
@@ -90,6 +105,10 @@ function delay(ms: number): Promise<void> {
 
 function documentVisible(): boolean {
   return document.visibilityState === "visible";
+}
+
+function workspaceBasename(workspacePath: string): string {
+  return workspacePath.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || workspacePath;
 }
 
 function sameEmbeddedSessions(a: EmbeddedTerminalSession[], b: EmbeddedTerminalSession[]): boolean {
@@ -135,6 +154,7 @@ export function App() {
   const [terminalFocus, setTerminalFocusState] = useState(() => readTerminalFocus());
   const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => readUiTheme());
+  const [notificationPreferences, setNotificationPreferencesState] = useState<NotificationPreferences>(() => readNotificationPreferences());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [installingHermes, setInstallingHermes] = useState(false);
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
@@ -156,6 +176,7 @@ export function App() {
   const agentSessionsLastRefreshAt = useRef<Map<string, number>>(new Map());
   const activeWorkspaceRef = useRef("");
   const activeRoomRef = useRef<ActiveRoom>("command");
+  const notificationPreferencesRef = useRef(notificationPreferences);
   const sessionRenamesRef = useRef(sessionRenames);
   const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
   const embeddedSessionWorkspaceKeysRef = useRef<Map<string, string>>(new Map());
@@ -165,6 +186,7 @@ export function App() {
 
   activeWorkspaceRef.current = workspace;
   activeRoomRef.current = activeRoom;
+  notificationPreferencesRef.current = notificationPreferences;
   sessionRenamesRef.current = sessionRenames;
 
   function setInterfaceMode(mode: InterfaceMode) {
@@ -175,6 +197,14 @@ export function App() {
   function setUiTheme(theme: UiTheme) {
     setUiThemeState(theme);
     writeUiTheme(theme);
+  }
+
+  function setNotificationPreferences(preferences: NotificationPreferences) {
+    const previous = notificationPreferencesRef.current;
+    setNotificationPreferencesState(preferences);
+    writeNotificationPreferences(preferences);
+    // Picking a sound plays it.
+    if (preferences.sound !== previous.sound) playAttentionSound("action", preferences.sound, preferences.volume, { force: true });
   }
 
   function setTerminalFocus(focused: boolean) {
@@ -193,18 +223,44 @@ export function App() {
     });
   }
 
-  function markWorkspaceAttention(sessionId: string, kind: WorkspaceAttentionKind) {
-    const key = embeddedSessionWorkspaceKeysRef.current.get(sessionId);
-    if (!key || key === normalizeWorkspaceKey(activeWorkspaceRef.current)) return;
-    const throttleKey = `${sessionId}:${kind}`;
+  // Runs from a subscription made on first render, so everything it reads comes from refs.
+  function handleTerminalAttention(event: TerminalAttentionEvent) {
+    const key = embeddedSessionWorkspaceKeysRef.current.get(event.id) ?? null;
+    const preferences = notificationPreferencesRef.current;
+    const delivery = attentionDelivery(event.kind, {
+      sessionWorkspaceKey: key,
+      activeWorkspaceKey: normalizeWorkspaceKey(activeWorkspaceRef.current),
+      windowFocused: document.hasFocus(),
+      commandRoomVisible: activeRoomRef.current === "command",
+    }, preferences);
+    if (key && delivery.badge) {
+      setWorkspaceAttention((current) => ({
+        ...current,
+        [key]: mergeWorkspaceAttention(current[key], event.kind),
+      }));
+    }
+    if (!delivery.sound && !delivery.desktop && !delivery.flash) return;
+    const throttleKey = `${event.id}:${event.kind}`;
     const now = Date.now();
-    if (now - (lastWorkspaceAttentionAt.current.get(throttleKey) ?? 0) < 30_000) return;
+    if (now - (lastWorkspaceAttentionAt.current.get(throttleKey) ?? 0) < attentionAlertThrottleMs) return;
     lastWorkspaceAttentionAt.current.set(throttleKey, now);
-    void desktop.playAttentionSound();
-    setWorkspaceAttention((current) => ({
-      ...current,
-      [key]: mergeWorkspaceAttention(current[key], kind),
-    }));
+    if (delivery.sound) playAttentionSound(event.kind, preferences.sound, preferences.volume);
+    if (delivery.flash) void desktop.flashWindowForAttention().catch(() => undefined);
+    const session = embeddedSessionsRef.current.find((item) => item.id === event.id);
+    if (delivery.desktop && session) {
+      const place = workspaceBasename(session.workspace);
+      void desktop.showAttentionNotification({
+        title: attentionHeadline(session.title, event),
+        body: event.reason === "notification" && event.message ? `${event.message} · ${place}` : place,
+        workspace: session.workspace,
+        sessionId: session.id,
+      }).catch(() => undefined);
+    }
+  }
+
+  function previewAttentionSound(kind: WorkspaceAttentionKind) {
+    const preferences = notificationPreferencesRef.current;
+    playAttentionSound(kind, preferences.sound, preferences.volume, { force: true });
   }
 
   function updateGraphicsPreference(preference: GraphicsPreference) {
@@ -362,6 +418,12 @@ export function App() {
         const fallbackFocus = parseTerminalFocus(storedValue(terminalFocusStorageKey));
         if (fallbackFocus != null) writeTerminalFocus(fallbackFocus);
       }
+      const preferredNotifications = parseNotificationPreferences(preferences[notificationsStorageKey] ?? null);
+      if (preferredNotifications) setNotificationPreferencesState(preferredNotifications);
+      else {
+        const fallbackNotifications = parseNotificationPreferences(storedValue(notificationsStorageKey));
+        if (fallbackNotifications) writeNotificationPreferences(fallbackNotifications);
+      }
       const preferredTabs = readWorkspaceListValue(preferences[workspaceListStorageKey] ?? null);
       if (preferredTabs.length > 0) setWorkspaceTabs(preferredTabs);
       else {
@@ -480,12 +542,16 @@ export function App() {
     const removeWorkspaceClose = desktop.onWorkspaceClose(({ workspace: closedWorkspace }) => {
       closeWorkspaceTab(closedWorkspace);
     });
-    const removeAttention = desktop.onEmbeddedTerminalAttention((payload) => {
-      markWorkspaceAttention(payload.id, payload.kind);
+    const removeAttention = desktop.onEmbeddedTerminalAttention(handleTerminalAttention);
+    // A desktop notification was clicked: show that terminal's workspace.
+    const removeAttentionActivate = desktop.onAttentionActivate(({ workspace: nextWorkspace }) => {
+      setActiveRoom("command");
+      if (sameWorkspacePath(activeWorkspaceRef.current, nextWorkspace)) return;
+      desktop.toWorkspacePath(nextWorkspace).then(activateWorkspace).catch((err) => setError(String(err)));
     });
+    // Natural exits are reported through the attention channel; kills are not news.
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
       setupExitRef.current(payload.id, payload.exitCode);
-      markWorkspaceAttention(payload.id, "update");
       setEmbeddedSessions((current) =>
         current.map((item) => (item.id === payload.id ? { ...item, status: "exited", exitCode: payload.exitCode } : item)),
       );
@@ -495,6 +561,7 @@ export function App() {
       removeWorkspaceOpen();
       removeWorkspaceClose();
       removeAttention();
+      removeAttentionActivate();
       removeExit();
     };
   }, []);
@@ -950,6 +1017,9 @@ export function App() {
                   onThemeChange={setUiTheme}
                   onTerminalFocusChange={setTerminalFocus}
                   onGraphicsPreferenceChange={updateGraphicsPreference}
+                  notificationPreferences={notificationPreferences}
+                  onNotificationPreferencesChange={setNotificationPreferences}
+                  onPreviewAttentionSound={previewAttentionSound}
                 />
               )}
             </div>

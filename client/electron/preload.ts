@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AgentCliKind, AgentCliStatus, PrivateAgentCopies } from "./agent-cli.js";
 import type { AgentSession } from "./agent-sessions.js";
+import type { AttentionActivatePayload, AttentionNotificationRequest } from "./attention-notifications.js";
 import type { BackendState } from "./backend.js";
 import type { ControlState } from "./control-server.js";
 import type { EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
 import type { AthenaLaunchState } from "./launch-state.js";
 import type { WorkspacePath } from "./platform.js";
+import type { TerminalAttentionEvent } from "./terminal-attention.js";
 
 export type PerformanceDiagnostics = {
   activeTerminals: number;
@@ -154,13 +156,15 @@ export type WorkspaceApi = {
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   openExternalUrl: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
-  playAttentionSound: () => Promise<void>;
+  showAttentionNotification: (request: AttentionNotificationRequest) => Promise<boolean>;
+  flashWindowForAttention: () => Promise<void>;
+  onAttentionActivate: (callback: (payload: AttentionActivatePayload) => void) => () => void;
   onEmbeddedTerminalDataFor: (
     id: string,
     callback: (payload: EmbeddedTerminalDataPayload) => void,
     options?: EmbeddedTerminalDataSubscriptionOptions,
   ) => () => void;
-  onEmbeddedTerminalAttention: (callback: (payload: { id: string; kind: "action" | "update" }) => void) => () => void;
+  onEmbeddedTerminalAttention: (callback: (payload: TerminalAttentionEvent) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: EmbeddedTerminalExitPayload) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
@@ -271,7 +275,8 @@ function acknowledgeEmbeddedTerminalData(id: string, epoch: string, sequence: nu
 }
 const onEmbeddedTerminalExit = createIpcSubscription<EmbeddedTerminalExitPayload>("embedded-terminal:exit");
 const onEmbeddedTerminalSession = createIpcSubscription<EmbeddedTerminalSession>("embedded-terminal:session");
-const onEmbeddedTerminalAttention = createIpcSubscription<{ id: string; kind: "action" | "update" }>("embedded-terminal:attention");
+const onEmbeddedTerminalAttention = createIpcSubscription<TerminalAttentionEvent>("embedded-terminal:attention");
+const onAttentionActivate = createIpcSubscription<AttentionActivatePayload>("attention:activate");
 const onWorkspaceOpen = createIpcSubscription<{ workspace: WorkspacePath; select: boolean }>("workspace:open");
 const onWorkspaceClose = createIpcSubscription<{ workspace: WorkspacePath }>("workspace:close");
 
@@ -310,7 +315,9 @@ const api: WorkspaceApi = {
   getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
   openExternalUrl: (url) => ipcRenderer.invoke("shell:openExternal", url),
   openPath: (path) => ipcRenderer.invoke("shell:openPath", path),
-  playAttentionSound: () => ipcRenderer.invoke("shell:beep"),
+  showAttentionNotification: (request) => ipcRenderer.invoke("attention:notify", request),
+  flashWindowForAttention: () => ipcRenderer.invoke("attention:flash"),
+  onAttentionActivate,
   onEmbeddedTerminalDataFor,
   onEmbeddedTerminalAttention,
   onEmbeddedTerminalExit,

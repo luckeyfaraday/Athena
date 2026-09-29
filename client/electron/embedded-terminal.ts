@@ -216,8 +216,8 @@ const outputStream = new TerminalOutputStreamHub({ maxSnapshotChars: MAX_BUFFER_
 const terminalFlow = new TerminalFlowController({
   setPaused: (id, paused) => ptyHost.setFlowPaused(id, paused),
 });
-const terminalAttention = new TerminalAttentionTracker((id, kind) => {
-  emit("embedded-terminal:attention", { id, kind });
+const terminalAttention = new TerminalAttentionTracker((event) => {
+  emit("embedded-terminal:attention", event);
 });
 // Renderer WebContents that own `renderer:<id>` stream consumers.
 const rendererOutputSenders = new Map<number, WebContents>();
@@ -851,6 +851,8 @@ export async function spawnEmbeddedTerminal(
 
     session.pid = pid;
     terminals.set(id, { session, restore: restoreEntry });
+    // A launch task starts the first turn without any input, so report when it finishes.
+    terminalAttention.register(id, { agent: isAgentKind(kind), armed: Boolean(session.initialTask) });
     if (!setup) upsertRestoreEntry(restoreEntry);
     recordSpawnSucceeded({
       terminalId: session.id,
@@ -886,6 +888,7 @@ function stringEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 export async function writeEmbeddedTerminal(id: string, data: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminal(id);
   recordTerminalInputActivity(id);
+  terminalAttention.noteInput(id, data);
   await ptyHost.write(id, data);
   return { ...entry.session };
 }
@@ -918,6 +921,7 @@ export async function submitEmbeddedTerminalInput(target: string, text: string):
   const writes = terminalInputWritesForKind(entry.session.kind, text);
   try {
     recordTerminalInputActivity(entry.session.id);
+    terminalAttention.noteInput(entry.session.id);
     for (const write of writes) {
       await ptyHost.write(entry.session.id, write.data);
       if (write.delayAfterMs) await delay(write.delayAfterMs);
@@ -969,6 +973,7 @@ async function deliverAgentMessage(entry: ManagedTerminal, message: AgentMessage
   recordInputRequested({ terminalId: entry.session.id, source, preview: envelope });
   try {
     recordTerminalInputActivity(entry.session.id);
+    terminalAttention.noteInput(entry.session.id);
     for (const write of terminalInputWritesForKind(entry.session.kind, envelope)) {
       await ptyHost.write(entry.session.id, write.data);
       if (write.delayAfterMs) await delay(write.delayAfterMs);
@@ -1077,6 +1082,7 @@ export async function writeEmbeddedTerminalInputRaw(target: string, data: string
   recordInputRequested({ terminalId: entry.session.id, source: "electron-control", preview });
   try {
     recordTerminalInputActivity(entry.session.id);
+    terminalAttention.noteInput(entry.session.id, data);
     await ptyHost.write(entry.session.id, data);
   } catch (error) {
     recordInputFailed({ terminalId: entry.session.id, source: "electron-control", preview, error: String(error) });
@@ -1102,6 +1108,8 @@ export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminal
   clearQueueDrain(id);
   terminals.delete(id);
   clearTerminalActivity(id);
+  // Stopped by Athena, so nothing to report.
+  terminalAttention.clear(id);
   removeRestoreEntry(id);
   emitTerminalExit(id, null);
   scheduleTerminalOutputStateCleanup(id);
@@ -1118,7 +1126,7 @@ function installPtyHostListeners(): void {
     recordTerminalOutputActivity(id);
     markTerminalOutputForMessages(id);
     queueOutput(id, data);
-    // Throttled per terminal; emits embedded-terminal:attention when a cue hits.
+    // Emits embedded-terminal:attention when the terminal needs the user (prompt, finished turn, notification).
     terminalAttention.observe(id, data);
     // Output usually means the agent finished a turn; retry queued delivery
     // once it settles back to an idle prompt.
@@ -1136,6 +1144,9 @@ function installPtyHostListeners(): void {
     failQueuedAgentMessages(id, "Target terminal exited before delivery.");
     clearQueueDrain(id);
     emitTerminalExit(id, exitCode);
+    // Exited on its own (a kill removes the entry first); quitting Athena ends every terminal, which is not news.
+    if (appQuitting) terminalAttention.clear(id);
+    else terminalAttention.noteExit(id, exitCode);
     terminals.delete(id);
     terminalFlow.forget(id);
     clearTerminalActivity(id);
@@ -1184,6 +1195,7 @@ function installPtyHostListeners(): void {
       clearQueueDrain(id);
       emit("embedded-terminal:session", entry.session);
       emitTerminalExit(id, null);
+      terminalAttention.clear(id);
       terminals.delete(id);
       terminalFlow.forget(id);
       clearTerminalActivity(id);

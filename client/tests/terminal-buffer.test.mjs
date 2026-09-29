@@ -13,7 +13,9 @@ import {
 } from "../dist-electron/terminal-buffer.js";
 import {
   TERMINAL_ATTENTION_SCAN_MAX_CHARS,
-  classifyTerminalAttention,
+  createTerminalScanState,
+  matchAttentionPrompt,
+  scanTerminalOutput,
 } from "../dist-electron/terminal-attention.js";
 
 test("terminal buffer max chars uses default and clamps bounds", () => {
@@ -246,11 +248,11 @@ test("lazy VT-safe trimming and replay match a full-stream oracle on fuzzed outp
   }
 });
 
-test("main-side attention classification remains bounded to the newest 4k chars", () => {
-  assert.equal(classifyTerminalAttention("Waiting for approval to continue"), "action");
-  assert.equal(classifyTerminalAttention("Task completed and ready for review"), "update");
-  assert.equal(
-    classifyTerminalAttention(`approval ${"x".repeat(TERMINAL_ATTENTION_SCAN_MAX_CHARS + 10)}`),
-    null,
-  );
+test("main-side attention scanning remains bounded to the newest 4k chars", () => {
+  const scanned = (data) => scanTerminalOutput(createTerminalScanState(), data).text;
+  const promptThenFlood = scanned(`Do you want to proceed? ${"x".repeat(TERMINAL_ATTENTION_SCAN_MAX_CHARS + 10)}`);
+  assert.equal(promptThenFlood.length, TERMINAL_ATTENTION_SCAN_MAX_CHARS);
+  assert.equal(matchAttentionPrompt(promptThenFlood), null);
+  const floodThenPrompt = scanned(`${"x".repeat(TERMINAL_ATTENTION_SCAN_MAX_CHARS * 3)} Do you want to proceed?`);
+  assert.equal(matchAttentionPrompt(floodThenPrompt)?.reason, "approval");
 });

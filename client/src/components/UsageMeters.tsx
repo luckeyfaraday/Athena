@@ -1,25 +1,30 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import type { BackendClient } from "../api";
 import { ClaudeIcon, OpenAIIcon } from "./BrandIcons";
 import {
+  accountLabel,
   accountTitle,
-  chipLabel,
   clockOffsetMs,
   formatAge,
   formatDuration,
   formatPercent,
   formatResetCountdown,
+  gaugeValue,
   gaugeWindows,
   groupByProvider,
   groupDescription,
   isLive,
   openWindows,
+  preferredAccount,
   presentSnapshot,
+  ringArcLength,
   statusLabel,
   usageAttention,
   usageLevel,
   usagePollDelay,
+  visibleGauges,
+  worstAttention,
   type UsageAccount,
   type UsageProviderGroup,
   type UsageSnapshot,
@@ -30,7 +35,9 @@ import {
 // opening a detail panel. Every surface reads the backend's shared cache;
 // polling here never reaches a provider directly.
 
-type RefreshFailure = { accountKey: string | null; message: string };
+// accountKey or provider name what failed to refresh; both null means every account.
+type RefreshFailure = { accountKey: string | null; provider: string | null; message: string };
+type RefreshScope = { accountKey?: string; provider?: string };
 
 function useUsage(client: BackendClient | null) {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
@@ -100,17 +107,19 @@ function useUsage(client: BackendClient | null) {
   }, [client, apply]);
 
   const refresh = useCallback(
-    async (accountKey?: string) => {
+    async (scope: RefreshScope = {}) => {
       if (!client) return;
       setRefreshing(true);
       setRefreshError(null);
       const sequence = ++issuedRef.current;
       try {
-        const next = await client.refreshUsage(accountKey ? { accountKey } : {});
+        const next = await client.refreshUsage(scope);
         // Keep following a probe that is still running instead of idling for a minute.
         if (apply(sequence, next)) rescheduleRef.current?.(usagePollDelay(next));
       } catch (error) {
-        if (sequence >= appliedRef.current) setRefreshError({ accountKey: accountKey ?? null, message: messageOf(error) });
+        if (sequence >= appliedRef.current) {
+          setRefreshError({ accountKey: scope.accountKey ?? null, provider: scope.provider ?? null, message: messageOf(error) });
+        }
       } finally {
         setRefreshing(false);
       }
@@ -143,7 +152,8 @@ function useNow(intervalMs: number): number {
 export function UsageMeters({ client }: { client: BackendClient | null }) {
   const { snapshot: received, receivedAt, pollError, refreshError, refreshing, refresh } = useUsage(client);
   const now = useNow(30_000);
-  const [openKey, setOpenKey] = useState<string | null>(null);
+  // The panel belongs to the provider control that opened it; `key` is the account it shows.
+  const [open, setOpen] = useState<{ provider: string; key: string } | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const snapshot = presentSnapshot(received, {
     receivedAt,
@@ -154,13 +164,15 @@ export function UsageMeters({ client }: { client: BackendClient | null }) {
   // Reset times and ages are backend timestamps; read them on the backend's clock.
   const hostNow = now + clockOffsetMs(received, receivedAt);
   const accounts = snapshot?.accounts ?? [];
-  const selected = accounts.find((account) => account.key === openKey) ?? null;
+  const groups = groupByProvider(accounts);
+  const openGroup = open ? groups.find((group) => group.provider === open.provider) ?? null : null;
+  const selected = open && openGroup ? openGroup.accounts.find((account) => account.key === open.key) ?? null : null;
 
   // An account that drops out of the snapshot closes its panel for good,
   // rather than leaving a closed-but-selected panel to pop back open later.
   useEffect(() => {
-    if (openKey !== null && received !== null && !selected) setOpenKey(null);
-  }, [openKey, received, selected]);
+    if (open !== null && received !== null && !selected) setOpen(null);
+  }, [open, received, selected]);
 
   // Nothing to show before the first answer or without any CLI login; the
   // title bar's backend indicator already covers an unreachable backend.
@@ -168,39 +180,47 @@ export function UsageMeters({ client }: { client: BackendClient | null }) {
 
   const errorFor = (account: UsageAccount): string | null => {
     if (pollError) return `Backend error: ${pollError}`;
-    if (refreshError && (refreshError.accountKey === null || refreshError.accountKey === account.key)) {
-      return `Refresh failed: ${refreshError.message}`;
-    }
-    return null;
+    if (!refreshError) return null;
+    const covers = refreshError.accountKey
+      ? refreshError.accountKey === account.key
+      : refreshError.provider === null || refreshError.provider === account.provider;
+    return covers ? `Refresh failed: ${refreshError.message}` : null;
   };
   const close = () => {
-    setOpenKey(null);
+    setOpen(null);
     triggerRef.current?.focus();
   };
+  // More than a few gauges in all: their percentages give way first when the window narrows.
+  const crowded = groups.reduce((total, group) => total + visibleGauges(group.accounts).shown.length, 0) > 3;
 
   return (
-    <div className="titleUsage" role="group" aria-label="Subscription usage">
-      {groupByProvider(accounts).map((group) => (
+    <div className="titleUsage" role="group" aria-label="Subscription usage" data-crowded={crowded || undefined}>
+      {groups.map((group) => (
         <UsageGroupButton
           key={group.provider}
           group={group}
           accounts={accounts}
           now={hostNow}
-          expanded={selected?.provider === group.provider}
+          expanded={openGroup?.provider === group.provider}
           onOpen={(button) => {
             triggerRef.current = button;
-            setOpenKey(selected?.provider === group.provider ? null : group.accounts[0].key);
+            if (open?.provider === group.provider) {
+              setOpen(null);
+              return;
+            }
+            const account = preferredAccount(group.accounts, hostNow) ?? group.accounts[0];
+            setOpen({ provider: group.provider, key: account.key });
           }}
         />
       ))}
-      {selected && (
+      {selected && openGroup && (
         <UsagePanel
           account={selected}
-          accounts={accounts}
+          group={openGroup}
           now={hostNow}
           refreshing={refreshing}
           error={errorFor(selected)}
-          onSelect={setOpenKey}
+          onSelect={(key) => setOpen({ provider: openGroup.provider, key })}
           onRefresh={refresh}
           onClose={close}
         />
@@ -229,6 +249,7 @@ function UsageGroupButton({
   onOpen: (button: HTMLButtonElement) => void;
 }) {
   const description = groupDescription(group, accounts, now);
+  const { shown, hidden } = visibleGauges(group.accounts);
   return (
     <button
       type="button"
@@ -241,7 +262,10 @@ function UsageGroupButton({
     >
       <ProviderMark provider={group.provider} size={12} />
       <span className="usageGauges">
-        {group.accounts.map((account) => <UsageGauge key={account.key} account={account} now={now} showValue />)}
+        {shown.map((account) => <UsageGauge key={account.key} account={account} now={now} showValue />)}
+        {hidden.length > 0 && (
+          <span className={`usageMore attention-${worstAttention(hidden)}`} aria-hidden="true">+{hidden.length}</span>
+        )}
       </span>
     </button>
   );
@@ -249,6 +273,9 @@ function UsageGroupButton({
 
 const outerRadius = 7.25;
 const innerRadius = 3.75;
+// The status dot sits in a notch cut out of the rings (an SVG mask), so it
+// reads the same on any background: title bar, hover fill, or panel row.
+const dot = { x: 15.25, y: 2.75, radius: 2.5, cutout: 3.9 };
 
 // Concentric rings: the outer one is the window closest to its cap (the
 // percentage shown beside it), the inner one the account's other open window.
@@ -256,18 +283,33 @@ const innerRadius = 3.75;
 function UsageGauge({ account, now, showValue = false }: { account: UsageAccount; now: number; showValue?: boolean }) {
   const { outer, inner } = gaugeWindows(account, now);
   const attention = usageAttention(account);
-  const live = isLive(account);
+  const flagged = attention !== "none";
+  const maskId = `usage-gauge-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const value = showValue ? gaugeValue(account, now) : null;
   return (
-    <span className={`usageGauge attention-${attention}${live ? "" : " notLive"}`}>
+    <span className={`usageGauge attention-${attention}${isLive(account) ? "" : " notLive"}`}>
       <svg className="usageRing" viewBox="0 0 18 18" aria-hidden="true">
-        <circle className="usageRingTrack" cx="9" cy="9" r={outerRadius} />
-        {outer && <RingArc radius={outerRadius} window={outer} />}
-        {inner && <circle className="usageRingTrack inner" cx="9" cy="9" r={innerRadius} />}
-        {inner && <RingArc radius={innerRadius} window={inner} inner />}
+        {flagged && (
+          <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width="18" height="18">
+            <rect width="18" height="18" fill="white" />
+            <circle cx={dot.x} cy={dot.y} r={dot.cutout} fill="black" />
+          </mask>
+        )}
+        <g mask={flagged ? `url(#${maskId})` : undefined}>
+          <circle className="usageRingTrack" cx="9" cy="9" r={outerRadius} />
+          {outer && <RingArc radius={outerRadius} window={outer} />}
+          {inner && <circle className="usageRingTrack inner" cx="9" cy="9" r={innerRadius} />}
+          {inner && <RingArc radius={innerRadius} window={inner} inner />}
+        </g>
+        {flagged && <circle className="usageGaugeDot" cx={dot.x} cy={dot.y} r={dot.radius} />}
       </svg>
-      {attention !== "none" && <i className="usageGaugeDot" aria-hidden="true" />}
-      {showValue && live && outer && (
-        <strong className={`usageGaugeValue usageLevel-${usageLevel(outer.used_percent)}`}>{formatPercent(outer.used_percent)}</strong>
+      {value && (
+        <strong
+          className={value.live && outer ? `usageGaugeValue usageLevel-${usageLevel(outer.used_percent)}` : "usageGaugeValue muted"}
+          title={value.title}
+        >
+          {value.text}
+        </strong>
       )}
     </span>
   );
@@ -275,9 +317,8 @@ function UsageGauge({ account, now, showValue = false }: { account: UsageAccount
 
 function RingArc({ radius, window, inner = false }: { radius: number; window: UsageWindow; inner?: boolean }) {
   const circumference = 2 * Math.PI * radius;
-  const fraction = Math.max(0, Math.min(100, window.used_percent)) / 100;
-  // A sliver stays visible at 0% so an empty ring still reads as a gauge.
-  const length = Math.max(fraction * circumference, 0.6);
+  const length = ringArcLength(window.used_percent, circumference);
+  if (length === 0) return null;
   return (
     <circle
       className={`usageRingFill usageLevel-${usageLevel(window.used_percent)}${inner ? " inner" : ""}`}
@@ -292,7 +333,7 @@ function RingArc({ radius, window, inner = false }: { radius: number; window: Us
 
 function UsagePanel({
   account,
-  accounts,
+  group,
   now,
   refreshing,
   error,
@@ -301,14 +342,16 @@ function UsagePanel({
   onClose,
 }: {
   account: UsageAccount;
-  accounts: UsageAccount[];
+  group: UsageProviderGroup;
   now: number;
   refreshing: boolean;
   error: string | null;
   onSelect: (key: string) => void;
-  onRefresh: (accountKey?: string) => Promise<void>;
+  onRefresh: (scope?: RefreshScope) => Promise<void>;
   onClose: () => void;
 }) {
+  // Only the accounts of the provider whose control opened the panel.
+  const accounts = group.accounts;
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -350,15 +393,15 @@ function UsagePanel({
   return (
     <div className="usagePanel" role="dialog" aria-labelledby={titleId} tabIndex={-1} ref={panelRef} onKeyDown={onKeyDown}>
       <header className="usagePanelHead">
-        <span className="usagePanelTitle">Subscription usage</span>
+        <span className="usagePanelTitle">{group.providerName} usage</span>
         <div>
           <button
             type="button"
             className="usageIconButton"
-            onClick={() => void onRefresh()}
+            onClick={() => void onRefresh({ provider: group.provider })}
             disabled={busy}
-            aria-label="Refresh all accounts"
-            title="Refresh all accounts"
+            aria-label={`Refresh every ${group.providerName} account`}
+            title={`Refresh every ${group.providerName} account`}
           >
             <RefreshCw size={13} className={busy ? "spinning" : undefined} />
           </button>
@@ -370,25 +413,27 @@ function UsagePanel({
 
       {accounts.length > 1 && (
         <div className="usageTabs" role="tablist" aria-label="Accounts" aria-orientation="vertical">
-          {accounts.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              data-usage-tab={item.key}
-              aria-selected={item.key === account.key}
-              tabIndex={item.key === account.key ? 0 : -1}
-              className={item.key === account.key ? "usageTab active" : "usageTab"}
-              onClick={() => onSelect(item.key)}
-            >
-              <UsageGauge account={item} now={now} />
-              <span className="usageTabLabel">
-                <ProviderMark provider={item.provider} size={11} />
-                <span>{chipLabel(item, accounts) ?? item.provider_name}</span>
-              </span>
-              <span className={`usageTabValue${isLive(item) ? "" : " muted"}`}>{tabValue(item, now)}</span>
-            </button>
-          ))}
+          {accounts.map((item) => {
+            const value = tabValue(item, now);
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                data-usage-tab={item.key}
+                aria-selected={item.key === account.key}
+                tabIndex={item.key === account.key ? 0 : -1}
+                className={item.key === account.key ? "usageTab active" : "usageTab"}
+                onClick={() => onSelect(item.key)}
+              >
+                <UsageGauge account={item} now={now} />
+                <span className="usageTabLabel">
+                  <span>{accountLabel(item, accounts) ?? item.provider_name}</span>
+                </span>
+                <span className={value.muted ? "usageTabValue muted" : "usageTabValue"} title={value.title}>{value.text}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -442,7 +487,7 @@ function UsagePanel({
         </dl>
 
         <footer className="usagePanelFoot">
-          <button type="button" className="usageRefresh" onClick={() => void onRefresh(account.key)} disabled={busy}>
+          <button type="button" className="usageRefresh" onClick={() => void onRefresh({ accountKey: account.key })} disabled={busy}>
             <RefreshCw size={12} className={busy ? "spinning" : undefined} aria-hidden="true" />
             {busy ? "Refreshing…" : "Refresh"}
           </button>
@@ -457,10 +502,13 @@ function UsagePanel({
   );
 }
 
-function tabValue(account: UsageAccount, now: number): string {
-  const { outer } = gaugeWindows(account, now);
-  if (isLive(account) && outer) return formatPercent(outer.used_percent);
-  return statusLabel(account);
+// A live percentage; a status with its last-known percentage; "—" for a live
+// account with no open window; otherwise the status alone.
+function tabValue(account: UsageAccount, now: number): { text: string; muted: boolean; title?: string } {
+  const value = gaugeValue(account, now);
+  if (value?.live) return { text: value.text, muted: value.text === "—", title: value.title };
+  if (value) return { text: `${statusLabel(account)} · ${value.text}`, muted: true, title: value.title };
+  return { text: statusLabel(account), muted: true };
 }
 
 function UsageWindowRow({ window, now, stale }: { window: UsageWindow; now: number; stale: boolean }) {

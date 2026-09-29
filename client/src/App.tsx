@@ -1053,8 +1053,6 @@ export function App() {
     () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
     [embeddedSessions, workspace],
   );
-  // The Command Room is always edge to edge; Settings keeps the padded surface.
-  const shellFocus = activeRoom === "command";
   const notice = error ?? (!backend?.healthy ? backend?.lastError : null) ?? (!electronControl?.running ? electronControl?.lastError : null) ?? null;
 
   function showCommandRoom(view?: "terminals" | "sessions") {
@@ -1312,8 +1310,9 @@ export function App() {
         onNavigate={setActiveRoom}
         onOpenPalette={() => openPalette()}
       />
-      <main className={shellFocus ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
-        <section className={shellFocus ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
+      {/* The Command Room fills the window edge to edge; Settings keeps the padded surface. */}
+      <main className={activeRoom === "command" ? "workspaceSurface commandSurface" : "workspaceSurface"}>
+        <section className="dashboardShell">
           <section className="dashboardGrid">
             <div className="commandColumn">
               {notice && (
@@ -1328,7 +1327,6 @@ export function App() {
                 </div>
               )}
               <WorkspaceTabs
-                className={shellFocus ? "focusWorkspaceTabs" : ""}
                 workspaces={workspaceTabs}
                 activeWorkspace={workspacePath}
                 terminalSessions={embeddedSessions}

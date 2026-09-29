@@ -70,15 +70,6 @@ function resetTime(window: UsageWindow): number {
   return Number.isFinite(time) ? time : Infinity;
 }
 
-/** Up to two bars for a chip, always including the window its percentage comes from. */
-export function chipWindows(account: UsageAccount, now = Date.now()): UsageWindow[] {
-  const open = openWindows(account, now);
-  const headline = headlineWindow(account, now);
-  const bars = open.slice(0, 2);
-  if (headline && !bars.includes(headline)) bars[bars.length - 1] = headline;
-  return bars;
-}
-
 /** Windows still in effect. A window past its reset describes a period that is over. */
 export function openWindows(account: UsageAccount, now = Date.now()): UsageWindow[] {
   return account.windows.filter((window) => !window.resets_at || Date.parse(window.resets_at) > now);
@@ -149,17 +140,11 @@ export function isLive(account: UsageAccount): boolean {
 }
 
 /**
- * Short name for compact bars. A provider with one account shows just the
- * provider; several accounts add the profile label (emails can collide across
- * organizations, profile labels cannot).
+ * What tells a provider's accounts apart: the profile label (emails can collide
+ * across organizations, profile labels cannot). Null when the provider has only
+ * one account, which the provider's name identifies.
  */
-export function compactAccountLabel(account: UsageAccount, accounts: UsageAccount[]): string {
-  const profile = chipLabel(account, accounts);
-  return profile ? `${account.provider_name} · ${profile}` : account.provider_name;
-}
-
-/** Label beside a chip's provider mark: only needed when a provider has several accounts. */
-export function chipLabel(account: UsageAccount, accounts: UsageAccount[]): string | null {
+export function accountLabel(account: UsageAccount, accounts: UsageAccount[]): string | null {
   const siblings = accounts.filter((other) => other.provider === account.provider);
   if (siblings.length <= 1) return null;
   return account.profiles[0]?.label ?? shortEmail(account.account.email) ?? "account";
@@ -178,15 +163,6 @@ export function usagePollDelay(snapshot: UsageSnapshot | null): number {
   return busy ? USAGE_BUSY_POLL_MS : USAGE_POLL_MS;
 }
 
-/** Plain-language summary for the compact bar's accessible name. */
-export function compactAriaLabel(account: UsageAccount, accounts: UsageAccount[], now = Date.now()): string {
-  const name = compactAccountLabel(account, accounts);
-  const window = headlineWindow(account, now);
-  if (!window) return `${name}: ${statusLabel(account)}. Open usage details.`;
-  const freshness = isLive(account) ? "" : ` (${statusLabel(account).toLowerCase()})`;
-  return `${name}: ${formatPercent(window.used_percent)} of ${window.label.toLowerCase()} limit used${freshness}. ${formatResetCountdown(window.resets_at, now)}. Open usage details.`;
-}
-
 /** How loudly a gauge flags its account: old or throttled numbers warn, unreadable accounts are danger. */
 export type UsageAttention = "none" | "loading" | "warn" | "danger";
 
@@ -195,6 +171,77 @@ export function usageAttention(account: UsageAccount): UsageAttention {
   if (isLive(account)) return "none";
   if (account.status === "ok" || account.status === "stale" || account.status === "rate_limited" || account.status === "unsupported") return "warn";
   return "danger";
+}
+
+const attentionSeverity: Record<UsageAttention, number> = { none: 0, loading: 1, warn: 2, danger: 3 };
+
+/** The loudest attention among accounts, for a "+N" count standing in for hidden gauges. */
+export function worstAttention(accounts: UsageAccount[]): UsageAttention {
+  return accounts.reduce<UsageAttention>((worst, account) => {
+    const attention = usageAttention(account);
+    return attentionSeverity[attention] > attentionSeverity[worst] ? attention : worst;
+  }, "none");
+}
+
+/**
+ * The account a provider's control opens: the one that needs attention (an
+ * unreadable account before old numbers), otherwise the one closest to its cap.
+ * Ties keep the snapshot's order.
+ */
+export function preferredAccount(accounts: UsageAccount[], now = Date.now()): UsageAccount | null {
+  let best: UsageAccount | null = null;
+  let bestRank: [number, number] = [-1, -1];
+  for (const account of accounts) {
+    const attention = usageAttention(account);
+    const severity = attention === "danger" || attention === "warn" ? attentionSeverity[attention] : 0;
+    const rank: [number, number] = [severity, headlineWindow(account, now)?.used_percent ?? -1];
+    if (rank[0] > bestRank[0] || (rank[0] === bestRank[0] && rank[1] > bestRank[1])) {
+      best = account;
+      bestRank = rank;
+    }
+  }
+  return best;
+}
+
+/** Gauges a provider shows in the title bar; the rest are summed up as "+N". */
+export const MAX_TITLE_BAR_GAUGES = 3;
+
+export function visibleGauges(accounts: UsageAccount[], max = MAX_TITLE_BAR_GAUGES): { shown: UsageAccount[]; hidden: UsageAccount[] } {
+  return accounts.length <= max
+    ? { shown: accounts, hidden: [] }
+    : { shown: accounts.slice(0, max), hidden: accounts.slice(max) };
+}
+
+/**
+ * Length of a ring arc for a percentage, drawn with butt caps so the painted
+ * arc is exactly the value: nothing at 0%, a closed ring only at 100%.
+ */
+export function ringArcLength(percent: number, circumference: number): number {
+  if (!Number.isFinite(percent) || percent <= 0) return 0;
+  return (Math.min(100, percent) / 100) * circumference;
+}
+
+const NO_ACTIVE_WINDOW = "No active window";
+
+/**
+ * The number a gauge shows: the headline percentage, marked as a last-known
+ * value when the reading is not live, or a dash when a live account has no
+ * open window. Null when there is nothing to show but the account's status.
+ */
+export function gaugeValue(account: UsageAccount, now = Date.now()): { text: string; live: boolean; title: string } | null {
+  const window = headlineWindow(account, now);
+  if (window) {
+    const live = isLive(account);
+    return {
+      text: formatPercent(window.used_percent),
+      live,
+      title: live
+        ? `${window.label} limit`
+        : `Last known ${window.label.toLowerCase()} reading (${statusLabel(account).toLowerCase()})`,
+    };
+  }
+  if (account.status === "ok") return { text: "—", live: true, title: NO_ACTIVE_WINDOW };
+  return null;
 }
 
 export type UsageProviderGroup = { provider: string; providerName: string; accounts: UsageAccount[] };
@@ -224,9 +271,9 @@ export function gaugeWindows(account: UsageAccount, now = Date.now()): { outer: 
 
 /** One plain-language line per account, for the provider control's tooltip and accessible name. */
 export function accountSummaryLine(account: UsageAccount, accounts: UsageAccount[], now = Date.now()): string {
-  const name = chipLabel(account, accounts) ?? account.provider_name;
+  const name = accountLabel(account, accounts) ?? account.provider_name;
   const window = headlineWindow(account, now);
-  if (!window) return `${name}: ${statusLabel(account)}`;
+  if (!window) return `${name}: ${account.status === "ok" && !account.refreshing ? NO_ACTIVE_WINDOW : statusLabel(account)}`;
   const freshness = isLive(account) ? "" : ` (${statusLabel(account).toLowerCase()})`;
   return `${name}: ${formatPercent(window.used_percent)} of ${window.label.toLowerCase()} limit used${freshness}, ${formatResetCountdown(window.resets_at, now).toLowerCase()}`;
 }

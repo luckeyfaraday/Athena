@@ -79,8 +79,9 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   height: var(--titlebar-h);
   padding: 0 var(--space-2) 0 var(--space-4);
   display: grid;
-  /* Symmetric tracks keep the room nav centered; the right track may claim
-     its content width (usage, status, window controls) so nothing overlaps. */
+  /* Symmetric tracks keep the room nav centered. The right track always gets
+     its content width (usage, status, window controls); if space ever runs
+     out, the center gives way (it has min-width: 0), never the window controls. */
   grid-template-columns: minmax(0, 1fr) auto minmax(max-content, 1fr);
   align-items: center;
   gap: var(--space-4);
@@ -131,9 +132,12 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
 }
 
 .titleCenter {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
+  overflow: clip;
+  overflow-clip-margin: 4px;
 }
 .titleNav {
   height: 28px;
@@ -268,7 +272,8 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   color: var(--text);
   background: var(--app-backdrop);
 }
-.workspaceSurface.shellFocusSurface {
+/* The Command Room fills the window edge to edge; Settings keeps the padding. */
+.workspaceSurface.commandSurface {
   padding: 0;
   background: var(--terminal);
 }
@@ -291,8 +296,8 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   flex-direction: column;
   gap: var(--space-3);
 }
-.terminalFocusShell .commandColumn { height: 100%; gap: 0; }
-.shellFocusSurface .noticeBar { margin: var(--space-3) var(--space-3) 0; }
+.commandSurface .commandColumn { height: 100%; gap: 0; }
+.commandSurface .noticeBar { margin: var(--space-3) var(--space-3) 0; }
 
 .roomPanel {
   flex: 1;
@@ -513,7 +518,7 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   color: var(--text-muted);
   font-size: var(--fs-sm);
 }
-.workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs {
+.commandSurface .workspaceTabs {
   margin: var(--space-2) var(--space-2) 0;
   flex: 0 0 auto;
 }
@@ -1263,7 +1268,8 @@ div.embeddedChatStatus button:hover { background: var(--hover); }
   fill: none;
   stroke: var(--ok);
   stroke-width: 2.25;
-  stroke-linecap: round;
+  /* Butt caps: round caps would add half the stroke at each end and overstate the value. */
+  stroke-linecap: butt;
   transition: stroke-dasharray .4s var(--ease);
 }
 .usageRingFill.inner { stroke-width: 2; }
@@ -1273,19 +1279,11 @@ div.embeddedChatStatus button:hover { background: var(--hover); }
 /* Old or unreadable numbers: faded fill, dotted track, and a status dot. */
 .usageGauge.notLive .usageRingFill { opacity: .4; }
 .usageGauge.notLive .usageRingTrack { stroke-dasharray: 1.5 2; }
-.usageGaugeDot {
-  position: absolute;
-  top: -2px;
-  left: 11px;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-pill);
-  background: var(--warn);
-  box-shadow: 0 0 0 2px var(--bg);
-}
-.usageGauge.attention-danger .usageGaugeDot { background: var(--danger); }
+/* The dot sits in a notch masked out of the rings, so no halo color is needed. */
+.usageGaugeDot { fill: var(--warn); }
+.usageGauge.attention-danger .usageGaugeDot { fill: var(--danger); }
 .usageGauge.attention-loading .usageGaugeDot {
-  background: var(--text-muted);
+  fill: var(--text-muted);
   animation: athenaPulse 1.2s ease-in-out infinite;
 }
 .usageGaugeValue {
@@ -1294,7 +1292,29 @@ div.embeddedChatStatus button:hover { background: var(--hover); }
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
-/* Narrow windows: gauges keep their rings, the status keeps its dot. */
+/* Last-known readings and "—" keep their place but read as not current. */
+.usageGaugeValue.muted { color: var(--text-muted); font-weight: var(--weight-medium); }
+.usageMore {
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--weight-strong);
+  font-variant-numeric: tabular-nums;
+}
+.usageMore.attention-warn { box-shadow: inset 0 0 0 1.5px var(--warn); color: var(--warn); }
+.usageMore.attention-danger { box-shadow: inset 0 0 0 1.5px var(--danger); color: var(--danger); }
+/* Narrowing windows: percentages go first when many gauges share the bar,
+   then everywhere; the rings, dots and "+N" stay. */
+@media (max-width: 1280px) {
+  .appTitleBar .titleUsage[data-crowded] .usageGaugeValue { display: none; }
+  .appTitleBar .titleUsage[data-crowded] .usageGauges { gap: 6px; }
+}
 @media (max-width: 1120px) {
   .appTitleBar .usageGaugeValue { display: none; }
   .appTitleBar .usageGauges { gap: 6px; }
@@ -1404,15 +1424,12 @@ strong.usageLevel-full { color: var(--danger); }
   color: var(--text);
   box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--border);
 }
-.usagePanel .usageGaugeDot { box-shadow: 0 0 0 2px var(--surface-sunken); }
-.usagePanel .usageTab.active .usageGaugeDot { box-shadow: 0 0 0 2px var(--surface-3); }
 .usageTabLabel {
   min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 7px;
 }
-.usageTabLabel > svg { flex: none; opacity: .75; }
 .usageTabLabel > span {
   min-width: 0;
   overflow: hidden;

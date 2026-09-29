@@ -19,3 +19,11 @@ test("missing replies: a closed startup box and short answer remain readable", (
   parser.append("╭────────────╮\r\n│ Agent │\r\n╰────────────╯\r\n42\r\n");
   assert.match(parser.view([], "Agent").map((block) => block.text).join("\n"), /42/);
 });
+
+test("missing replies: hiding a multi-line prompt echo never hides reply lines that repeat it", () => {
+  const parser = new ChatTranscriptParser();
+  const prompts = [{ id: "p", role: "user", label: "You", text: "hello\nworld", marker: 0 }];
+  parser.append("> hello\r\n  world\r\nhello\r\nworld\r\n> quoted\r\n");
+  const replies = parser.view(prompts, "Claude").filter((block) => block.role === "assistant");
+  assert.equal(replies.map((block) => block.text).join("\n"), "hello\nworld\n> quoted");
+});

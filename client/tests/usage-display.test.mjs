@@ -184,3 +184,66 @@ test("host timestamps are read on the host's clock", async () => {
   assert.equal(openWindows(nearReset, deviceNow).length, 0); // naive device clock drops it
   assert.equal(openWindows(nearReset, deviceNow + clockOffsetMs(snapshot, deviceNow)).length, 1);
 });
+
+test("title-bar gauges group accounts by provider in first-seen order", async () => {
+  const { groupByProvider } = await import(MODULE);
+  const accounts = [
+    account({ key: "codex:a", provider: "codex", provider_name: "Codex" }),
+    account({ key: "claude:a" }),
+    account({ key: "codex:b", provider: "codex", provider_name: "Codex" }),
+  ];
+  const groups = groupByProvider(accounts);
+  assert.deepEqual(groups.map((group) => group.provider), ["codex", "claude"]);
+  assert.deepEqual(groups[0].accounts.map((item) => item.key), ["codex:a", "codex:b"]);
+  assert.equal(groups[0].providerName, "Codex");
+  assert.deepEqual(groupByProvider([]), []);
+});
+
+test("gauge attention: old or throttled numbers warn, unreadable accounts are danger", async () => {
+  const { usageAttention } = await import(MODULE);
+  assert.equal(usageAttention(account()), "none");
+  assert.equal(usageAttention(account({ status: "loading", windows: [] })), "loading");
+  assert.equal(usageAttention(account({ status: "ok", stale: true })), "warn");
+  assert.equal(usageAttention(account({ status: "stale", stale: true })), "warn");
+  assert.equal(usageAttention(account({ status: "rate_limited" })), "warn");
+  assert.equal(usageAttention(account({ status: "expired", windows: [] })), "danger");
+  assert.equal(usageAttention(account({ status: "signed_out", windows: [] })), "danger");
+  assert.equal(usageAttention(account({ status: "error", windows: [] })), "danger");
+});
+
+test("the outer ring is the headline window, the inner ring the next most used", async () => {
+  const { gaugeWindows } = await import(MODULE);
+  const { outer, inner } = gaugeWindows(account(), NOW);
+  assert.equal(outer.id, "weekly");
+  assert.equal(inner.id, "session");
+  const single = gaugeWindows(account({ windows: [account().windows[0]] }), NOW);
+  assert.equal(single.outer.id, "session");
+  assert.equal(single.inner, null);
+  assert.deepEqual(gaugeWindows(account({ windows: [] }), NOW), { outer: null, inner: null });
+  // A window past its reset never draws a ring.
+  const past = gaugeWindows(account({
+    windows: [
+      { id: "session", label: "Session", used_percent: 95, resets_at: "2026-09-29T11:00:00Z", window_minutes: 300 },
+      { id: "weekly", label: "Weekly", used_percent: 10, resets_at: "2026-10-02T17:00:00Z", window_minutes: 10080 },
+    ],
+  }), NOW);
+  assert.equal(past.outer.id, "weekly");
+  assert.equal(past.inner, null);
+});
+
+test("the provider tooltip has one plain line per account, never a truncated label", async () => {
+  const { groupByProvider, groupDescription, accountSummaryLine } = await import(MODULE);
+  const accounts = [
+    account({ key: "codex:work", provider: "codex", provider_name: "Codex", profiles: [{ label: "daily-driver", path: "~/.codex" }] }),
+    account({ key: "codex:old", provider: "codex", provider_name: "Codex", status: "expired", windows: [], profiles: [{ label: "accounts-backup", path: "~/.codex-b" }] }),
+  ];
+  assert.equal(accountSummaryLine(accounts[0], accounts, NOW), "daily-driver: 64% of weekly limit used, resets in 3d 5h");
+  assert.equal(accountSummaryLine(accounts[1], accounts, NOW), "accounts-backup: Sign-in expired");
+  // A provider's only account is named by the provider.
+  assert.match(accountSummaryLine(account(), [account()], NOW), /^Claude: 64% of weekly limit used/);
+  const [codex] = groupByProvider(accounts);
+  assert.equal(
+    groupDescription(codex, accounts, NOW),
+    "Codex usage\ndaily-driver: 64% of weekly limit used, resets in 3d 5h\naccounts-backup: Sign-in expired\nClick for details.",
+  );
+});

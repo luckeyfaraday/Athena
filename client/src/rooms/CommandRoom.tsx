@@ -6,7 +6,6 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -27,7 +26,6 @@ import {
   Plus,
   RefreshCw,
   Search,
-  Send,
   TerminalSquare,
   X,
 } from "lucide-react";
@@ -73,7 +71,6 @@ export type CommandRoomProps = {
   sessions: EmbeddedTerminalSession[];
   agentSessions: AgentSession[];
   busy: boolean;
-  focused: boolean;
   layoutResetNonce: number;
   interfaceMode: InterfaceMode;
   // Terminals / Sessions, controlled by App (palette and shortcuts switch it too).
@@ -83,11 +80,9 @@ export type CommandRoomProps = {
   // App clears the request (a remount must not replay it).
   revealPaneRequest: { id: string; nonce: number } | null;
   onRevealPaneHandled?: () => void;
-  onFocusChange: (focused: boolean) => void;
   onInterfaceModeChange: (mode: InterfaceMode) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
-  onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
   onResumeSession: (session: AgentSession) => Promise<void>;
   onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onRenameAgentSession: (session: AgentSession) => void;
@@ -138,18 +133,15 @@ export function CommandRoom({
   sessions,
   agentSessions,
   busy,
-  focused,
   layoutResetNonce,
   interfaceMode,
   view,
   onViewChange,
   revealPaneRequest,
   onRevealPaneHandled,
-  onFocusChange,
   onInterfaceModeChange,
   onLaunch,
   onClose,
-  onBroadcastPrompt,
   onResumeSession,
   onRenameEmbeddedSession,
   onRenameAgentSession,
@@ -233,7 +225,6 @@ export function CommandRoom({
   const activeMaximizedPaneId = maximizedPaneId && visibleSessions.some((session) => session.id === maximizedPaneId)
     ? maximizedPaneId
     : null;
-  const agentPanes = useMemo(() => visibleSessions.filter((session) => session.kind !== "shell"), [visibleSessions]);
 
   const visibleAgentSessions = useMemo(
     () => agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session))),
@@ -542,7 +533,7 @@ export function CommandRoom({
   ].filter(Boolean).join(" ");
 
   return (
-    <div className={focused ? "roomPanel commandRoom focused" : "roomPanel commandRoom"}>
+    <div className="roomPanel commandRoom">
       <div className="roomPanelHeader commandToolbar">
         <div className="commandRoomTabs" role="tablist" aria-label="Command room views">
           <button
@@ -595,16 +586,6 @@ export function CommandRoom({
               <MessageSquare size={14} />
             </button>
           </div>
-          <button
-            type="button"
-            className={focused ? "ghostButton focusToggle active" : "ghostButton focusToggle"}
-            aria-pressed={focused}
-            onClick={() => onFocusChange(!focused)}
-            title={shortcutTitle(focused ? "Exit shell focus (Esc)" : "Shell focus: terminals fill the window", "shellFocus")}
-          >
-            {focused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-            <span className="toolbarLabel">{focused ? "Exit focus" : "Focus"}</span>
-          </button>
           <button
             type="button"
             className="ghostButton"
@@ -884,7 +865,6 @@ export function CommandRoom({
         </div>
       )}
 
-      <BroadcastComposer agentPanes={agentPanes} onBroadcast={onBroadcastPrompt} />
     </div>
   );
 }
@@ -1127,120 +1107,6 @@ function LaunchMenu({
         </div>
       )}
     </div>
-  );
-}
-
-function BroadcastComposer({
-  agentPanes,
-  onBroadcast,
-}: {
-  agentPanes: EmbeddedTerminalSession[];
-  onBroadcast: (prompt: string, sessionIds: string[]) => Promise<void>;
-}) {
-  // Local state keeps keystrokes from re-rendering the terminal grid.
-  const [prompt, setPrompt] = useState("");
-  const [sending, setSending] = useState(false);
-  // Deselected panes; anything new is a target by default.
-  const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const paneSignature = agentPanes.map((pane) => pane.id).join("|");
-  const running = agentPanes.filter((pane) => pane.status === "running");
-  const targetIds = running.filter((pane) => !excluded.has(pane.id)).map((pane) => pane.id);
-  const canSend = targetIds.length > 0 && prompt.trim().length > 0 && !sending;
-
-  useEffect(() => {
-    const live = new Set(paneSignature.split("|"));
-    setExcluded((current) => {
-      const next = new Set([...current].filter((id) => live.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [paneSignature]);
-
-  useLayoutEffect(() => {
-    const input = inputRef.current;
-    if (!input) return;
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 136)}px`;
-  }, [prompt, paneSignature]);
-
-  if (agentPanes.length === 0) return null;
-
-  function toggleTarget(id: string) {
-    setExcluded((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  async function submit() {
-    const trimmed = prompt.trim();
-    if (!trimmed || targetIds.length === 0 || sending) return;
-    setSending(true);
-    try {
-      await onBroadcast(trimmed, targetIds);
-      setPrompt("");
-    } finally {
-      setSending(false);
-      window.setTimeout(() => inputRef.current?.focus(), 0);
-    }
-  }
-
-  const placeholder = running.length === 0
-    ? "Start an agent to broadcast a prompt"
-    : targetIds.length === running.length
-      ? "Prompt every running agent · Shift+Enter for a new line"
-      : `Prompt ${targetIds.length} of ${running.length} agents · Shift+Enter for a new line`;
-
-  return (
-    <form
-      className="broadcastComposer"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submit();
-      }}
-    >
-      <div className="broadcastTargets" role="group" aria-label="Broadcast targets">
-        <span className="eyebrow">Broadcast</span>
-        {running.map((pane) => {
-          const selected = !excluded.has(pane.id);
-          return (
-            <button
-              key={pane.id}
-              type="button"
-              className={selected ? "chip active" : "chip"}
-              aria-pressed={selected}
-              onClick={() => toggleTarget(pane.id)}
-              title={selected ? `Skip ${pane.title}` : `Include ${pane.title}`}
-            >
-              <AgentGlyph kind={pane.kind} size="small" />
-              {pane.title}
-            </button>
-          );
-        })}
-        {running.length === 0 && <span className="broadcastNote">No agents are running in this workspace.</span>}
-      </div>
-      <div className="broadcastInputRow">
-        <textarea
-          ref={inputRef}
-          rows={1}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
-            event.preventDefault();
-            void submit();
-          }}
-          placeholder={placeholder}
-          aria-label="Prompt for selected agents"
-          disabled={sending || running.length === 0}
-        />
-        <button className="primaryButton" type="submit" disabled={!canSend} title="Send to the selected agents (Enter)">
-          <Send size={14} /> Send to {targetIds.length}
-        </button>
-      </div>
-    </form>
   );
 }
 

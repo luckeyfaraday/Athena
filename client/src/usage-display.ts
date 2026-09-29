@@ -187,6 +187,55 @@ export function compactAriaLabel(account: UsageAccount, accounts: UsageAccount[]
   return `${name}: ${formatPercent(window.used_percent)} of ${window.label.toLowerCase()} limit used${freshness}. ${formatResetCountdown(window.resets_at, now)}. Open usage details.`;
 }
 
+/** How loudly a gauge flags its account: old or throttled numbers warn, unreadable accounts are danger. */
+export type UsageAttention = "none" | "loading" | "warn" | "danger";
+
+export function usageAttention(account: UsageAccount): UsageAttention {
+  if (account.status === "loading") return "loading";
+  if (isLive(account)) return "none";
+  if (account.status === "ok" || account.status === "stale" || account.status === "rate_limited" || account.status === "unsupported") return "warn";
+  return "danger";
+}
+
+export type UsageProviderGroup = { provider: string; providerName: string; accounts: UsageAccount[] };
+
+/** One title-bar control per provider, in the order providers first appear. */
+export function groupByProvider(accounts: UsageAccount[]): UsageProviderGroup[] {
+  const groups = new Map<string, UsageProviderGroup>();
+  for (const account of accounts) {
+    const group = groups.get(account.provider);
+    if (group) group.accounts.push(account);
+    else groups.set(account.provider, { provider: account.provider, providerName: account.provider_name, accounts: [account] });
+  }
+  return [...groups.values()];
+}
+
+/**
+ * The windows a gauge draws: the headline window as the outer ring and, when
+ * another window is open, the next most-used one as the inner ring.
+ */
+export function gaugeWindows(account: UsageAccount, now = Date.now()): { outer: UsageWindow | null; inner: UsageWindow | null } {
+  const outer = headlineWindow(account, now);
+  if (!outer) return { outer: null, inner: null };
+  const others = openWindows(account, now).filter((window) => window !== outer);
+  const inner = others.reduce<UsageWindow | null>((best, window) => (!best || window.used_percent > best.used_percent ? window : best), null);
+  return { outer, inner };
+}
+
+/** One plain-language line per account, for the provider control's tooltip and accessible name. */
+export function accountSummaryLine(account: UsageAccount, accounts: UsageAccount[], now = Date.now()): string {
+  const name = chipLabel(account, accounts) ?? account.provider_name;
+  const window = headlineWindow(account, now);
+  if (!window) return `${name}: ${statusLabel(account)}`;
+  const freshness = isLive(account) ? "" : ` (${statusLabel(account).toLowerCase()})`;
+  return `${name}: ${formatPercent(window.used_percent)} of ${window.label.toLowerCase()} limit used${freshness}, ${formatResetCountdown(window.resets_at, now).toLowerCase()}`;
+}
+
+export function groupDescription(group: UsageProviderGroup, accounts: UsageAccount[], now = Date.now()): string {
+  const lines = group.accounts.map((account) => accountSummaryLine(account, accounts, now));
+  return `${group.providerName} usage\n${lines.join("\n")}\nClick for details.`;
+}
+
 /**
  * When Athena's backend stops answering, the last snapshot is no longer a live
  * reading: every record is downgraded so nothing on screen claims to be current.

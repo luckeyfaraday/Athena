@@ -16,7 +16,6 @@ export const workspaceStorageKey = "context-workspace:lastWorkspace";
 export const workspaceListStorageKey = "context-workspace:workspaces";
 export const interfaceModeStorageKey = "context-workspace:interfaceMode";
 export const uiThemeStorageKey = "context-workspace:uiTheme";
-export const terminalFocusStorageKey = "context-workspace:terminalFocus";
 export const notificationsStorageKey = "context-workspace:notifications";
 export const densityStorageKey = "context-workspace:density";
 
@@ -126,20 +125,6 @@ export function readDensity(): Density {
 
 export function writeDensity(density: Density): void {
   writeStorageValue(densityStorageKey, density);
-}
-
-export function parseTerminalFocus(value: string | null): boolean | null {
-  if (value === "1") return true;
-  if (value === "0") return false;
-  return null;
-}
-
-export function readTerminalFocus(): boolean {
-  return parseTerminalFocus(storedValue(terminalFocusStorageKey)) ?? false;
-}
-
-export function writeTerminalFocus(focused: boolean): void {
-  writeStorageValue(terminalFocusStorageKey, focused ? "1" : "0");
 }
 
 export function readNotificationPreferences(): NotificationPreferences {

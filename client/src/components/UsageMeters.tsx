@@ -5,29 +5,30 @@ import { ClaudeIcon, OpenAIIcon } from "./BrandIcons";
 import {
   accountTitle,
   chipLabel,
-  chipWindows,
   clockOffsetMs,
-  compactAccountLabel,
-  compactAriaLabel,
   formatAge,
   formatDuration,
   formatPercent,
   formatResetCountdown,
-  headlineWindow,
+  gaugeWindows,
+  groupByProvider,
+  groupDescription,
   isLive,
   openWindows,
   presentSnapshot,
   statusLabel,
+  usageAttention,
   usageLevel,
   usagePollDelay,
   type UsageAccount,
+  type UsageProviderGroup,
   type UsageSnapshot,
   type UsageWindow,
 } from "../usage-display";
 
-// Subscription quota chips for the title bar, opening a detail panel. Every
-// surface reads the backend's shared cache; polling here never reaches a
-// provider directly.
+// Subscription quota gauges for the title bar, one control per provider,
+// opening a detail panel. Every surface reads the backend's shared cache;
+// polling here never reaches a provider directly.
 
 type RefreshFailure = { accountKey: string | null; message: string };
 
@@ -179,16 +180,16 @@ export function UsageMeters({ client }: { client: BackendClient | null }) {
 
   return (
     <div className="titleUsage" role="group" aria-label="Subscription usage">
-      {accounts.map((account) => (
-        <UsageChip
-          key={account.key}
-          account={account}
+      {groupByProvider(accounts).map((group) => (
+        <UsageGroupButton
+          key={group.provider}
+          group={group}
           accounts={accounts}
           now={hostNow}
-          expanded={openKey === account.key}
+          expanded={selected?.provider === group.provider}
           onOpen={(button) => {
             triggerRef.current = button;
-            setOpenKey(openKey === account.key ? null : account.key);
+            setOpenKey(selected?.provider === group.provider ? null : group.accounts[0].key);
           }}
         />
       ))}
@@ -214,48 +215,78 @@ function ProviderMark({ provider, size = 12 }: { provider: string; size?: number
   return <span className="usageMarkFallback" aria-hidden="true" />;
 }
 
-function UsageChip({
-  account,
+function UsageGroupButton({
+  group,
   accounts,
   now,
   expanded,
   onOpen,
 }: {
-  account: UsageAccount;
+  group: UsageProviderGroup;
   accounts: UsageAccount[];
   now: number;
   expanded: boolean;
   onOpen: (button: HTMLButtonElement) => void;
 }) {
-  const headline = headlineWindow(account, now);
-  const windows = chipWindows(account, now);
-  const label = chipLabel(account, accounts);
-  const description = compactAriaLabel(account, accounts, now);
+  const description = groupDescription(group, accounts, now);
   return (
     <button
       type="button"
-      className={`usageChip${isLive(account) ? "" : " notLive"}`}
+      className="usageGroup"
       aria-haspopup="dialog"
       aria-expanded={expanded}
       aria-label={description}
       title={description}
       onClick={(event) => onOpen(event.currentTarget)}
     >
-      <ProviderMark provider={account.provider} size={11} />
-      {label && <span className="usageChipLabel">{label}</span>}
-      <strong className={headline ? `usageLevel-${usageLevel(headline.used_percent)}` : `usageChipState status-${account.status}`}>
-        {headline ? formatPercent(headline.used_percent) : account.status === "loading" ? "…" : account.status === "ok" ? "—" : "!"}
-      </strong>
-      {windows.length > 0 && (
-        <span className="usageChipTracks" aria-hidden="true">
-          {windows.map((window) => (
-            <span key={window.id} className="usageTrack">
-              <span className={`usageFill usageLevel-${usageLevel(window.used_percent)}`} style={{ width: `${window.used_percent}%` }} />
-            </span>
-          ))}
-        </span>
-      )}
+      <ProviderMark provider={group.provider} size={12} />
+      <span className="usageGauges">
+        {group.accounts.map((account) => <UsageGauge key={account.key} account={account} now={now} showValue />)}
+      </span>
     </button>
+  );
+}
+
+const outerRadius = 7.25;
+const innerRadius = 3.75;
+
+// Concentric rings: the outer one is the window closest to its cap (the
+// percentage shown beside it), the inner one the account's other open window.
+// Accounts whose numbers are not live draw faded rings and carry a status dot.
+function UsageGauge({ account, now, showValue = false }: { account: UsageAccount; now: number; showValue?: boolean }) {
+  const { outer, inner } = gaugeWindows(account, now);
+  const attention = usageAttention(account);
+  const live = isLive(account);
+  return (
+    <span className={`usageGauge attention-${attention}${live ? "" : " notLive"}`}>
+      <svg className="usageRing" viewBox="0 0 18 18" aria-hidden="true">
+        <circle className="usageRingTrack" cx="9" cy="9" r={outerRadius} />
+        {outer && <RingArc radius={outerRadius} window={outer} />}
+        {inner && <circle className="usageRingTrack inner" cx="9" cy="9" r={innerRadius} />}
+        {inner && <RingArc radius={innerRadius} window={inner} inner />}
+      </svg>
+      {attention !== "none" && <i className="usageGaugeDot" aria-hidden="true" />}
+      {showValue && live && outer && (
+        <strong className={`usageGaugeValue usageLevel-${usageLevel(outer.used_percent)}`}>{formatPercent(outer.used_percent)}</strong>
+      )}
+    </span>
+  );
+}
+
+function RingArc({ radius, window, inner = false }: { radius: number; window: UsageWindow; inner?: boolean }) {
+  const circumference = 2 * Math.PI * radius;
+  const fraction = Math.max(0, Math.min(100, window.used_percent)) / 100;
+  // A sliver stays visible at 0% so an empty ring still reads as a gauge.
+  const length = Math.max(fraction * circumference, 0.6);
+  return (
+    <circle
+      className={`usageRingFill usageLevel-${usageLevel(window.used_percent)}${inner ? " inner" : ""}`}
+      cx="9"
+      cy="9"
+      r={radius}
+      strokeDasharray={`${length} ${circumference}`}
+      transform="rotate(-90 9 9)"
+    />
   );
 }
 
@@ -288,7 +319,7 @@ function UsagePanel({
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
       if (target && panelRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest(".usageChip")) return;
+      if (target instanceof Element && target.closest(".usageGroup")) return;
       onClose();
     };
     document.addEventListener("pointerdown", onPointerDown);
@@ -301,9 +332,11 @@ function UsagePanel({
       onClose();
       return;
     }
-    if ((event.key === "ArrowRight" || event.key === "ArrowLeft") && (event.target as Element).getAttribute("role") === "tab") {
+    const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
+    if (step !== 0 && (event.target as Element).getAttribute("role") === "tab") {
+      event.preventDefault();
       const index = accounts.findIndex((item) => item.key === account.key);
-      const next = accounts[(index + (event.key === "ArrowRight" ? 1 : accounts.length - 1)) % accounts.length];
+      const next = accounts[(index + step + accounts.length) % accounts.length];
       onSelect(next.key);
       window.requestAnimationFrame(() => panelRef.current?.querySelector<HTMLElement>(`[data-usage-tab="${next.key}"]`)?.focus());
     }
@@ -336,7 +369,7 @@ function UsagePanel({
       </header>
 
       {accounts.length > 1 && (
-        <div className="usageTabs" role="tablist" aria-label="Accounts">
+        <div className="usageTabs" role="tablist" aria-label="Accounts" aria-orientation="vertical">
           {accounts.map((item) => (
             <button
               key={item.key}
@@ -348,8 +381,12 @@ function UsagePanel({
               className={item.key === account.key ? "usageTab active" : "usageTab"}
               onClick={() => onSelect(item.key)}
             >
-              <ProviderMark provider={item.provider} size={11} />
-              {compactAccountLabel(item, accounts)}
+              <UsageGauge account={item} now={now} />
+              <span className="usageTabLabel">
+                <ProviderMark provider={item.provider} size={11} />
+                <span>{chipLabel(item, accounts) ?? item.provider_name}</span>
+              </span>
+              <span className={`usageTabValue${isLive(item) ? "" : " muted"}`}>{tabValue(item, now)}</span>
             </button>
           ))}
         </div>
@@ -418,6 +455,12 @@ function UsagePanel({
       </section>
     </div>
   );
+}
+
+function tabValue(account: UsageAccount, now: number): string {
+  const { outer } = gaugeWindows(account, now);
+  if (isLive(account) && outer) return formatPercent(outer.used_percent);
+  return statusLabel(account);
 }
 
 function UsageWindowRow({ window, now, stale }: { window: UsageWindow; now: number; stale: boolean }) {

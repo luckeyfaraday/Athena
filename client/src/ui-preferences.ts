@@ -1,4 +1,10 @@
 import { desktop, type WorkspacePath } from "./electron";
+import {
+  defaultNotificationPreferences,
+  parseNotificationPreferences,
+  serializeNotificationPreferences,
+  type NotificationPreferences,
+} from "./workspace-attention";
 import { workspaceKey } from "./workspace-utils";
 
 export type InterfaceMode = "terminal" | "chat";
@@ -9,6 +15,7 @@ export const workspaceListStorageKey = "context-workspace:workspaces";
 export const interfaceModeStorageKey = "context-workspace:interfaceMode";
 export const uiThemeStorageKey = "context-workspace:uiTheme";
 export const terminalFocusStorageKey = "context-workspace:terminalFocus";
+export const notificationsStorageKey = "context-workspace:notifications";
 
 const maxWorkspaceTabs = 12;
 
@@ -126,4 +133,12 @@ export function readTerminalFocus(): boolean {
 
 export function writeTerminalFocus(focused: boolean): void {
   writeStorageValue(terminalFocusStorageKey, focused ? "1" : "0");
+}
+
+export function readNotificationPreferences(): NotificationPreferences {
+  return parseNotificationPreferences(storedValue(notificationsStorageKey)) ?? defaultNotificationPreferences;
+}
+
+export function writeNotificationPreferences(preferences: NotificationPreferences): void {
+  writeStorageValue(notificationsStorageKey, serializeNotificationPreferences(preferences));
 }

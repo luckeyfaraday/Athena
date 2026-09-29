@@ -73,8 +73,8 @@ export function WorkspaceTabs({
                   <small>
                     {running} running
                     {attention && !active ? (
-                      <em className={`workspaceAttentionBadge ${attention.kind}`} title={attention.kind === "action" ? "Needs attention" : "New activity"}>
-                        {attention.kind === "action" ? "Needs attention" : "Updated"}{attention.count > 1 ? ` ${attention.count}` : ""}
+                      <em className={`workspaceAttentionBadge ${attention.kind}`} title={attention.kind === "action" ? "An agent here is waiting for you" : "An agent here finished"}>
+                        {attention.kind === "action" ? "Needs input" : "Finished"}{attention.count > 1 ? ` ${attention.count}` : ""}
                       </em>
                     ) : null}
                   </small>

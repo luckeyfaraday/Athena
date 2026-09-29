@@ -1,4 +1,5 @@
 import type { BackendStatus, ElectronControlStatus } from "./api";
+import type { TerminalAttentionEvent } from "./workspace-attention";
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena" | "grok";
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
@@ -38,6 +39,13 @@ export type EmbeddedTerminalDataPayload = {
   sequence: number;
   data: string;
   reset: boolean;
+};
+
+export type AttentionNotificationRequest = {
+  title: string;
+  body: string;
+  workspace: string;
+  sessionId: string;
 };
 
 export type EmbeddedTerminalExitPayload = {
@@ -243,7 +251,10 @@ type WorkspaceApi = {
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   openExternalUrl: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
-  playAttentionSound: () => Promise<void>;
+  // Native notification; clicking it raises the window and fires onAttentionActivate.
+  showAttentionNotification: (request: AttentionNotificationRequest) => Promise<boolean>;
+  flashWindowForAttention: () => Promise<void>;
+  onAttentionActivate: (callback: (payload: { workspace: string; sessionId: string }) => void) => () => void;
   onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
   onWorkspaceClose: (callback: (payload: { workspace: WorkspacePath }) => void) => () => void;
   onEmbeddedTerminalDataFor: (
@@ -251,7 +262,7 @@ type WorkspaceApi = {
     callback: (payload: EmbeddedTerminalDataPayload) => void,
     options?: EmbeddedTerminalDataSubscriptionOptions,
   ) => () => void;
-  onEmbeddedTerminalAttention: (callback: (payload: { id: string; kind: "action" | "update" }) => void) => () => void;
+  onEmbeddedTerminalAttention: (callback: (payload: TerminalAttentionEvent) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: EmbeddedTerminalExitPayload) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
@@ -414,7 +425,9 @@ const browserFallback: WorkspaceApi = {
     return true;
   },
   async openPath() { return false; },
-  async playAttentionSound() {},
+  async showAttentionNotification() { return false; },
+  async flashWindowForAttention() { return undefined; },
+  onAttentionActivate() { return () => undefined; },
   onWorkspaceOpen() { return () => undefined; },
   onWorkspaceClose() { return () => undefined; },
   onEmbeddedTerminalDataFor() { return () => undefined; },

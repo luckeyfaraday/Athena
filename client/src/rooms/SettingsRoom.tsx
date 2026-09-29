@@ -1,4 +1,4 @@
-import { Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
+import { Bell, BellOff, Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare, Volume2 } from "lucide-react";
 import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, StatusPill } from "../components/status";
 import type {
@@ -11,6 +11,12 @@ import type {
   PerformanceDiagnostics,
 } from "../electron";
 import type { UiTheme } from "../ui-preferences";
+import type {
+  AttentionSoundStyle,
+  NotificationLevel,
+  NotificationPreferences,
+  WorkspaceAttentionKind,
+} from "../workspace-attention";
 
 const themeOptions: Array<{ id: UiTheme; label: string }> = [
   { id: "classic", label: "Classic" },
@@ -18,6 +24,19 @@ const themeOptions: Array<{ id: UiTheme; label: string }> = [
   { id: "press", label: "Press" },
   { id: "mono-light", label: "Mono Light" },
   { id: "mono-dark", label: "Mono Dark" },
+];
+
+const notificationLevelOptions: Array<{ id: NotificationLevel; label: string }> = [
+  { id: "all", label: "Needs input + finished" },
+  { id: "action", label: "Needs input only" },
+  { id: "off", label: "Off" },
+];
+
+const soundOptions: Array<{ id: AttentionSoundStyle; label: string }> = [
+  { id: "chime", label: "Chime" },
+  { id: "soft", label: "Soft" },
+  { id: "digital", label: "Digital" },
+  { id: "none", label: "Silent" },
 ];
 
 const HERMES_BRIDGE_SNIPPET = `mcp_servers:
@@ -61,6 +80,9 @@ export function SettingsRoom({
   onThemeChange,
   onTerminalFocusChange,
   onGraphicsPreferenceChange,
+  notificationPreferences,
+  onNotificationPreferencesChange,
+  onPreviewAttentionSound,
 }: {
   workspace: string;
   backend: BackendStatus | null;
@@ -90,6 +112,9 @@ export function SettingsRoom({
   onThemeChange: (theme: UiTheme) => void;
   onTerminalFocusChange: (focused: boolean) => void;
   onGraphicsPreferenceChange: (preference: GraphicsPreference) => void;
+  notificationPreferences: NotificationPreferences;
+  onNotificationPreferencesChange: (preferences: NotificationPreferences) => void;
+  onPreviewAttentionSound: (kind: WorkspaceAttentionKind) => void;
 }) {
   const backendStatus = backendStatusView(backend);
   const electronControlStatus = electronControlStatusView(electronControl);
@@ -238,6 +263,97 @@ export function SettingsRoom({
             >
               <Maximize2 size={14} /> Focus
             </button>
+          </div>
+        </article>
+        <article className="settingsSection wide">
+          <div>
+            <strong>Notifications</strong>
+            <span>{notificationDescription(notificationPreferences)}</span>
+          </div>
+          <div className="notificationSettingsRows">
+            <div className="notificationSettingsRow">
+              <label id="notificationLevelLabel">Alert me</label>
+              <div className="segmentedControl" role="group" aria-labelledby="notificationLevelLabel">
+                {notificationLevelOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={notificationPreferences.level === option.id ? "active" : ""}
+                    onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, level: option.id })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="notificationSettingsRow">
+              <label id="notificationSoundLabel">Sound</label>
+              <div className="segmentedControl" role="group" aria-labelledby="notificationSoundLabel">
+                {soundOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={notificationPreferences.sound === option.id ? "active" : ""}
+                    disabled={notificationPreferences.level === "off"}
+                    onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, sound: option.id })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="notificationSettingsRow">
+              <label htmlFor="notificationVolume">Volume</label>
+              <div className="notificationVolume">
+                <input
+                  id="notificationVolume"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={5}
+                  value={Math.round(notificationPreferences.volume * 100)}
+                  disabled={notificationPreferences.level === "off" || notificationPreferences.sound === "none"}
+                  onChange={(event) => onNotificationPreferencesChange({
+                    ...notificationPreferences,
+                    volume: Number(event.currentTarget.value) / 100,
+                  })}
+                />
+                <output htmlFor="notificationVolume">{Math.round(notificationPreferences.volume * 100)}%</output>
+                {(["action", "update"] as WorkspaceAttentionKind[]).map((kind) => (
+                  <button
+                    key={kind}
+                    className="ghostButton"
+                    type="button"
+                    disabled={notificationPreferences.sound === "none" || notificationPreferences.volume === 0}
+                    title={kind === "action" ? "Play the sound for an agent waiting on you" : "Play the sound for an agent finishing"}
+                    onClick={() => onPreviewAttentionSound(kind)}
+                  >
+                    <Volume2 size={14} /> {kind === "action" ? "Needs input" : "Finished"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="notificationSettingsRow">
+              <label id="notificationDesktopLabel">Desktop</label>
+              <div className="segmentedControl" role="group" aria-labelledby="notificationDesktopLabel">
+                <button
+                  type="button"
+                  className={notificationPreferences.desktop ? "active" : ""}
+                  disabled={notificationPreferences.level === "off"}
+                  onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, desktop: true })}
+                >
+                  <Bell size={14} /> When Athena is in the background
+                </button>
+                <button
+                  type="button"
+                  className={!notificationPreferences.desktop ? "active" : ""}
+                  disabled={notificationPreferences.level === "off"}
+                  onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, desktop: false })}
+                >
+                  <BellOff size={14} /> Never
+                </button>
+              </div>
+            </div>
           </div>
         </article>
         <article className="settingsSection wide">
@@ -438,6 +554,16 @@ function controlEventsSummary(performance: PerformanceDiagnostics): string {
     event.detail,
     event.preview ? `preview: ${event.preview}` : null,
   ].filter(Boolean).join("\n")).join("\n\n");
+}
+
+function notificationDescription(preferences: NotificationPreferences): string {
+  if (preferences.level === "off") {
+    return "No sounds or desktop notifications. Workspace tabs still show a badge when an agent needs you or finishes.";
+  }
+  const what = preferences.level === "all"
+    ? "when an agent is waiting for your approval or an answer, and when it finishes a turn"
+    : "only when an agent is waiting for your approval or an answer; finished turns just badge their workspace tab";
+  return `Alerts ${what}. Terminals you are looking at stay quiet; the rest alert with a tab badge, sound, and (while Athena is in the background) a desktop notification.`;
 }
 
 function themeDescription(theme: UiTheme): string {

@@ -7,6 +7,11 @@ import {
   listAgentSessionsCached,
   type AgentSession,
 } from "./agent-sessions.js";
+import {
+  flashWindowForAttention,
+  normalizeAttentionNotificationRequest,
+  showAttentionNotification,
+} from "./attention-notifications.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
 import {
@@ -213,12 +218,14 @@ export function registerIpcHandlers(appRoot: string): void {
     const error = await shell.openPath(value);
     return !error;
   });
-  handle("shell:beep", (): void => {
-    // Electron's native shell.beep() has crashed Linux AppImage main during
-    // background workspace attention notifications. Visual attention remains
-    // authoritative; native audio can be reintroduced via a renderer-owned
-    // implementation if needed.
-    if (process.platform !== "linux") shell.beep();
+  // Attention sounds are synthesized in the renderer (shell.beep() played the OS default sound and crashed Linux
+  // AppImage main); main owns the native notification and the taskbar flash.
+  handle("attention:notify", (event, value: unknown): boolean => {
+    const request = normalizeAttentionNotificationRequest(value);
+    return request ? showAttentionNotification(BrowserWindow.fromWebContents(event.sender), request) : false;
+  });
+  handle("attention:flash", (event): void => {
+    flashWindowForAttention(BrowserWindow.fromWebContents(event.sender));
   });
   handle("backend:getState", (): BackendState => getBackendState());
   handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());

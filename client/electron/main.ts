@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { flushAgentMessages } from "./agent-messages.js";
+import { installAttentionWindowHandlers } from "./attention-notifications.js";
 import { flushIpcBreadcrumbs, registerIpcHandlers } from "./ipc-handlers.js";
 import {
   confirmEmbeddedTerminalRestoreShutdown,
@@ -211,9 +212,12 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // Attention sounds must play for terminals restored at launch, before any click in the window.
+      autoplayPolicy: "no-user-gesture-required",
     },
   });
   installContextMenu(mainWindow);
+  installAttentionWindowHandlers(mainWindow);
   installExternalLinkHandler(mainWindow);
   // Windows skips before-quit on logoff/shutdown/restart.
   mainWindow.on("session-end", () => persistStateForSessionEnd("session-end"));

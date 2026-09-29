@@ -50,8 +50,13 @@ asar: true
 asarUnpack:
   - node_modules/node-pty/**
 npmRebuild: false
+# Writes the ATHENA icon and version info into ATHENA.exe (build/win-exe-resources.cjs). The Start Menu, desktop and
+# pinned-taskbar shortcuts show the exe's own icon, which was otherwise Electron's.
+afterPack: build/win-exe-resources.cjs
 win:
   icon: build/icon.ico
+  # electron-builder's own exe editing first downloads its signing toolkit, which cannot be extracted on Windows
+  # without symlink rights; the afterPack hook above does the resource part without it. Nothing is signed.
   signAndEditExecutable: false
   target:
     - nsis

@@ -73,7 +73,8 @@ test("resolveExecutable finds a command the way the panes do, and reports a miss
   const { dir, env } = fakeBin(["athena-fake-agent"]);
   const found = await resolveExecutable("athena-fake-agent", env);
   assert.ok(found, "the fake command should be found");
-  assert.equal(path.dirname(found).toLowerCase(), dir.toLowerCase());
+  // compare the unique folder name: Windows may report the temp folder by its long or its 8.3 short name
+  assert.equal(path.basename(path.dirname(found)), path.basename(dir));
   assert.equal(await resolveExecutable("athena-no-such-agent", env), null);
 });
 
@@ -81,7 +82,7 @@ test("agentCliStatus reports installed, where, and whether npm is there for npm 
   const { dir, env } = fakeBin(["codex", "npm"]);
   const codex = await agentCliStatus("codex", env);
   assert.equal(codex.installed, true);
-  assert.equal(path.dirname(codex.path).toLowerCase(), dir.toLowerCase());
+  assert.equal(path.basename(path.dirname(codex.path)), path.basename(dir));
   assert.equal(codex.needsNpm, true);
   assert.equal(codex.npmAvailable, true);
   const claude = await agentCliStatus("claude", env);

@@ -141,12 +141,9 @@ export function agentUpdateCommand(
 ): string {
   const spec = AGENT_CLIS[kind];
   if (!spec.npmPackage || !spec.selfUpdate || !resolved || !npmPrefix) return agentCommand(kind, "update", platform);
-  const norm = (value: string) => {
-    const n = path.normalize(value).replace(/[\\/]+$/, "");
-    return platform === "win32" ? n.toLowerCase() : n;
-  };
-  const dir = norm(path.dirname(resolved)), prefix = norm(npmPrefix);
-  const fromNpm = dir === prefix || dir.startsWith(prefix + path.sep);
+  const p = pathFor(platform);
+  const dir = normalizedPath(p.dirname(resolved), platform), prefix = normalizedPath(npmPrefix, platform);
+  const fromNpm = dir === prefix || dir.startsWith(prefix + p.sep);
   return fromNpm ? agentCommand(kind, "update", platform) : spec.selfUpdate;
 }
 
@@ -208,11 +205,17 @@ export function privateAgentCopies(
 }
 
 function samePath(a: string, b: string, platform: NodeJS.Platform): boolean {
-  const norm = (value: string) => {
-    const n = path.normalize(value.trim()).replace(/[\\/]+$/, "");
-    return platform === "win32" ? n.toLowerCase() : n;
-  };
-  return norm(a) === norm(b);
+  return normalizedPath(a, platform) === normalizedPath(b, platform);
+}
+
+// Paths are compared by the rules of the platform they belong to, not the host's (tests check Windows paths on Linux).
+function pathFor(platform: NodeJS.Platform): path.PlatformPath {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function normalizedPath(value: string, platform: NodeJS.Platform): string {
+  const normalized = pathFor(platform).normalize(value.trim()).replace(/[\\/]+$/, "");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 export function agentSetupTitle(kind: AgentCliKind, action: AgentSetupAction): string {

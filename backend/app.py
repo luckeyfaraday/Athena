@@ -319,9 +319,9 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/agents/sessions/{provider}/{session_id}/chat")
-    def get_agent_chat_messages(provider: str, session_id: str) -> dict[str, Any]:
+    def get_agent_chat_messages(provider: str, session_id: str, workspace: str | None = Query(default=None)) -> dict[str, Any]:
         try:
-            return read_chat_messages(provider, session_id)
+            return read_chat_messages(provider, session_id, workspace=workspace)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:

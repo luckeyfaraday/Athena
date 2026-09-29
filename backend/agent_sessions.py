@@ -468,26 +468,42 @@ def _copy_string_fields(metadata: dict[str, Any], source: dict[str, Any] | None,
             metadata[target_key] = value
 
 
-def _read_codex_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
-    sessions_dir = home / ".codex" / "sessions"
-    if not sessions_dir.exists():
-        return ""
+def _find_codex_session_file(session_id: str, home: Path, *, scan: bool = True) -> Path | None:
+    """Locate a Codex rollout: thread index first, then the bounded recent-file walk.
 
+    `scan=False` only consults the index, for callers that poll.
+    """
+    sessions_dir = home / ".codex" / "sessions"
+    if not sessions_dir.is_dir():
+        return None
+    rows = _query_sqlite(home / ".codex" / "state_5.sqlite", "select rollout_path from threads where id = ? limit 1", (session_id,))
+    if rows and isinstance(rows[0][0], str) and rows[0][0]:
+        indexed = Path(rows[0][0])
+        try:
+            if indexed.is_file() and indexed.resolve().is_relative_to(sessions_dir.resolve()):
+                return indexed
+        except OSError:
+            pass
+    if not scan:
+        return None
     recent_files = _recent_jsonl_files(sessions_dir, limit=800)
     file_path = next((path for path in recent_files if session_id in path.stem), None)
-    metadata: dict[str, Any] | None = None
-    if file_path is None:
-        # Older/variant Codex filenames may omit the id. Preserve compatibility
-        # while staying inside the bounded recent-file candidate set.
-        for candidate in recent_files:
-            candidate_metadata = _read_codex_jsonl_file_metadata(candidate)
-            if _metadata_string(candidate_metadata, "session_id") == session_id:
-                file_path = candidate
-                metadata = candidate_metadata
-                break
+    if file_path is not None:
+        return file_path
+    # Older/variant Codex filenames may omit the id. Preserve compatibility
+    # while staying inside the bounded recent-file candidate set.
+    return next(
+        (candidate for candidate in recent_files
+         if _metadata_string(_read_codex_jsonl_file_metadata(candidate), "session_id") == session_id),
+        None,
+    )
+
+
+def _read_codex_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
+    file_path = _find_codex_session_file(session_id, home)
     if file_path is None:
         return ""
-    metadata = metadata or _read_codex_jsonl_file_metadata(file_path)
+    metadata = _read_codex_jsonl_file_metadata(file_path)
 
     output = _BoundedTextJoiner("\n\n", max_bytes=max_bytes, tail=tail)
     output.add(f"# Codex Session Transcript\n\n- session: {session_id}")
@@ -922,19 +938,20 @@ def _read_grok_session(session_dir: Path, fallback_workspace: str) -> AgentSessi
     )
 
 
-def _read_grok_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
-    sessions_root = _grok_sessions_root(home)
-    if not sessions_root.is_dir():
-        return ""
-    session_dir = next(
+def _find_grok_session_dir(session_id: str, home: Path) -> Path | None:
+    return next(
         (
             candidate
-            for cwd_dir in _bounded_child_directories(sessions_root)
+            for cwd_dir in _bounded_child_directories(_grok_sessions_root(home))
             if (candidate := cwd_dir / session_id).is_dir()
             and (candidate / "chat_history.jsonl").is_file()
         ),
         None,
     )
+
+
+def _read_grok_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
+    session_dir = _find_grok_session_dir(session_id, home)
     if session_dir is None:
         return ""
     summary = _json_object(_read_text_file(session_dir / "summary.json")) or {}
@@ -1042,11 +1059,22 @@ def _render_opencode_part(value: Any) -> str:
     return ""
 
 
-def _read_claude_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
+def _find_claude_session_file(session_id: str, home: Path, *, workspace: Path | None = None, scan: bool = True) -> Path | None:
+    """Locate a Claude session file, probing the workspace's project directory first.
+
+    `scan=False` skips the walk over every project directory, for callers that poll.
+    """
     projects_dir = home / ".claude" / "projects"
-    if not projects_dir.exists():
-        return ""
-    file_path = next(
+    if workspace is not None:
+        # Claude maps every non-alphanumeric cwd character to "-" (the client's
+        # encodeResolvedClaudeProjectPath); Athena's older encodings follow.
+        exact = projects_dir / re.sub(r"[^A-Za-z0-9]", "-", str(workspace))
+        for project_dir in dict.fromkeys([exact, *_claude_project_path_candidates(projects_dir, workspace)]):
+            if (candidate := project_dir / f"{session_id}.jsonl").is_file():
+                return candidate
+    if not scan:
+        return None
+    return next(
         (
             candidate
             for project_dir in _bounded_child_directories(projects_dir)
@@ -1054,6 +1082,17 @@ def _read_claude_transcript(session_id: str, home: Path, *, max_bytes: int, tail
         ),
         None,
     )
+
+
+def _find_hermes_session_file(session_id: str, hermes_dir: Path | None) -> Path | None:
+    if hermes_dir is None:
+        return None
+    file_path = hermes_dir / "sessions" / f"session_{session_id}.json"
+    return file_path if file_path.is_file() else None
+
+
+def _read_claude_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
+    file_path = _find_claude_session_file(session_id, home)
     if file_path is None:
         return ""
     output = _BoundedTextJoiner("\n", max_bytes=max_bytes, tail=tail)
@@ -1096,11 +1135,8 @@ def _bounded_child_directories(root: Path) -> Generator[Path, None, None]:
 
 
 def _read_hermes_transcript(session_id: str, home: Path, *, max_bytes: int, tail: bool) -> str:
-    hermes_dir = _resolve_hermes_dir(home)
-    if hermes_dir is None:
-        return ""
-    file_path = hermes_dir / "sessions" / f"session_{session_id}.json"
-    if not file_path.exists():
+    file_path = _find_hermes_session_file(session_id, _resolve_hermes_dir(home))
+    if file_path is None:
         return ""
     data = _json_object(file_path.read_text(encoding="utf-8", errors="replace"))
     if not data:

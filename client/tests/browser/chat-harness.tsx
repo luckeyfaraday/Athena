@@ -3,16 +3,21 @@ import { createRoot } from "react-dom/client";
 import "../../src/styles.css";
 
 const listeners = new Set<(payload: unknown) => void>();
+const exitListeners = new Set<(payload: unknown) => void>();
 const session = {
   id: "chat-test", title: "Codex", kind: "codex", workspace: "C:/project", pid: 1,
   promptPath: null, initialTask: null, sessionLabel: null, providerSessionId: "native-test",
   createdAt: new Date().toISOString(), status: "running", exitCode: null, error: null,
 };
 const state = (window as any).chatTest = {
-  writes: [] as string[], failWrite: false, failAttach: false, attaches: 0, sequence: 0,
-  emit(data: string) {
+  writes: [] as string[], failWrite: false, failAttach: false, attaches: 0, sequence: 0, commits: 0, buffer: "",
+  emit(data: string, epoch = "test") {
     const sequence = ++state.sequence;
-    for (const listener of listeners) listener({ id: session.id, epoch: "test", sequence, fromSequence: sequence, reset: false, data });
+    state.buffer += data;
+    for (const listener of listeners) listener({ id: session.id, epoch, sequence, fromSequence: sequence, reset: false, data });
+  },
+  emitExit(payload: object) {
+    for (const listener of exitListeners) listener({ id: session.id, epoch: "test", exitCode: 0, ...payload });
   },
 };
 (window as any).contextWorkspace = {
@@ -26,12 +31,14 @@ const state = (window as any).chatTest = {
   attachEmbeddedTerminalStream: async () => {
     state.attaches++;
     if (state.failAttach) throw new Error("Stream disconnected");
-    return { id: session.id, epoch: "test", throughSequence: state.sequence, buffer: "" };
+    return { id: session.id, epoch: "test", throughSequence: state.sequence, buffer: state.buffer };
   },
   onEmbeddedTerminalDataFor: (_id: string, listener: (payload: unknown) => void) => {
     listeners.add(listener); return () => listeners.delete(listener);
   },
-  onEmbeddedTerminalExit: () => () => {},
+  onEmbeddedTerminalExit: (listener: (payload: unknown) => void) => {
+    exitListeners.add(listener); return () => exitListeners.delete(listener);
+  },
   resizeEmbeddedTerminal: async () => session,
   ackEmbeddedTerminalData: () => {},
   getDroppedFilePaths: async () => ["C:\\my images\\example.png"],
@@ -48,4 +55,6 @@ function Harness() {
     onBroadcastPrompt={async () => {}} onResumeSession={async () => {}} onRenameEmbeddedSession={() => {}}
     onRenameAgentSession={() => {}} onRefreshAgentSessions={async () => {}} emptyMark={null} />;
 }
-createRoot(document.getElementById("root")!).render(<React.StrictMode><Harness /></React.StrictMode>);
+createRoot(document.getElementById("root")!).render(
+  <React.StrictMode><React.Profiler id="chat" onRender={() => { state.commits++; }}><Harness /></React.Profiler></React.StrictMode>,
+);

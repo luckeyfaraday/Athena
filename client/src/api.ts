@@ -50,13 +50,15 @@ export type NativeChatMessage = {
   timestamp: string | null;
 };
 
-export type NativeChatSnapshot = { messages: NativeChatMessage[]; revision: string };
+/** `missing`: the session's file does not exist yet (a quiet state, not an error). */
+export type NativeChatSnapshot = { messages: NativeChatMessage[]; revision: string; missing?: boolean };
 
 export class BackendClient {
   constructor(private readonly baseUrl: string) {}
 
-  async chatMessages(provider: string, sessionId: string, signal: AbortSignal): Promise<NativeChatSnapshot> {
-    return this.json(`/agents/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/chat`, { signal });
+  async chatMessages(provider: string, sessionId: string, signal: AbortSignal, workspace?: string): Promise<NativeChatSnapshot> {
+    const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+    return this.json(`/agents/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/chat${query}`, { signal });
   }
 
   async hermesStatus(): Promise<HermesStatus> {

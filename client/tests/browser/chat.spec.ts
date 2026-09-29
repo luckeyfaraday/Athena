@@ -1,7 +1,14 @@
 import { test, expect } from "@playwright/test";
 
+// The chat endpoint, with or without its ?workspace= hint.
+const CHAT_ROUTE = /\/agents\/sessions\/[^/]+\/[^/]+\/chat(?:\?.*)?$/;
+const OLD_CONVERSATION = { revision: "old", messages: [
+  { id: "u1", role: "user", text: "old question", timestamp: null },
+  { id: "a1", role: "assistant", text: "old answer", timestamp: null },
+] };
+
 test.beforeEach(async ({ page }) => {
-  await page.route("**/agents/sessions/**/chat", (route) => route.fulfill({ json: { messages: [], revision: "empty" } }));
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: { messages: [], revision: "empty" } }));
   await page.goto("/tests/browser/chat.html");
   await expect(page.getByRole("textbox", { name: "Message Codex" })).toBeVisible();
 });
@@ -32,7 +39,7 @@ test("send failures keep the draft and never claim it was sent", async ({ page }
 });
 
 test("native replies stay intact and replace terminal redraw noise", async ({ page }) => {
-  await page.route("**/agents/sessions/**/chat", (route) => route.fulfill({ json: {
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: {
     revision: "answer", messages: [
       { id: "u1", role: "user", text: "hello", timestamp: null },
       { id: "a1", role: "assistant", text: "Hi\n42\n\n```python\n    print('hello')\n```", timestamp: null },
@@ -97,11 +104,11 @@ test("image attachment preserves Windows paths", async ({ page }) => {
 });
 
 test("native history failures keep previously visible replies", async ({ page }) => {
-  await page.route("**/agents/sessions/**/chat", (route) => route.fulfill({ json: {
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: {
     revision: "first", messages: [{ id: "a", role: "assistant", text: "Keep this answer", timestamp: null }],
   } }));
   await expect(page.locator(".chatBubble.assistant")).toContainText("Keep this answer");
-  await page.route("**/agents/sessions/**/chat", (route) => route.fulfill({ status: 503, json: { detail: "History temporarily unavailable" } }));
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ status: 503, json: { detail: "History temporarily unavailable" } }));
   await expect(page.getByRole("alert")).toContainText("History temporarily unavailable");
   await expect(page.locator(".chatBubble.assistant")).toContainText("Keep this answer");
 });
@@ -112,4 +119,87 @@ test("chat controls stay inside a narrow pane", async ({ page }) => {
   const bounds = await page.locator(".embeddedChatTerminal").evaluate((element) => ({ width: element.clientWidth, scroll: element.scrollWidth }));
   expect(bounds.scroll).toBeLessThanOrEqual(bounds.width);
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeVisible();
+});
+
+test("a session file that does not exist yet is a quiet state, polled cheaply", async ({ page }) => {
+  const requests: string[] = [];
+  page.on("request", (request) => { if (CHAT_ROUTE.test(request.url())) requests.push(request.url()); });
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: { messages: [], revision: "", missing: true } }));
+  await page.waitForTimeout(3_000);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByText("Send a message to get started.", { exact: false })).toBeVisible();
+  // At most the poll already in flight plus one 2s poll.
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.length).toBeLessThanOrEqual(3);
+  expect(requests.every((url) => url.includes("workspace=C%3A%2Fproject"))).toBe(true);
+  await page.evaluate(() => (window as any).chatTest.emit("Early reply from the terminal\r\n"));
+  await expect(page.locator(".chatBubble.assistant")).toContainText("Early reply from the terminal");
+});
+
+test("terminal fallback text is shown as plain text, not Markdown", async ({ page }) => {
+  const text = "snake_case_name and __init__ stay literal\n    indented line\n# not a heading";
+  await page.evaluate((value) => (window as any).chatTest.emit(`${value.replace(/\n/g, "\r\n")}\r\n`), text);
+  const bubble = page.locator(".chatBubble.assistant").last();
+  await expect(bubble.locator("pre")).toHaveText(text);
+  await expect(bubble.locator(".chatMarkdown, strong, em, h1, code")).toHaveCount(0);
+});
+
+test("the chat follows the live session when the native file stops recording", async ({ page }) => {
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: OLD_CONVERSATION }));
+  await expect(page.locator(".chatBubble.assistant")).toContainText("old answer");
+  // After /clear the CLI records into a new session file; the tracked one never changes again.
+  const composer = page.getByRole("textbox", { name: "Message Codex" });
+  await composer.fill("hello again");
+  await composer.press("Enter");
+  await page.evaluate(() => (window as any).chatTest.emit("› hello again\r\nfresh_reply_name from the new session\r\n"));
+  const conversation = page.getByLabel("Conversation");
+  await expect(conversation).not.toContainText("fresh_reply_name");
+  await expect(conversation).toContainText("fresh_reply_name from the new session", { timeout: 10_000 });
+  await expect(page.locator(".chatBubble.user pre")).toHaveText(["old question", "hello again"]);
+  await expect(page.locator(".chatBubble.assistant").last().locator("pre")).toHaveText("fresh_reply_name from the new session");
+  // Leaving and re-entering the chat view keeps following the terminal.
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(page.locator(".chatBubble.assistant").last().locator("pre")).toHaveText("fresh_reply_name from the new session");
+  await expect(page.locator(".chatBubble.user pre")).toHaveText(["old question", "hello again"]);
+  // Once the provider records the turn, native history takes over again.
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: { revision: "new", messages: [
+    ...OLD_CONVERSATION.messages,
+    { id: "u2", role: "user", text: "hello again", timestamp: null },
+    { id: "a2", role: "assistant", text: "**recorded** reply", timestamp: null },
+  ] } }));
+  await expect(page.locator(".chatBubble.assistant strong")).toHaveText("recorded");
+  await expect(conversation).not.toContainText("fresh_reply_name");
+  await expect(page.locator(".chatBubble.user pre")).toHaveText(["old question", "hello again"]);
+});
+
+test("terminal output does not re-render the chat while native history is shown", async ({ page }) => {
+  await page.route(CHAT_ROUTE, (route) => route.fulfill({ json: OLD_CONVERSATION }));
+  await expect(page.locator(".chatBubble.assistant")).toContainText("old answer");
+  await page.waitForTimeout(1_500);
+  const before = await page.evaluate(() => (window as any).chatTest.commits);
+  for (let index = 0; index < 5; index++) {
+    await page.evaluate((line) => (window as any).chatTest.emit(`streaming line ${line}\r\n`), index);
+    await page.waitForTimeout(250);
+  }
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as any).chatTest.commits)).toBe(before);
+  await expect(page.getByLabel("Conversation")).not.toContainText("streaming line");
+});
+
+test("stream reattach retries never pile up", async ({ page }) => {
+  // An exit whose output has not arrived yet schedules a recovery reattach (2.5s).
+  await page.evaluate(() => (window as any).chatTest.emitExit({ throughSequence: 99 }));
+  const before = await page.evaluate(() => {
+    const chat = (window as any).chatTest;
+    chat.failAttach = true;
+    const attaches = chat.attaches;
+    chat.emit("stale\r\n", "restarted");
+    return attaches;
+  });
+  // Attach A fails at 0s (retry at 2s), B fails at 2s (retry at 4s), the
+  // recovery attach C at 2.5s replaces B's retry (retry at 4.5s), D at 4.5s.
+  // A leaked retry would add another attach at 4s.
+  await page.waitForTimeout(5_000);
+  expect(await page.evaluate(() => (window as any).chatTest.attaches) - before).toBe(4);
 });

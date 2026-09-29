@@ -25,6 +25,8 @@ export type ChatBlock = {
   role: ChatBlockRole;
   label: string;
   text: string;
+  /** Provider-recorded Markdown; terminal-scraped text is plain and never set this. */
+  markdown?: boolean;
 };
 
 /** Structurally compatible with chat-mode's SentPromptBlock. */
@@ -516,6 +518,54 @@ function isStatusLine(line: string): boolean {
   return STATUS_LINE.test(line);
 }
 
+const ECHO_MARK = /^[›❯>]\s*/;
+/** What Claude-style TUIs echo in place of pasted text or attached images. */
+const INPUT_PLACEHOLDER = /^\[(?:pasted text|image) #\d+/i;
+
+function echoFragment(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Marks a TUI's echo of the submitted prompt: a line with an input marker
+ * (`›`, `❯`, `>`) that starts the prompt (or shows a paste/image placeholder)
+ * plus the lines that directly continue it, as wrapped or multi-line prompts
+ * are echoed; or a line equal to the whole prompt. Only an unbroken run from
+ * such a start is hidden, so replies that mention, quote or repeat parts of
+ * the prompt elsewhere stay visible.
+ */
+function promptEchoMask(lines: readonly string[], promptText: string | undefined): boolean[] | null {
+  const prompt = promptText ? echoFragment(promptText) : "";
+  if (!prompt) return null;
+  const mask = new Array<boolean>(lines.length).fill(false);
+  let echoed: string | null = null;
+  for (let index = 0; index < lines.length; index++) {
+    const trimmed = lines[index].trim();
+    if (!trimmed) {
+      mask[index] = echoed !== null;
+      continue;
+    }
+    const marked = ECHO_MARK.test(trimmed);
+    const text = echoFragment(marked ? trimmed.replace(ECHO_MARK, "") : trimmed);
+    if (echoed !== null && echoed.length < prompt.length) {
+      // Wrapping may split the prompt at a space or inside a word.
+      const next: string | undefined = [`${echoed} ${text}`, echoed + text].find((candidate) => prompt.startsWith(candidate));
+      if (next) {
+        echoed = next;
+        mask[index] = true;
+        continue;
+      }
+    }
+    if (text && (marked ? prompt.startsWith(text) || INPUT_PLACEHOLDER.test(text) : text === prompt)) {
+      echoed = text;
+      mask[index] = true;
+      continue;
+    }
+    echoed = null;
+  }
+  return mask;
+}
+
 /** `normalized` is normalizePromptPrefix(line); `promptComparable` is the normalized prompt text or "". */
 function isPromptEchoLine(line: string, normalized: string, promptComparable: string): boolean {
   if (EMPTY_PROMPT_LINE.test(normalized)) return true;
@@ -631,10 +681,10 @@ function isRawFallbackLine(line: string, promptComparable: string): boolean {
   return !isChromeLine(trimmed);
 }
 
-function rawTranscriptFallback(lines: string[], promptComparable: string): string {
+function rawTranscriptFallback(lines: string[], promptComparable: string, echo: readonly boolean[] | null): string {
   return lines
     .map(stripDecorativeBorders)
-    .filter((line) => isRawFallbackLine(line, promptComparable))
+    .filter((line, index) => !echo?.[index] && isRawFallbackLine(line, promptComparable))
     .join("\n")
     .trim()
     .slice(-4000);
@@ -665,9 +715,12 @@ function segmentBlocks(
 ): ChatBlock[] {
   const promptComparable = promptText ? normalizeChatComparable(promptText) : "";
   const lines = transcript.split("\n");
+  const echo = promptEchoMask(lines, promptText);
   const statusLines: string[] = [];
   const bodyLines: string[] = [];
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index++) {
+    if (echo?.[index]) continue;
+    const line = lines[index];
     let kind = kinds?.get(line);
     if (kind === undefined) {
       kind = bodyLineKind(line, promptComparable);
@@ -685,7 +738,7 @@ function segmentBlocks(
 
   const chunks = splitOutputIntoChunks(body);
   if (chunks.length === 0) {
-    const fallback = rawTranscriptFallback(lines, promptComparable);
+    const fallback = rawTranscriptFallback(lines, promptComparable, echo);
     if (fallback) {
       blocks.push({
         id: `fallback-status-${segmentIndex}-${fallback.slice(0, 32)}`,

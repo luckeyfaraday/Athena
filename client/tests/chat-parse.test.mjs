@@ -400,3 +400,40 @@ test("short replies, quotes and code indentation survive terminal fallback", () 
   const body = blocks.map((block) => block.text).join("\n");
   for (const expected of ["Hi", "42", "    print(42)", "> quoted answer", "The word hello is a greeting."]) assert.ok(body.includes(expected), expected);
 });
+
+test("wrapped and multi-line prompt echoes are hidden in terminal fallback", () => {
+  const cases = [
+    // Claude echoes a multi-line prompt as "> first" plus indented continuation lines.
+    ["first line\nsecond line", "> first line\r\n  second line\r\n\r\n⏺ The reply.\r\n"],
+    // Terminal wrapping splits a long prompt at a space or inside a word.
+    ["please summarize the parser module design in detail", "> please summarize the parser\r\n  module design in de\r\n  tail\r\nThe reply.\r\n"],
+    ["describe this image", "> [Image #1] describe this image\r\nThe reply.\r\n"],
+    ["a very long pasted prompt\nwith many lines", "> [Pasted text #1 +2 lines]\r\nThe reply.\r\n"],
+  ];
+  for (const [text, stream] of cases) {
+    const prompts = [prompt(text, 0, 0)];
+    const blocks = parseChatTranscript(stream, prompts, TITLE);
+    const output = blocks.filter((block) => block.role !== "user").map((block) => block.text).join("\n");
+    assert.match(output, /The reply\./, text);
+    assert.doesNotMatch(output, /first line|second line|summarize|module|tail|Image #1|Pasted text/, text);
+    const parser = new ChatTranscriptParser();
+    parser.append(stream);
+    assert.deepEqual(parser.view(prompts, TITLE), blocks, text);
+  }
+});
+
+test("reply lines that repeat or quote the prompt outside its echo stay visible", () => {
+  const stream = [
+    "> rename foo to bar",
+    "  keep tests green",
+    "Done. I will keep tests green.",
+    "keep tests green",
+    "> rename foo to bar is what you asked",
+    "> quoted answer",
+  ].join("\r\n");
+  const body = parseChatTranscript(stream, [prompt("rename foo to bar\nkeep tests green", 0, 0)], TITLE)
+    .filter((block) => block.role === "assistant")
+    .map((block) => block.text)
+    .join("\n");
+  assert.equal(body, "Done. I will keep tests green.\nkeep tests green\n> rename foo to bar is what you asked\n> quoted answer");
+});

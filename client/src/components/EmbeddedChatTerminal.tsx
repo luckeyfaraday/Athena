@@ -1,4 +1,4 @@
-import { DragEvent, FormEvent, KeyboardEvent, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { DragEvent, FormEvent, KeyboardEvent, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -23,7 +23,7 @@ import {
 } from "../chat-mode";
 import { ChatTranscriptParser, SNAPSHOT_PARSE_CHARS, type ChatBlock } from "../chat-parse";
 import { isNearScrollBottom } from "../embedded-scroll";
-import { nativeChatBlocks } from "../native-chat";
+import { nativeChatView, nextUnrecordedCheck, unrecordedPrompt, withTerminalTail } from "../native-chat";
 import { useNativeChat } from "../use-native-chat";
 import "./chat.css";
 
@@ -55,7 +55,7 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
   const [sendError, setSendError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
-  const { snapshot, snapshotRef, historyError } = useNativeChat(session);
+  const { snapshot, snapshotRef, snapshotChangedAt, historyError } = useNativeChat(session);
   function setPrompt(value: string) {
     saveChatDraft(session.id, value);
     setPromptState(value);
@@ -66,10 +66,30 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
   const [chatBlocks, setChatBlocks] = useState<ChatBlock[]>(EMPTY_BLOCKS);
   const chatBlocksRef = useRef(chatBlocks);
   const [imageDropActive, setImageDropActive] = useState(false);
-  const visibleBlocks = snapshot
-    ? nativeChatBlocks(snapshot.messages, sentPrompts, session.title, confirmedChatPrompts(session.id))
-    : chatBlocks;
-  const visibleSignature = visibleBlocks.map((block) => `${block.id}:${block.text.length}`).join("|");
+  const [clock, setClock] = useState(() => Date.now());
+  // Reconciling sends with native history costs O(prompts × messages): only redo it when either changes.
+  const nativeView = useMemo(
+    () => (snapshot ? nativeChatView(snapshot.messages, sentPrompts, session.title, confirmedChatPrompts(session.id)) : null),
+    [snapshot, sentPrompts, session.title, session.id],
+  );
+  // A send the native session never recorded (it moved on via /clear, /new or
+  // /resume, or it was a command): from there on the terminal shows the turns.
+  const tailFrom = nativeView ? unrecordedPrompt(nativeView.pending, snapshotChangedAt, clock) : undefined;
+  const nextTailCheck = nativeView && !tailFrom ? nextUnrecordedCheck(nativeView.pending, snapshotChangedAt) : null;
+  // Parser blocks are only built and rendered when something shows them.
+  const parserVisible = !nativeView || tailFrom !== undefined;
+  const parserVisibleRef = useRef(parserVisible);
+  const visibleBlocks = useMemo(
+    () => (nativeView ? withTerminalTail(nativeView, tailFrom, chatBlocks) : chatBlocks),
+    [nativeView, tailFrom, chatBlocks],
+  );
+  const visibleSignature = useMemo(() => visibleBlocks.map((block) => `${block.id}:${block.text.length}`).join("|"), [visibleBlocks]);
+
+  useEffect(() => {
+    if (nextTailCheck === null) return;
+    const timer = window.setTimeout(() => setClock(Date.now()), Math.max(0, nextTailCheck - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [nextTailCheck]);
 
   useLayoutEffect(() => {
     const input = composerRef.current;
@@ -82,6 +102,12 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
   // (the parser returns the same array instance when nothing visible changed).
   const publish = useCallback((parser: ChatTranscriptParser | null) => {
     if (!parser || parser !== parserRef.current) return;
+    if (!parserVisibleRef.current) {
+      // Native history is on screen: keep turn boundaries current for a later
+      // fallback, but build no blocks and cause no render.
+      parser.setMarkers(sentPromptsRef.current.map((block) => block.marker));
+      return;
+    }
     const next = parser.view(sentPromptsRef.current, titleRef.current);
     if (next === chatBlocksRef.current) return;
     chatBlocksRef.current = next;
@@ -91,8 +117,9 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
   useLayoutEffect(() => {
     sentPromptsRef.current = sentPrompts;
     titleRef.current = session.title;
+    parserVisibleRef.current = parserVisible;
     publish(parserRef.current);
-  }, [publish, sentPrompts, session.title]);
+  }, [publish, sentPrompts, session.title, parserVisible]);
 
   useEffect(() => {
     const parser = new ChatTranscriptParser();
@@ -214,6 +241,9 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
       renderPendingExit();
     };
     const attachStream = async () => {
+      // A new attach supersedes any scheduled retry.
+      window.clearTimeout(attachRetryTimer);
+      attachRetryTimer = 0;
       const generation = ++attachGeneration;
       attached = false;
       let snapshot;
@@ -223,6 +253,7 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
         if (!mounted || generation !== attachGeneration) return;
         setStreamError(error instanceof Error ? error.message : "Could not connect to the conversation.");
         beforeAttach.length = 0;
+        window.clearTimeout(attachRetryTimer);
         attachRetryTimer = window.setTimeout(() => void attachStream(), 2_000);
         return;
       }
@@ -419,7 +450,8 @@ const ChatBubble = memo(function ChatBubble({ block }: { block: ChatBlock }) {
         {block.role === "status" ? <AlertTriangle size={13} /> : block.role === "assistant" ? <TerminalSquare size={13} /> : null}
         {block.label}
       </span>
-      {block.role === "assistant"
+      {/* Markdown only for provider-recorded replies; scraped terminal text is plain. */}
+      {block.markdown
         ? <div className="chatMarkdown"><Markdown remarkPlugins={[remarkGfm]} components={{
             a: ({ children, href }) => <a href={href} onClick={(event) => {
               event.preventDefault();
@@ -433,6 +465,7 @@ const ChatBubble = memo(function ChatBubble({ block }: { block: ChatBlock }) {
   prev.block.role === next.block.role
   && prev.block.label === next.block.label
   && prev.block.text === next.block.text
+  && prev.block.markdown === next.block.markdown
 ));
 
 /**
@@ -448,6 +481,7 @@ export const EmbeddedChatTerminal = memo(EmbeddedChatTerminalView, (prev, next) 
     && a.status === b.status
     && a.pid === b.pid
     && a.title === b.title
+    && a.workspace === b.workspace
     && a.initialTask === b.initialTask
     && a.providerSessionId === b.providerSessionId
     && a.error === b.error

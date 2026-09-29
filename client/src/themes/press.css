@@ -1488,19 +1488,6 @@ button:disabled { cursor: not-allowed; opacity: .36; }
 
 /* ── RESPONSIVE ────────────────────────────────────────────────────────── */
 
-@media (max-width: 1280px) {
-  body { overflow: auto; }
-  .workspaceSurface { height: auto; min-height: 100vh; }
-  .workspaceSurface.shellFocusSurface { height: calc(100vh - 30px); min-height: calc(100vh - 30px); }
-  .dashboardShell { overflow: visible; }
-  .shellFocusSurface .dashboardShell { overflow: hidden; }
-  .dashboardGrid { height: auto; }
-  .shellFocusSurface .dashboardGrid { height: 100%; }
-  .broadcastComposer { grid-template-columns: minmax(0, 1fr); }
-  .broadcastComposer > span { display: none; }
-  .broadcastComposer .primaryButton { width: 100%; }
-}
-
 /* Focus mode needs stronger navigation state than the dashboard chrome. */
 .workspaceSurface.shellFocusSurface .workspaceTabs.focusWorkspaceTabs {
   border-color: var(--line-strong);

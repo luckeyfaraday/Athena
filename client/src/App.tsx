@@ -13,6 +13,7 @@ import {
   type WorkspacePath,
 } from "./electron";
 import { AthenaMark } from "./components/AthenaMark";
+import athenaMarkUrl from "./assets/athena-mark.png";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { CommandRoom } from "./rooms/CommandRoom";
 import { SettingsRoom } from "./rooms/SettingsRoom";
@@ -840,7 +841,7 @@ function AppTitleBar({
         </button>
       </div>
       <div className="titleBrand">
-        <span className="titleMark" aria-hidden="true" />
+        <span className="titleMark" aria-hidden="true"><img src={athenaMarkUrl} alt="" /></span>
         <strong>ATHENA</strong>
       </div>
       <nav className="titleNav" aria-label="Rooms">

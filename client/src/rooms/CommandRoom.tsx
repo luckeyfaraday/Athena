@@ -530,8 +530,23 @@ export function CommandRoom({
           {visibleSessions.length === 0 && (
             <div className="terminalEmptyState">
               {emptyMark}
-              <strong>No embedded terminals yet.</strong>
-              <span>Select a workspace, then start a shell or launch a clean agent session.</span>
+              <strong>{workspace ? "Nothing running in this workspace" : "No workspace open"}</strong>
+              <span>{workspace ? "Start a shell or an agent." : "Add a project folder from the workspace bar above."}</span>
+              {workspace && (
+                <div className="emptyLaunchRow">
+                  {launchActions.filter((action) => action.count === 1).map((action) => (
+                    <button
+                      key={action.kind}
+                      type="button"
+                      className="ghostButton"
+                      disabled={busy}
+                      onClick={() => void onLaunch(action.kind, 1)}
+                    >
+                      {action.icon} {action.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

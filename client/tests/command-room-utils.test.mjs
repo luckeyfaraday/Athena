@@ -6,7 +6,6 @@ import {
   matchesSessionQuery,
   paneInstanceNumbers,
   paneStatusLabel,
-  sessionInstanceNumber,
   workspaceFolderName,
 } from "../src/session-utils.ts";
 
@@ -82,7 +81,7 @@ test("session search matches every term across title, id, branch, model and prov
   assert.equal(matchesSessionQuery(agentSession({ provider: "athena", model: null }), "athena code"), true);
 });
 
-test("batched pane numbers agree with sessionInstanceNumber", () => {
+test("panes are numbered per kind and workspace, oldest first", () => {
   const sessions = [
     pane({ id: "c2", createdAt: "2026-09-29T10:05:00.000Z" }),
     pane({ id: "c1", createdAt: "2026-09-29T10:00:00.000Z" }),
@@ -91,10 +90,8 @@ test("batched pane numbers agree with sessionInstanceNumber", () => {
     pane({ id: "c3", workspace: "c:/projects/athena/", createdAt: "2026-09-29T10:09:00.000Z" }),
   ];
   const numbers = paneInstanceNumbers(sessions);
-  for (const session of sessions) {
-    assert.equal(numbers.get(session.id).number, sessionInstanceNumber(session, sessions), session.id);
-  }
   assert.deepEqual(numbers.get("c1"), { number: 1, total: 3 });
+  assert.deepEqual(numbers.get("c2"), { number: 2, total: 3 });
   assert.deepEqual(numbers.get("c3"), { number: 3, total: 3 });
   assert.deepEqual(numbers.get("s1"), { number: 1, total: 1 });
   assert.deepEqual(numbers.get("c-other"), { number: 1, total: 1 });

@@ -14,6 +14,25 @@ import "./styles/tokens.css";
 import "./styles/themes.css";
 import "./styles.css";
 import { App } from "./App";
+import {
+  defaultTerminalAppearance,
+  parseTerminalFont,
+  parseTerminalFontSize,
+  terminalFontFamily,
+  terminalFontSizeStorageKey,
+  terminalFontStorageKey,
+} from "./terminal-appearance";
+
+// Start loading the saved terminal font now, so panes restored at launch find
+// it ready instead of waiting on it before their first paint.
+try {
+  const font = parseTerminalFont(localStorage.getItem(terminalFontStorageKey)) ?? defaultTerminalAppearance.font;
+  const size = parseTerminalFontSize(localStorage.getItem(terminalFontSizeStorageKey)) ?? defaultTerminalAppearance.fontSize;
+  const family = terminalFontFamily(font).split(",")[0]?.trim();
+  if (family && typeof document.fonts?.load === "function") void document.fonts.load(`${size}px ${family}`).catch(() => undefined);
+} catch {
+  // Storage unavailable: panes load the font themselves.
+}
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

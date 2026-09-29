@@ -43,7 +43,8 @@ import athenaMarkUrl from "./assets/athena-mark.png";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { UsageMeters } from "./components/UsageMeters";
 import { AgentGlyph } from "./components/AgentGlyph";
-import { PromptDialog, type TextPromptRequest } from "./components/PromptDialog";
+import { ConfirmDialog, PromptDialog, type ConfirmRequest, type TextPromptRequest } from "./components/PromptDialog";
+import { backendStatusView, electronControlStatusView } from "./components/status";
 import { ToastStack, useToasts } from "./components/Toasts";
 import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
 import { CommandRoom } from "./rooms/CommandRoom";
@@ -135,6 +136,8 @@ const statusPollIntervalMs = 15_000;
 const agentSessionMaxAgeMs = 60_000;
 // Main reports each prompt or finished turn once; this only keeps a flapping terminal from alerting in a loop.
 const attentionAlertThrottleMs = 5_000;
+// How long "Starting…" may show before an unhealthy backend is reported as not responding.
+const backendStartupGraceMs = 45_000;
 
 // Loaded on first use: Settings is not needed to paint the Command Room. The palette
 // stays in the main bundle so it opens in the same frame as its shortcut; while a
@@ -232,6 +235,9 @@ export function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   const [palette, setPalette] = useState<{ open: boolean; query: string }>({ open: false, query: "" });
   const [promptRequest, setPromptRequest] = useState<TextPromptRequest | null>(null);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
+  const confirmResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
+  const [backendStalled, setBackendStalled] = useState(false);
   const promptResolveRef = useRef<((value: string | null) => void) | null>(null);
   const [revealPaneRequest, setRevealPaneRequest] = useState<{ id: string; nonce: number } | null>(null);
   const toasts = useToasts();
@@ -307,6 +313,21 @@ export function App() {
     promptResolveRef.current = null;
     setPromptRequest(null);
     resolve?.(value);
+  }
+
+  function requestConfirm(request: ConfirmRequest): Promise<boolean> {
+    confirmResolveRef.current?.(false);
+    return new Promise((resolve) => {
+      confirmResolveRef.current = resolve;
+      setConfirmRequest(request);
+    });
+  }
+
+  function closeConfirm(confirmed: boolean) {
+    const resolve = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    setConfirmRequest(null);
+    resolve?.(confirmed);
   }
 
   function openPalette(query = "") {
@@ -716,6 +737,15 @@ export function App() {
   // While the backend is starting (or down), check more often so the status
   // flips to Ready promptly; once healthy the regular poll takes over.
   const backendHealthy = Boolean(backend?.healthy);
+  const backendRunning = Boolean(backend?.running);
+  // "Starting…" is only honest for a while: a backend that runs but never gets
+  // healthy (hung, port conflict) is reported as not responding.
+  useEffect(() => {
+    setBackendStalled(false);
+    if (backendHealthy) return undefined;
+    const timer = window.setTimeout(() => setBackendStalled(true), backendStartupGraceMs);
+    return () => window.clearTimeout(timer);
+  }, [backendHealthy, backendRunning]);
   useEffect(() => {
     if (backendHealthy) return undefined;
     const timer = window.setInterval(() => {
@@ -814,6 +844,22 @@ export function App() {
       if (normalizeWorkspaceKey(activeWorkspaceRef.current) === key) setWorkspacePath(next[0] ?? null);
       return next;
     });
+  }
+
+  // Closing from the UI (tab button, middle-click, menu, palette) confirms first
+  // when it would stop running terminals; closes requested over MCP do not ask.
+  async function requestCloseWorkspaceTab(tab: WorkspacePath) {
+    const running = embeddedSessionsRef.current.filter((session) =>
+      session.status === "running" && sameWorkspacePath(session.workspace, tab.nativePath)).length;
+    if (running > 0) {
+      const confirmed = await requestConfirm({
+        title: `Close ${workspaceDisplayName(tab)}?`,
+        message: `This stops ${running === 1 ? "the terminal" : `all ${running} terminals`} running in this workspace, including any agent that is working there.`,
+        confirmLabel: running === 1 ? "Stop and close" : `Stop ${running} and close`,
+      });
+      if (!confirmed) return;
+    }
+    closeWorkspaceTab(tab);
   }
 
   async function renameWorkspaceTab(tab: WorkspacePath) {
@@ -997,24 +1043,34 @@ export function App() {
     }
   }
 
+  // Renames await a dialog, during which the active workspace can change (a
+  // notification click, a shortcut). Always write to the workspace captured
+  // before the dialog, reading its map from storage if it is no longer active.
+  function renamesFor(renameWorkspace: string): { renames: Record<string, string>; active: boolean } {
+    const active = sameWorkspacePath(renameWorkspace, activeWorkspaceRef.current);
+    return { renames: active ? sessionRenamesRef.current : readRenamedSessions(renameWorkspace), active };
+  }
+
   async function renameEmbeddedSession(session: EmbeddedTerminalSession) {
+    const renameWorkspace = workspace;
     const nextTitle = await requestText({ title: "Rename pane", initialValue: session.title, confirmLabel: "Rename" });
     if (!nextTitle || nextTitle === session.title) return;
-    const nextRenames = { ...sessionRenamesRef.current, [embeddedSessionKey(session)]: nextTitle };
-    setSessionRenames(nextRenames);
-    writeRenamedSessions(workspace, nextRenames);
+    const { renames, active } = renamesFor(renameWorkspace);
+    const nextRenames = { ...renames, [embeddedSessionKey(session)]: nextTitle };
+    if (active) setSessionRenames(nextRenames);
+    writeRenamedSessions(renameWorkspace, nextRenames);
     setEmbeddedSessions((current) => current.map((item) => item.id === session.id ? { ...item, title: nextTitle } : item));
     await desktop.renameEmbeddedTerminal(session.id, nextTitle).catch(() => undefined);
   }
 
   async function renameAgentSession(session: AgentSession) {
+    const renameWorkspace = session.workspace || workspace;
     const nextTitle = await requestText({ title: "Rename session", initialValue: session.title, confirmLabel: "Rename" });
     if (!nextTitle || nextTitle === session.title) return;
     const key = selectedAgentSessionKey(session);
-    const renameWorkspace = session.workspace || workspace;
-    const activeWorkspace = sameWorkspacePath(renameWorkspace, workspace);
-    const nextRenames = { ...(activeWorkspace ? sessionRenamesRef.current : readRenamedSessions(renameWorkspace)), [key]: nextTitle };
-    if (activeWorkspace) setSessionRenames(nextRenames);
+    const { renames, active } = renamesFor(renameWorkspace);
+    const nextRenames = { ...renames, [key]: nextTitle };
+    if (active) setSessionRenames(nextRenames);
     writeRenamedSessions(renameWorkspace, nextRenames);
     setAgentSessionsByWorkspace((current) => {
       const renameKey = normalizeWorkspaceKey(renameWorkspace);
@@ -1097,7 +1153,7 @@ export function App() {
   }
 
   const shortcutHandlers: Partial<Record<ShortcutId, () => void>> = {};
-  if (!promptRequest && !installPrompt) {
+  if (!promptRequest && !confirmRequest && !installPrompt) {
     shortcutHandlers.palette = () => (palette.open ? closePalette() : openPalette());
     if (!palette.open) {
       shortcutHandlers.settings = () => (activeRoom === "settings" ? showCommandRoom() : openSettings());
@@ -1191,7 +1247,7 @@ export function App() {
         { id: "workspace:reveal", group: "Workspaces", title: "Open this workspace in the file manager", icon: <FolderOpen size={15} />, keywords: ["explorer", "finder", "files"], run: () => void openWorkspaceInFiles(current) },
       );
       if (workspaceTabs.length > 1) {
-        commands.push({ id: "workspace:close", group: "Workspaces", title: "Close this workspace", subtitle: "Stops its terminals", icon: <XCircle size={15} />, run: () => closeWorkspaceTab(current) });
+        commands.push({ id: "workspace:close", group: "Workspaces", title: "Close this workspace", subtitle: "Stops its terminals", icon: <XCircle size={15} />, run: () => void requestCloseWorkspaceTab(current) });
       }
     }
 
@@ -1313,7 +1369,7 @@ export function App() {
     <div className="appFrame">
       <AppTitleBar
         activeRoom={activeRoom}
-        status={titleStatusView(backend, electronControl)}
+        status={titleStatusView(backend, electronControl, backendStalled)}
         usage={<UsageMeters client={client} />}
         paletteKeys={shortcutKeysFor("palette")}
         onNavigate={setActiveRoom}
@@ -1341,7 +1397,7 @@ export function App() {
                 terminalSessions={embeddedSessions}
                 attentionByWorkspace={workspaceAttention}
                 onSelect={activateWorkspace}
-                onClose={closeWorkspaceTab}
+                onClose={(tab) => void requestCloseWorkspaceTab(tab)}
                 onAdd={selectWorkspace}
                 onCreate={createWorkspace}
                 onRename={(tab) => void renameWorkspaceTab(tab)}
@@ -1360,6 +1416,7 @@ export function App() {
                   view={commandView}
                   onViewChange={setCommandView}
                   revealPaneRequest={revealPaneRequest}
+                  onRevealPaneHandled={() => setRevealPaneRequest(null)}
                   onInterfaceModeChange={setInterfaceMode}
                   onToast={(message) => toasts.show(message)}
                   onAddWorkspace={() => void selectWorkspace()}
@@ -1432,6 +1489,9 @@ export function App() {
           onOpenDocs={(url) => void desktop.openExternalUrl(url)}
         />
       )}
+      {confirmRequest && (
+        <ConfirmDialog request={confirmRequest} onConfirm={() => closeConfirm(true)} onCancel={() => closeConfirm(false)} />
+      )}
       {promptRequest && (
         <PromptDialog request={promptRequest} onSubmit={(value) => closePrompt(value)} onCancel={() => closePrompt(null)} />
       )}
@@ -1452,15 +1512,28 @@ export function App() {
 
 type TitleStatus = { tone: "ready" | "starting" | "degraded" | "offline"; label: string; detail: string };
 
-function titleStatusView(backend: BackendStatus | null, control: ElectronControlStatus | null): TitleStatus {
-  if (!backend || (backend.running && !backend.healthy)) {
+// Built on the same status mapping Settings uses, so the two never disagree.
+function titleStatusView(backend: BackendStatus | null, control: ElectronControlStatus | null, backendStalled: boolean): TitleStatus {
+  const backendView = backendStatusView(backend);
+  if (!backend || (backendView.tone === "warn" && !backendStalled)) {
     return { tone: "starting", label: "Starting…", detail: "The Athena backend is starting up." };
   }
-  if (!backend.healthy) {
-    return { tone: "offline", label: "Backend offline", detail: backend.lastError ?? "The Athena backend is not running. Restart it from Settings > System." };
+  if (backendView.tone !== "ok") {
+    return {
+      tone: "offline",
+      label: backend.running ? "Backend not responding" : "Backend offline",
+      detail: backend.lastError ?? (backend.running
+        ? "The Athena backend is running but not answering health checks. Restart it from Settings > System."
+        : "The Athena backend is not running. Restart it from Settings > System."),
+    };
   }
-  if (!control?.running) {
-    return { tone: "degraded", label: "Control offline", detail: control?.lastError ?? "Electron control is not running, so Hermes cannot drive this window." };
+  const controlView = electronControlStatusView(control);
+  if (controlView.tone !== "ok") {
+    return {
+      tone: "degraded",
+      label: `Control ${controlView.label.toLowerCase()}`,
+      detail: control?.lastError ?? "Electron control is not running, so Hermes cannot drive this window.",
+    };
   }
   return { tone: "ready", label: "Ready", detail: "Backend and Electron control are healthy." };
 }

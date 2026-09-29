@@ -79,8 +79,10 @@ export type CommandRoomProps = {
   // Terminals / Sessions, controlled by App (palette and shortcuts switch it too).
   view: CommandRoomView;
   onViewChange: (view: CommandRoomView) => void;
-  // When the nonce changes, show and focus that pane.
+  // When the nonce changes, show and focus that pane, then report it handled so
+  // App clears the request (a remount must not replay it).
   revealPaneRequest: { id: string; nonce: number } | null;
+  onRevealPaneHandled?: () => void;
   onFocusChange: (focused: boolean) => void;
   onInterfaceModeChange: (mode: InterfaceMode) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
@@ -142,6 +144,7 @@ export function CommandRoom({
   view,
   onViewChange,
   revealPaneRequest,
+  onRevealPaneHandled,
   onFocusChange,
   onInterfaceModeChange,
   onLaunch,
@@ -318,6 +321,7 @@ export function CommandRoom({
     if (!revealPaneRequest || revealPaneRequest.nonce === lastRevealNonceRef.current) return;
     lastRevealNonceRef.current = revealPaneRequest.nonce;
     revealTerminalPane(revealPaneRequest.id);
+    onRevealPaneHandled?.();
   }, [revealPaneRequest]);
 
   useEffect(() => () => window.clearTimeout(armedCloseTimerRef.current), []);

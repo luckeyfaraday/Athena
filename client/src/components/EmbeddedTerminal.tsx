@@ -40,7 +40,11 @@ function loadWebglAddon(): Promise<typeof import("@xterm/addon-webgl")> {
 }
 
 // Wait for a bundled web font before xterm measures its cell size; measuring
-// the fallback font first leaves glyphs misaligned until the next resize.
+// the fallback font first leaves glyphs misaligned until the next resize. The
+// fonts are local and preloaded at startup (main.tsx), so this rarely waits;
+// the short cap keeps a pane from staying blank if a font never loads.
+const terminalFontWaitMs = 400;
+
 function whenTerminalFontReady(appearance: TerminalAppearance): Promise<void> {
   const family = terminalFontFamily(appearance.font).split(",")[0]?.trim();
   if (!family || typeof document.fonts?.load !== "function") return Promise.resolve();
@@ -50,7 +54,7 @@ function whenTerminalFontReady(appearance: TerminalAppearance): Promise<void> {
   } catch {
     return Promise.resolve();
   }
-  const timeout = new Promise<void>((resolve) => window.setTimeout(resolve, 1_500));
+  const timeout = new Promise<void>((resolve) => window.setTimeout(resolve, terminalFontWaitMs));
   return Promise.race([document.fonts.load(spec).then(() => undefined, () => undefined), timeout]);
 }
 
@@ -167,9 +171,13 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
       });
     };
     void whenTerminalFontReady(initialAppearance).then(openTerminal);
+    // Font waits can resolve out of order (a cached font settles before one
+    // that is still loading); only the latest choice may be applied.
+    let appearanceRequest = 0;
     const removeAppearance = subscribeTerminalAppearance((next) => {
+      const request = ++appearanceRequest;
       void whenTerminalFontReady(next).then(() => {
-        if (disposed) return;
+        if (disposed || request !== appearanceRequest) return;
         terminal.options.fontFamily = terminalFontFamily(next.font);
         terminal.options.fontSize = next.fontSize;
         scheduleFit({ refresh: true });

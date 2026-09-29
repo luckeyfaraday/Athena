@@ -79,7 +79,12 @@ function CommandPaletteDialog({
   const listId = `${baseId}-list`;
   const optionId = (index: number) => `${baseId}-option-${index}`;
 
-  const sections = useMemo(() => buildSections(query, commands, recents), [query, commands, recents]);
+  // The caller rebuilds `commands` on every render (status polls, theme
+  // previews). Re-rank only when their visible content or the query changes,
+  // then point each row at the latest command object so run/preview are current.
+  const contentKey = useMemo(() => commandContentKey(commands), [commands]);
+  const rankedSections = useMemo(() => buildSections(query, commands, recents), [query, contentKey, recents]);
+  const sections = useMemo(() => withLatestCommands(rankedSections, commands), [rankedSections, commands]);
   const rows = useMemo(() => sections.flatMap((section) => section.rows), [sections]);
   const searching = query.trim().length > 0;
   const commandCount = useMemo(() => new Set(commands.map((command) => command.id)).size, [commands]);
@@ -374,6 +379,32 @@ function HighlightedText({ text, indices }: { text: string; indices: readonly nu
   }
   if (cursor < text.length) parts.push(text.slice(cursor));
   return <>{parts}</>;
+}
+
+function commandContentKey(commands: readonly PaletteCommand[]): string {
+  return commands
+    .map((command) => [
+      command.id,
+      command.title,
+      command.subtitle ?? "",
+      command.group,
+      command.disabled ? "1" : "0",
+      command.disabledReason ?? "",
+      (command.keywords ?? []).join(","),
+      (command.keys ?? []).join("+"),
+    ].join("\u0001"))
+    .join("\u0002");
+}
+
+function withLatestCommands(sections: PaletteSection[], commands: readonly PaletteCommand[]): PaletteSection[] {
+  const latest = new Map(commands.map((command) => [command.id, command]));
+  return sections.map((section) => ({
+    ...section,
+    rows: section.rows.map((row) => {
+      const command = latest.get(row.command.id);
+      return command && command !== row.command ? { ...row, command } : row;
+    }),
+  }));
 }
 
 function buildSections(query: string, commands: readonly PaletteCommand[], recents: readonly string[]): PaletteSection[] {

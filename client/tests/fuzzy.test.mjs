@@ -136,3 +136,12 @@ test("parseRecents tolerates malformed storage", () => {
   assert.deepEqual(parseRecents("{\"a\":1}"), []);
   assert.deepEqual(parseRecents("[\"a\", 3, \"b\"]"), ["a", "b"]);
 });
+
+test("indices stay aligned with the original text when lowercasing changes length", () => {
+  const text = "İstanbul deploy";
+  assert.equal("İ".toLowerCase().length, 2);
+  const match = fuzzyScore("deploy", text);
+  assert.ok(match);
+  assert.equal(match.indices.map((index) => text[index]).join(""), "deploy");
+  assert.deepEqual(match.indices, [9, 10, 11, 12, 13, 14]);
+});

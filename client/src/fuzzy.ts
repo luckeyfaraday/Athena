@@ -43,13 +43,49 @@ function boundaryBonus(text: string, index: number): number {
   return 0;
 }
 
+// toLowerCase() can change a string's length ("İ" becomes two code units),
+// which would shift every later match index against `text` and mis-highlight
+// it. Lowercase one code unit at a time and keep any character whose lowercase
+// form has a different length unchanged.
+function lowerPreservingIndices(text: string): string {
+  const cached = loweredCache.get(text);
+  if (cached !== undefined) return cached;
+  const simple = text.toLowerCase();
+  let lowered = simple;
+  if (simple.length !== text.length) {
+    lowered = "";
+    for (let index = 0; index < text.length; index += 1) {
+      const char = text[index];
+      const lower = char.toLowerCase();
+      lowered += lower.length === 1 ? lower : char;
+    }
+  }
+  if (loweredCache.size >= maxLoweredCacheEntries) loweredCache.clear();
+  loweredCache.set(text, lowered);
+  return lowered;
+}
+
+// Palette fields repeat on every keystroke; remember their lowercase forms.
+const loweredCache = new Map<string, string>();
+const maxLoweredCacheEntries = 4_000;
+
+// O(n + m) check that `needle` appears in order in `haystack`; most fields fail
+// it, and skipping the scoring pass for them keeps ranking cheap.
+function isSubsequence(needle: string, haystack: string): boolean {
+  let position = 0;
+  for (let index = 0; index < haystack.length && position < needle.length; index += 1) {
+    if (haystack[index] === needle[position]) position += 1;
+  }
+  return position === needle.length;
+}
+
 export function fuzzyScore(query: string, text: string): FuzzyMatch | null {
   const needle = query.toLowerCase();
   if (!needle) return { score: 0, indices: [] };
-  const haystack = text.toLowerCase();
+  const haystack = lowerPreservingIndices(text);
   const n = needle.length;
   const m = haystack.length;
-  if (n > m) return null;
+  if (n > m || !isSubsequence(needle, haystack)) return null;
 
   // best[j]: best score with the current query char placed at text position j.
   let previous = new Float64Array(m).fill(-Infinity);

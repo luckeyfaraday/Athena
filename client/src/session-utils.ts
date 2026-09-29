@@ -1,6 +1,6 @@
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
 import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys.ts";
-import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils.ts";
+import { normalizeWorkspaceKey } from "./workspace-utils.ts";
 
 export { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys.ts";
 
@@ -118,20 +118,6 @@ export function terminalPaneMeta(session: EmbeddedTerminalSession): string {
   return session.sessionLabel ?? "New";
 }
 
-// Mirrors agentHandle() in client/electron/agent-routing.ts so visible pane
-// numbers line up with the handles the routing layer accepts ("claude#2").
-// Shell panes are numbered too — the user wants every instance identifiable.
-export function sessionInstanceNumber(
-  session: EmbeddedTerminalSession,
-  sessions: EmbeddedTerminalSession[],
-): number {
-  const peers = sessions
-    .filter((item) => item.kind === session.kind && sameWorkspacePath(item.workspace, session.workspace))
-    .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id));
-  const index = peers.findIndex((item) => item.id === session.id);
-  return Math.max(0, index) + 1;
-}
-
 export function formatSessionTime(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return "unknown";
@@ -177,8 +163,10 @@ export function matchesSessionQuery(session: AgentSession, query: string): boole
   return terms.every((term) => haystack.includes(term));
 }
 
-// sessionInstanceNumber for every pane at once: the pane's number among panes of
-// its kind in its workspace, and how many such panes there are.
+// Every pane's number among panes of its kind in its workspace (oldest first),
+// and how many such panes there are. Mirrors agentHandle() in
+// client/electron/agent-routing.ts so visible numbers line up with the handles
+// the routing layer accepts ("claude#2"). Shell panes are numbered too.
 export function paneInstanceNumbers(sessions: EmbeddedTerminalSession[]): Map<string, { number: number; total: number }> {
   const groups = new Map<string, EmbeddedTerminalSession[]>();
   for (const session of sessions) {

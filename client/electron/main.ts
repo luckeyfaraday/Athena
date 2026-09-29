@@ -348,6 +348,13 @@ if (singleInstanceLock) {
     await createWindow();
     startAutoUpdates();
 
+    // "Match system" switches theme live when the OS goes light/dark; keep the
+    // native background (seen while resizing) in step with it.
+    nativeTheme.on("updated", () => {
+      if (getPreferences()[THEME_PREFERENCE_KEY] !== "system") return;
+      mainWindow?.setBackgroundColor(themeWindowBackground("system", nativeTheme.shouldUseDarkColors));
+    });
+
     app.on("activate", async () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         await createWindow();

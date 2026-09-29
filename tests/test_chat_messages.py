@@ -61,6 +61,17 @@ def test_claude_keeps_text_and_ignores_tool_results_and_sidechains(tmp_path: Pat
     assert [(m["id"], m["text"]) for m in read_chat_messages("claude", "chat", home_dir=tmp_path)["messages"]] == [("u", "hello"), ("a", "answer")]
 
 
+def test_claude_task_notifications_are_not_shown_as_the_users_messages(tmp_path: Path) -> None:
+    write_jsonl(tmp_path / ".claude/projects/project/chat.jsonl", [
+        {"uuid": "u", "message": {"role": "user", "content": "run the build in the background"}},
+        {"uuid": "n1", "origin": {"kind": "task-notification"}, "message": {"role": "user", "content": "Build finished with exit code 0"}},
+        {"uuid": "n2", "message": {"role": "user", "content": "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"}},
+        {"uuid": "a", "message": {"role": "assistant", "content": "The build passed."}},
+    ])
+    messages = read_chat_messages("claude", "chat", home_dir=tmp_path)["messages"]
+    assert [(m["id"], m["role"]) for m in messages] == [("u", "user"), ("a", "assistant")]
+
+
 def test_bounded_tail_keeps_complete_records_and_stable_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / ".claude/projects/project/chat.jsonl"
     write_jsonl(path, [{"message": {"role": "assistant", "content": "x" * 80 + str(i)}} for i in range(20)])

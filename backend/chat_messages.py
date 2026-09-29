@@ -145,6 +145,14 @@ def _path(provider: str, session_id: str, home: Path, workspace: Path | None) ->
     return path
 
 
+def _claude_notice(entry: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Claude Code records its own notices (background task results) as user messages; they are not the user's."""
+    origin = entry.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") == "task-notification":
+        return True
+    return payload.get("role") == "user" and _text(payload.get("content")).lstrip().startswith("<task-notification>")
+
+
 def _parse_jsonl(data: bytes, start: int, provider: str, messages: list[dict[str, Any]], fallback: list[dict[str, Any]]) -> int:
     """Append the records of `data` (which begins at byte `start`); return the end of the last finished record."""
     offset = start
@@ -176,7 +184,7 @@ def _parse_jsonl(data: bytes, start: int, provider: str, messages: list[dict[str
                     fallback.append(item)
         elif provider == "claude":
             payload = entry.get("message")
-            if not isinstance(payload, dict) or entry.get("isMeta") or entry.get("isSidechain"):
+            if not isinstance(payload, dict) or entry.get("isMeta") or entry.get("isSidechain") or _claude_notice(entry, payload):
                 continue
             message = _message(str(entry.get("uuid") or key), payload.get("role"), _text(payload.get("content")), timestamp)
         elif provider == "grok" and "synthetic_reason" not in entry:

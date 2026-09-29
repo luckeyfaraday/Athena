@@ -13,10 +13,12 @@
 // interpolation.
 
 import type { AgentMcpLaunch } from "./agent-mcp.js";
+import { missingAgentMessage } from "./agent-cli.js";
 import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
 import {
   defaultShell,
   isWindows,
+  nvmLoadBashCommand,
   preferredWindowsPowerShell,
   quotePowerShell,
   quoteShell,
@@ -63,49 +65,6 @@ function codexMcpPowerShellArray(
   return overrides
     .flatMap((override) => ["'-c'", quotePowerShell(escapeNativeQuotes ? override.replaceAll('"', '\\"') : override)])
     .join(", ");
-}
-
-function missingAgentMessage(kind: EmbeddedTerminalKind, executable: string): string {
-  if (kind === "grok") {
-    return `${executable} is not installed or not on PATH. Install Grok Build: macOS/Linux curl -fsSL https://x.ai/cli/install.sh | bash; Windows PowerShell irm https://x.ai/cli/install.ps1 | iex. Docs: https://docs.x.ai/build/overview`;
-  }
-  if (kind === "athena") {
-    return `${executable} is an optional external CLI and is not bundled with Athena. Install: macOS/Linux curl -fsSL https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.sh | bash; Windows PowerShell irm https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.ps1 | iex`;
-  }
-  return `${executable} is not installed or not on PATH.`;
-}
-
-// nvm installs each Node version's bin -- and the global CLIs linked into it
-// (codex, claude, opencode, ...) -- under ~/.nvm/versions/node/<v>/bin, and puts
-// it on PATH from an init snippet in ~/.bashrc. We launch agents with `bash -lc`,
-// a login *non-interactive* shell, which sources ~/.profile but NOT ~/.bashrc
-// (the stock ~/.bashrc returns early when non-interactive). So nvm never loads
-// and the agent looks "not installed or not on PATH" even though it runs fine in
-// a normal interactive terminal. Load nvm's default Node here, before the
-// command-v check, so PATH matches what the user sees. No-op without nvm; the
-// `--no-use` flag keeps sourcing cheap, then `nvm use` selects the default.
-function nvmLoadBashCommand(): string {
-  return [
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    'if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh" --no-use >/dev/null 2>&1; nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1; fi',
-  ].join("; ");
-}
-
-function codexNpmPrefixBashCommand(): string {
-  return [
-    "unset npm_config_prefix NPM_CONFIG_PREFIX npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG",
-    'export NPM_CONFIG_PREFIX="${CONTEXT_WORKSPACE_NPM_PREFIX:-$HOME/.npm-global}"',
-    'case ":$PATH:" in *":$NPM_CONFIG_PREFIX/bin:"*) ;; *) export PATH="$NPM_CONFIG_PREFIX/bin:$PATH" ;; esac',
-  ].join("; ");
-}
-
-function codexNpmPrefixPowerShellCommand(): string {
-  return [
-    "Remove-Item Env:npm_config_prefix,Env:NPM_CONFIG_PREFIX,Env:npm_config_globalconfig,Env:NPM_CONFIG_GLOBALCONFIG -ErrorAction SilentlyContinue",
-    "if ($env:CONTEXT_WORKSPACE_NPM_PREFIX) { $env:NPM_CONFIG_PREFIX = $env:CONTEXT_WORKSPACE_NPM_PREFIX } else { $env:NPM_CONFIG_PREFIX = Join-Path $HOME '.npm-global' }",
-    "$npmGlobalBin = Join-Path $env:NPM_CONFIG_PREFIX 'bin'",
-    "if (($env:Path -split [IO.Path]::PathSeparator) -notcontains $npmGlobalBin) { $env:Path = $npmGlobalBin + [IO.Path]::PathSeparator + $env:Path }",
-  ].join("; ");
 }
 
 export function terminalLaunch(
@@ -162,7 +121,7 @@ export function launchCommand(
       `cd ${quoteShell(cwd)}`,
       nvmLoadBashCommand(),
       "printf '\\033[36m[Context Workspace] Hermes ready.\\033[0m\\n'",
-      "if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31mhermes is not installed or not on PATH.\\033[0m\\n'; exec bash -l; fi",
+      `if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage("hermes", "hermes", "linux"))}; exec bash -l; fi`,
       "hermes",
       "exec bash -l",
     ].join("; ");
@@ -176,8 +135,7 @@ export function launchCommand(
       promptPath
         ? `printf '\\033[36m[Context Workspace] %s Athena context: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(promptPath)}`
         : `printf '\\033[36m[Context Workspace] Launching %s\\033[0m\\n' ${quoteShell(agent.label)}`,
-      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage(kind, agent.executable))}; exec bash -l; fi`,
-      kind === "codex" ? codexNpmPrefixBashCommand() : "",
+      `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage(kind, agent.executable, "linux"))}; exec bash -l; fi`,
       `${agent.executable} ${agent.args(cwd, promptPath, "bash", mcp, newSessionId, model)}`.trimEnd(),
       "exec bash -l",
     ].filter(Boolean).join("; ");
@@ -202,7 +160,7 @@ export function launchHermesPowerShellCommand(cwd: string, resumeSessionId?: str
       ? "Write-Host \"[Context Workspace] Resuming Hermes session: $sessionId\" -ForegroundColor Cyan"
       : "Write-Host \"[Context Workspace] Hermes ready.\" -ForegroundColor Cyan",
     "$resolvedHermes = Get-Command hermes -ErrorAction SilentlyContinue",
-    "if (-not $resolvedHermes) { Write-Host \"hermes is not installed or not on PATH.\" -ForegroundColor Red; return }",
+    `if (-not $resolvedHermes) { Write-Host ${quotePowerShell(missingAgentMessage("hermes", "hermes", "win32"))} -ForegroundColor Red; return }`,
     resumeSessionId ? "& hermes --resume $sessionId" : "& hermes",
   ].filter(Boolean).join("; ");
 }
@@ -213,7 +171,7 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
       `cd ${quoteShell(cwd)}`,
       nvmLoadBashCommand(),
       `printf '\\033[36m[Context Workspace] Resuming Hermes session: %s\\033[0m\\n' ${quoteShell(resumeSessionId)}`,
-      "if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31mhermes is not installed or not on PATH.\\033[0m\\n'; exec bash -l; fi",
+      `if ! command -v hermes >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage("hermes", "hermes", "linux"))}; exec bash -l; fi`,
       `hermes --resume ${quoteShell(resumeSessionId)}`,
       "exec bash -l",
     ].join("; ");
@@ -223,8 +181,7 @@ export function launchResumeCommand(kind: EmbeddedTerminalKind, cwd: string, res
     `cd ${quoteShell(cwd)}`,
     nvmLoadBashCommand(),
     `printf '\\033[36m[Context Workspace] Resuming %s session: %s\\033[0m\\n' ${quoteShell(agent.label)} ${quoteShell(resumeSessionId)}`,
-    `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage(kind, agent.executable))}; exec bash -l; fi`,
-    kind === "codex" ? codexNpmPrefixBashCommand() : "",
+    `if ! command -v ${quoteShell(agent.executable)} >/dev/null 2>&1; then printf '\\033[31m%s\\033[0m\\n' ${quoteShell(missingAgentMessage(kind, agent.executable, "linux"))}; exec bash -l; fi`,
     agent.resumeArgs(cwd, resumeSessionId, "bash", mcp),
     "exec bash -l",
   ].filter(Boolean).join("; ");
@@ -245,11 +202,10 @@ export function launchResumePowerShellCommand(
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
     kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp, powerShellExecutable)})` : "",
-    kind === "codex" ? codexNpmPrefixPowerShellCommand() : "",
     "Set-Location -LiteralPath $workspace",
     "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
-    `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable))} -ForegroundColor Red; return }`,
+    `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable, "win32"))} -ForegroundColor Red; return }`,
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     agent.resumePowerShellCommand,
@@ -274,7 +230,6 @@ export function launchPowerShellCommand(
     `$agentLabel = ${quotePowerShell(agent.label)}`,
     mcp?.configPath ? `$mcpConfigPath = ${quotePowerShell(mcp.configPath)}` : "",
     kind === "codex" ? `$mcpConfigArgs = @(${codexMcpPowerShellArray(mcp, powerShellExecutable)})` : "",
-    kind === "codex" ? codexNpmPrefixPowerShellCommand() : "",
     // $modelArgs is spliced into every agent's argument array; @() when no model
     // was explicitly requested, so the agent CLI keeps its own default.
     model ? `$modelArgs = @('--model', ${quotePowerShell(model)})` : "$modelArgs = @()",
@@ -283,7 +238,7 @@ export function launchPowerShellCommand(
       ? "Write-Host \"[Context Workspace] $agentLabel Athena context: $promptPath\" -ForegroundColor Cyan"
       : "Write-Host \"[Context Workspace] Launching $agentLabel\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
-    `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable))} -ForegroundColor Red; return }`,
+    `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable, "win32"))} -ForegroundColor Red; return }`,
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     // Windows PowerShell 5.1 wraps space-containing native args in quotes but does NOT escape

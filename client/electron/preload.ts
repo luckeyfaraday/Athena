@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type { AgentCliKind, AgentCliStatus, PrivateAgentCopies } from "./agent-cli.js";
 import type { AgentSession } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import type { ControlState } from "./control-server.js";
@@ -147,6 +148,9 @@ export type WorkspaceApi = {
   getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
+  getAgentClis: () => Promise<{ agents: AgentCliStatus[]; privateCopies: PrivateAgentCopies | null }>;
+  checkAgentCli: (kind: AgentCliKind) => Promise<AgentCliStatus>;
+  refreshAgentPath: () => Promise<boolean>;
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   openExternalUrl: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
@@ -300,6 +304,9 @@ const api: WorkspaceApi = {
   getPerformanceDiagnostics: () => ipcRenderer.invoke("performance:diagnostics"),
   killEmbeddedTerminal: (id) => ipcRenderer.invoke("embeddedTerminal:kill", id),
   listAgentSessions: (workspace) => ipcRenderer.invoke("agentSessions:list", workspace),
+  getAgentClis: () => ipcRenderer.invoke("agents:status"),
+  checkAgentCli: (kind) => ipcRenderer.invoke("agents:check", kind),
+  refreshAgentPath: () => ipcRenderer.invoke("agents:refreshPath"),
   getDroppedFilePaths: async (files) => files.map((file) => webUtils.getPathForFile(file)).filter(Boolean),
   openExternalUrl: (url) => ipcRenderer.invoke("shell:openExternal", url),
   openPath: (path) => ipcRenderer.invoke("shell:openPath", path),

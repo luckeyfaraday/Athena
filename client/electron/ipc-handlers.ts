@@ -35,6 +35,15 @@ import {
   type LaunchAdmissionResult,
 } from "./launch-admission.js";
 import { formatBytes } from "./memory-guard.js";
+import {
+  agentCliStatus,
+  agentCliStatuses,
+  isAgentCliKind,
+  privateAgentCopies,
+  refreshPathFromSystem,
+  type AgentCliStatus,
+  type PrivateAgentCopies,
+} from "./agent-cli.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { getPreferences, removePreference, setPreference } from "./preferences.js";
 import {
@@ -308,6 +317,18 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("agentSessions:list", (_event, workspace: string): Promise<AgentSession[]> =>
     listAgentSessionsCached(workspace, listEmbeddedTerminals()),
   );
+  // Which agent CLIs the panes would find, resolved the way the panes resolve them, plus copies an older Athena left
+  // in its private npm prefix.
+  handle("agents:status", async (): Promise<{ agents: AgentCliStatus[]; privateCopies: PrivateAgentCopies | null }> => ({
+    agents: await agentCliStatuses(),
+    privateCopies: privateAgentCopies(),
+  }));
+  handle("agents:check", (_event, kind: unknown): Promise<AgentCliStatus> => {
+    if (!isAgentCliKind(kind)) throw new Error(`Unknown agent: ${String(kind)}`);
+    return agentCliStatus(kind);
+  });
+  // After an installer ran: pick up PATH entries it added, so the new CLI is found without restarting Athena.
+  handle("agents:refreshPath", (): Promise<boolean> => refreshPathFromSystem());
   handle("dialog:selectWorkspace", async (): Promise<WorkspacePath | null> => {
     const result = await dialog.showOpenDialog({
       properties: ["openDirectory"],

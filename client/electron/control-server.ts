@@ -20,6 +20,7 @@ import {
   type EmbeddedTerminalSession,
 } from "./embedded-terminal.js";
 import { recordControlFailure } from "./control-events.js";
+import { agentCliStatus, isAgentCliKind } from "./agent-cli.js";
 import {
   launchStaggerDelayMs,
   publicLaunchAdmission,
@@ -400,6 +401,22 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     if (request.method === "POST" && url.pathname === "/terminals/spawn") {
       const payload = parseSpawnTerminalRequest(await readJsonBody(request));
+      // An agent that is not installed would open a pane that only prints an error. Callers of this API have no
+      // install dialog, so tell them what to install instead.
+      if (isAgentCliKind(payload.kind)) {
+        const cli = await agentCliStatus(payload.kind);
+        if (!cli.installed) {
+          recordControlFailure({ kind: "spawn.failed", detail: `${cli.label} is not installed`, preview: payload.task });
+          sendJson(response, 409, {
+            error: "agent_not_installed",
+            agent: payload.kind,
+            message: `${cli.label} (${cli.executable}) is not installed or not on PATH.`,
+            install_command: cli.installCommand,
+            docs: cli.docsUrl,
+          });
+          return;
+        }
+      }
       const admission = reserveLaunchAdmission({
         source: "control",
         kind: payload.kind,

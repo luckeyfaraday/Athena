@@ -128,7 +128,9 @@ tests/                   Backend, MCP, native session, and adapter tests
   - `hermes`
 - Optional Hermes Agent install for real shared memory integration
 
-The desktop app can open without every agent CLI installed. Missing adapters appear as unavailable, and related launch commands may fail inside the terminal until the CLI is installed and available on `PATH`.
+The desktop app can open without every agent CLI installed. Missing agents are marked "not installed" in the **New** menu; starting one asks whether to install it, runs the install in a terminal you can watch, and launches the agent when it finishes. **Settings > Coding agents** shows where each CLI was found and has Install and Update buttons.
+
+Athena always runs the machine-wide install of each agent: the same `claude`, `codex` or `opencode` your other terminals find on `PATH` (for npm CLIs, npm's global prefix, `npm prefix -g`). Updating an agent inside Athena, from the agent's own update prompt, or from any other terminal updates the same copy. Earlier versions kept private copies in `~/.npm-global` and ran those instead; if any are left, Settings offers to remove them.
 
 ## Quick Start
 
@@ -550,7 +552,16 @@ Then restart the desktop app.
 
 ### Agent command is unavailable
 
-Install the relevant CLI and make sure it is on `PATH` for the Electron process:
+Start the agent from **New**, or open **Settings > Coding agents**: Athena offers to install a missing CLI and runs the install in a visible terminal. The commands it uses:
+
+| Agent | Windows | macOS / Linux |
+|---|---|---|
+| Claude Code, Codex, OpenCode | `npm install -g @anthropic-ai/claude-code@latest` (`@openai/codex`, `opencode-ai`) | same |
+| Grok | `irm https://x.ai/cli/install.ps1 \| iex` | `curl -fsSL https://x.ai/cli/install.sh \| bash` |
+| Athena Code | `irm https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.ps1 \| iex` | `curl -fsSL https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.sh \| bash` |
+| Hermes | `iex (irm https://hermes-agent.nousresearch.com/install.ps1)` | `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh \| bash` |
+
+To install by hand, run the command in any terminal, then make sure the CLI is on `PATH` for the Electron process:
 
 ```bash
 which codex
@@ -559,18 +570,6 @@ which claude
 which athena-code
 which grok
 which hermes
-```
-
-Grok Build installers:
-
-```bash
-# macOS / Linux / WSL
-curl -fsSL https://x.ai/cli/install.sh | bash
-```
-
-```powershell
-# Windows PowerShell
-irm https://x.ai/cli/install.ps1 | iex
 ```
 
 See the [Grok Build documentation](https://docs.x.ai/build/overview).

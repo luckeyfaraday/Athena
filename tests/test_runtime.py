@@ -3,7 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 from backend import runtime as runtime_module
-from backend.runtime import AdapterStatusCache, adapter_statuses
+from backend.runtime import DEFAULT_AGENT_EXECUTABLES, AdapterStatusCache, adapter_statuses
+
+# one PATH lookup per agent CLI Athena knows about
+AGENTS = len(DEFAULT_AGENT_EXECUTABLES)
 
 
 def test_adapter_statuses_reports_installed_and_missing_clis(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -15,7 +18,8 @@ def test_adapter_statuses_reports_installed_and_missing_clis(monkeypatch: pytest
 
     statuses = adapter_statuses({"codex": "fake-codex"})
 
-    assert set(statuses) == {"codex", "opencode", "claude", "grok"}
+    assert set(statuses) == {"codex", "opencode", "claude", "grok", "athena"}
+    assert statuses["athena"]["executable"] == "athena-code"
     assert statuses["codex"]["executable"] == "fake-codex"
     assert statuses["codex"]["installed"] is True
     assert statuses["codex"]["command_path"] == "C:/fake/codex.exe"
@@ -43,7 +47,7 @@ def test_adapter_status_cache_reuses_lookups_within_ttl(monkeypatch: pytest.Monk
     second = cache.get()
 
     assert first == second
-    assert len(lookups) == 4
+    assert len(lookups) == AGENTS
 
 
 def test_adapter_status_cache_refresh_bypasses_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,7 +57,7 @@ def test_adapter_status_cache_refresh_bypasses_cache(monkeypatch: pytest.MonkeyP
     cache.get()
     cache.get(refresh=True)
 
-    assert len(lookups) == 8
+    assert len(lookups) == 2 * AGENTS
 
 
 def test_adapter_status_cache_expires_after_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,11 +69,11 @@ def test_adapter_status_cache_expires_after_ttl(monkeypatch: pytest.MonkeyPatch)
     cache.get()
     now[0] += 299
     cache.get()
-    assert len(lookups) == 4
+    assert len(lookups) == AGENTS
 
     now[0] += 2
     cache.get()
-    assert len(lookups) == 8
+    assert len(lookups) == 2 * AGENTS
 
 
 def test_adapter_status_cache_is_keyed_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +85,7 @@ def test_adapter_status_cache_is_keyed_on_path(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("PATH", "/second")
     cache.get()
 
-    assert len(lookups) == 8
+    assert len(lookups) == 2 * AGENTS
 
 
 def test_adapter_status_cache_returns_copies(monkeypatch: pytest.MonkeyPatch) -> None:

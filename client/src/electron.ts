@@ -63,6 +63,9 @@ export type GraphicsRuntimeStatus = {
   lastGpuCrashReason: string | null;
 };
 
+export type AgentCliKind = Exclude<EmbeddedTerminalKind, "shell">;
+export type AgentSetupAction = "install" | "update" | "cleanup";
+
 export type EmbeddedTerminalSpawnOptions = {
   kind?: EmbeddedTerminalKind;
   title?: string;
@@ -72,7 +75,34 @@ export type EmbeddedTerminalSpawnOptions = {
   resumeSessionId?: string;
   sessionLabel?: string;
   providerSessionId?: string;
+  // a pane that installs, updates or cleans up an agent CLI (the command comes from the main process)
+  setup?: { agent: AgentCliKind; action: AgentSetupAction };
 };
+
+// One coding-agent CLI as the terminals would find it (electron/agent-cli.ts).
+export type AgentCliStatus = {
+  kind: AgentCliKind;
+  label: string;
+  executable: string;
+  installed: boolean;
+  path: string | null;
+  installCommand: string;
+  updateCommand: string;
+  docsUrl: string;
+  needsNpm: boolean;
+  npmAvailable: boolean;
+};
+
+// Agent packages an older Athena installed into its private npm prefix, which it no longer uses.
+export type PrivateAgentCopies = {
+  prefix: string;
+  kinds: AgentCliKind[];
+  packages: string[];
+  labels: string[];
+  command: string;
+};
+
+export type AgentCliReport = { agents: AgentCliStatus[]; privateCopies: PrivateAgentCopies | null };
 
 export type AgentSession = {
   id: string;
@@ -207,6 +237,9 @@ type WorkspaceApi = {
   getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
+  getAgentClis: () => Promise<AgentCliReport>;
+  checkAgentCli: (kind: AgentCliKind) => Promise<AgentCliStatus>;
+  refreshAgentPath: () => Promise<boolean>;
   getDroppedFilePaths: (files: File[]) => Promise<string[]>;
   openExternalUrl: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
@@ -362,6 +395,18 @@ const browserFallback: WorkspaceApi = {
       },
     ];
   },
+  // The browser preview cannot look at the machine: report every agent as installed.
+  async getAgentClis() {
+    const kinds: AgentCliKind[] = ["claude", "codex", "opencode", "hermes", "grok", "athena"];
+    return { agents: await Promise.all(kinds.map((kind) => this.checkAgentCli(kind))), privateCopies: null };
+  },
+  async checkAgentCli(kind: AgentCliKind) {
+    return {
+      kind, label: kind, executable: kind, installed: true, path: null, installCommand: "", updateCommand: "",
+      docsUrl: "", needsNpm: false, npmAvailable: true,
+    };
+  },
+  async refreshAgentPath() { return false; },
   async getDroppedFilePaths(files: File[]) { return files.map((file) => file.name).filter(Boolean); },
   async openExternalUrl(url: string) {
     if (!/^https?:\/\//i.test(url)) return false;

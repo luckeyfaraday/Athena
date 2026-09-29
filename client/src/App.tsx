@@ -3,6 +3,10 @@ import { Minus, Square, X } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus } from "./api";
 import {
   desktop,
+  type AgentCliKind,
+  type AgentCliReport,
+  type AgentCliStatus,
+  type AgentSetupAction,
   type AgentSession,
   type AthenaLaunchState,
   type EmbeddedTerminalKind,
@@ -13,6 +17,7 @@ import {
   type WorkspacePath,
 } from "./electron";
 import { AthenaMark } from "./components/AthenaMark";
+import { AgentInstallDialog } from "./components/AgentInstallDialog";
 import athenaMarkUrl from "./assets/athena-mark.png";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { CommandRoom } from "./rooms/CommandRoom";
@@ -102,6 +107,14 @@ function sameEmbeddedSessions(a: EmbeddedTerminalSession[], b: EmbeddedTerminalS
   });
 }
 
+// What to start once a missing agent CLI is installed.
+type PendingLaunch = { type: "new"; kind: AgentCliKind; count: number } | { type: "resume"; session: AgentSession };
+
+function withAgentStatus(report: AgentCliReport, status: AgentCliStatus): AgentCliReport {
+  const agents = report.agents.map((agent) => agent.kind === status.kind ? status : agent);
+  return sameJsonValue(agents, report.agents) ? report : { ...report, agents };
+}
+
 export function App() {
   const [backend, setBackend] = useState<BackendStatus | null>(null);
   const [electronControl, setElectronControl] = useState<ElectronControlStatus | null>(null);
@@ -127,6 +140,16 @@ export function App() {
   const [launchState, setLaunchState] = useState<AthenaLaunchState | null>(null);
   const [graphicsStatus, setGraphicsStatus] = useState<GraphicsRuntimeStatus | null>(null);
   const [restoreRequest, setRestoreRequest] = useState<{ workspace: WorkspacePath; nonce: number } | null>(null);
+  // Agent CLIs as the terminals find them, the install prompt for a missing one, and install/update panes still running
+  // (by terminal id) with what to launch once they finish.
+  const [agentClis, setAgentClis] = useState<AgentCliReport | null>(null);
+  const [installPrompt, setInstallPrompt] = useState<{ status: AgentCliStatus; then: PendingLaunch } | null>(null);
+  const setupRunsRef = useRef<Map<string, { kind: AgentCliKind; action: AgentSetupAction; then: PendingLaunch | null }>>(new Map());
+  const setupExitRef = useRef<(id: string, exitCode: number | null) => void>(() => undefined);
+  const missingAgents = useMemo<ReadonlySet<EmbeddedTerminalKind>>(
+    () => new Set((agentClis?.agents ?? []).filter((agent) => !agent.installed).map((agent) => agent.kind)),
+    [agentClis],
+  );
   const backendRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef<Set<string>>(new Set());
   const agentSessionsLastRefreshAt = useRef<Map<string, number>>(new Map());
@@ -423,6 +446,24 @@ export function App() {
     void refreshPerformanceDiagnostics();
   }, [activeRoom, refreshBackendDetails, refreshPerformanceDiagnostics]);
 
+  const refreshAgentClis = useCallback(async (): Promise<AgentCliReport | null> => {
+    try {
+      const report = await desktop.getAgentClis();
+      setAgentClis((current) => sameJsonValue(current, report) ? current : report);
+      return report;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // At start (so the New menu can mark missing agents) and whenever Settings opens.
+  useEffect(() => {
+    void refreshAgentClis();
+  }, [refreshAgentClis]);
+  useEffect(() => {
+    if (activeRoom === "settings") void refreshAgentClis();
+  }, [activeRoom, refreshAgentClis]);
+
   useEffect(() => {
     const removeSession = desktop.onEmbeddedTerminalSession((session) => {
       setEmbeddedSessions((current) => appendEmbeddedSessions(current, [session]));
@@ -442,6 +483,7 @@ export function App() {
       markWorkspaceAttention(payload.id, payload.kind);
     });
     const removeExit = desktop.onEmbeddedTerminalExit((payload) => {
+      setupExitRef.current(payload.id, payload.exitCode);
       markWorkspaceAttention(payload.id, "update");
       setEmbeddedSessions((current) =>
         current.map((item) => (item.id === payload.id ? { ...item, status: "exited", exitCode: payload.exitCode } : item)),
@@ -615,8 +657,103 @@ export function App() {
     }
   }
 
+  // Before an agent launches: is its CLI where the terminals will look? If not, ask to install it instead of opening a
+  // pane that can only print an error. When the check itself fails, launch anyway and let the pane explain.
+  async function agentReady(kind: EmbeddedTerminalKind, then: PendingLaunch): Promise<boolean> {
+    if (kind === "shell") return true;
+    let status: AgentCliStatus;
+    try {
+      status = await desktop.checkAgentCli(kind);
+    } catch {
+      return true;
+    }
+    setAgentClis((current) => current && withAgentStatus(current, status));
+    if (status.installed) return true;
+    setInstallPrompt({ status, then });
+    return false;
+  }
+
+  // Installs, updates or cleans up an agent CLI in a visible pane of the current workspace; when the pane exits,
+  // handleSetupExit re-checks the CLI and launches whatever was waiting for it.
+  async function runAgentSetup(kind: AgentCliKind, action: AgentSetupAction, then: PendingLaunch | null = null) {
+    if (!workspace) {
+      setError("Open a workspace first: the install runs in a terminal there, so you can watch it.");
+      return;
+    }
+    try {
+      const created = await desktop.spawnEmbeddedTerminal(workspace, { setup: { agent: kind, action }, cols: 96, rows: 28 });
+      setupRunsRef.current.set(created.id, { kind, action, then });
+      setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
+      setActiveRoom("command");
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleSetupExit(id: string, exitCode: number | null) {
+    const run = setupRunsRef.current.get(id);
+    if (!run) return;
+    setupRunsRef.current.delete(id);
+    // installers add their folder to PATH for new processes; pick that up before looking again
+    await desktop.refreshAgentPath().catch(() => false);
+    const report = await refreshAgentClis();
+    if (run.action === "cleanup") {
+      if (exitCode) setError(`Removing the old agent copies failed (exit code ${exitCode}). The pane shows why.`);
+      return;
+    }
+    const status = report?.agents.find((agent) => agent.kind === run.kind) ?? await desktop.checkAgentCli(run.kind).catch(() => null);
+    const label = status?.label ?? run.kind;
+    if (!status?.installed) {
+      setError(exitCode
+        ? `${run.action === "install" ? "Installing" : "Updating"} ${label} failed (exit code ${exitCode}). The pane shows why.`
+        : `${label} was installed, but \`${status?.executable ?? run.kind}\` is still not on PATH. Restart Athena, or add its folder to PATH.`);
+      return;
+    }
+    if (exitCode) {
+      setError(`${run.action === "install" ? "Installing" : "Updating"} ${label} ended with exit code ${exitCode}. The pane shows why.`);
+      return;
+    }
+    if (run.then?.type === "new") await launchEmbedded(run.then.kind, run.then.count);
+    else if (run.then?.type === "resume") await resumeAgentSession(run.then.session);
+  }
+  setupExitRef.current = (id, exitCode) => { void handleSetupExit(id, exitCode); };
+
+  async function installAndContinue() {
+    const prompt = installPrompt;
+    if (!prompt) return;
+    setInstallPrompt(null);
+    await runAgentSetup(prompt.status.kind, "install", prompt.then);
+  }
+
+  async function recheckInstallPrompt() {
+    const prompt = installPrompt;
+    if (!prompt) return;
+    try {
+      const status = await desktop.checkAgentCli(prompt.status.kind);
+      if (!status.installed) {
+        setInstallPrompt({ ...prompt, status });
+        return;
+      }
+      setInstallPrompt(null);
+      void refreshAgentClis();
+      if (prompt.then.type === "new") await launchEmbedded(prompt.then.kind, prompt.then.count);
+      else await resumeAgentSession(prompt.then.session);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function copyText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      setError("Could not copy to the clipboard.");
+    }
+  }
+
   async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1) {
     if (!workspace || busy) return;
+    if (!(await agentReady(kind, { type: "new", kind: kind as AgentCliKind, count }))) return;
     await runBusy(async () => {
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
@@ -636,6 +773,7 @@ export function App() {
 
   async function resumeAgentSession(session: AgentSession) {
     if (!workspace || busy) return;
+    if (!(await agentReady(session.provider, { type: "resume", session }))) return;
     await runBusy(async () => {
       const created = await desktop.spawnEmbeddedTerminal(workspace, {
         kind: session.provider,
@@ -778,6 +916,7 @@ export function App() {
                   onRenameEmbeddedSession={renameEmbeddedSession}
                   onRenameAgentSession={renameAgentSession}
                   onRefreshAgentSessions={refreshAgentSessions}
+                  missingAgents={missingAgents}
                   emptyMark={<AthenaMark />}
                 />
               )}
@@ -791,6 +930,9 @@ export function App() {
                   busy={busy}
                   installingHermes={installingHermes}
                   onInstallHermes={installHermes}
+                  agentClis={agentClis}
+                  canRunSetup={Boolean(workspace)}
+                  onAgentSetup={(kind, action) => void runAgentSetup(kind, action)}
                   interfaceMode={interfaceMode}
                   uiTheme={uiTheme}
                   terminalFocus={terminalFocus}
@@ -812,6 +954,17 @@ export function App() {
           </section>
         </section>
       </main>
+      {installPrompt && (
+        <AgentInstallDialog
+          status={installPrompt.status}
+          action={installPrompt.then.type === "resume" ? "resume" : "launch"}
+          onInstall={() => void installAndContinue()}
+          onRecheck={() => void recheckInstallPrompt()}
+          onCancel={() => setInstallPrompt(null)}
+          onCopy={(text) => void copyText(text)}
+          onOpenDocs={(url) => void desktop.openExternalUrl(url)}
+        />
+      )}
     </div>
   );
 }

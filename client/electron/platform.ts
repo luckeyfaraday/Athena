@@ -167,3 +167,19 @@ export function quoteShell(value: string): string {
 export function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
+
+// nvm installs each Node version's bin -- and the global CLIs linked into it
+// (codex, claude, opencode, ...) -- under ~/.nvm/versions/node/<v>/bin, and puts
+// it on PATH from an init snippet in ~/.bashrc. We launch agents with `bash -lc`,
+// a login *non-interactive* shell, which sources ~/.profile but NOT ~/.bashrc
+// (the stock ~/.bashrc returns early when non-interactive). So nvm never loads
+// and the agent looks "not installed or not on PATH" even though it runs fine in
+// a normal interactive terminal. Load nvm's default Node here, before the
+// command-v check, so PATH matches what the user sees. No-op without nvm; the
+// `--no-use` flag keeps sourcing cheap, then `nvm use` selects the default.
+export function nvmLoadBashCommand(): string {
+  return [
+    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+    'if [ -s "$NVM_DIR/nvm.sh" ]; then . "$NVM_DIR/nvm.sh" --no-use >/dev/null 2>&1; nvm use default >/dev/null 2>&1 || nvm use node >/dev/null 2>&1; fi',
+  ].join("; ");
+}

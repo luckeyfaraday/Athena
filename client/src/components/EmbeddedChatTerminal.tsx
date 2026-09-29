@@ -1,5 +1,7 @@
 import { DragEvent, FormEvent, KeyboardEvent, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   desktop,
   type EmbeddedTerminalDataPayload,
@@ -8,9 +10,12 @@ import {
 } from "../electron";
 import {
   CHAT_STREAM_ANCHOR_CHARS,
+  chatDraftForSession,
   chatStreamEndForBuffer,
+  confirmedChatPrompts,
   promptHistoryForSession,
   recordChatPromptForSession,
+  saveChatDraft,
   subscribeChatPromptHistory,
   type SentPromptBlock,
   updateChatStreamAnchor,
@@ -18,9 +23,13 @@ import {
 } from "../chat-mode";
 import { ChatTranscriptParser, SNAPSHOT_PARSE_CHARS, type ChatBlock } from "../chat-parse";
 import { isNearScrollBottom } from "../embedded-scroll";
+import { nativeChatBlocks } from "../native-chat";
+import { useNativeChat } from "../use-native-chat";
+import "./chat.css";
 
 type Props = {
   session: EmbeddedTerminalSession;
+  onOpenTerminal?: () => void;
 };
 
 /** Minimum spacing between parses/renders while output keeps streaming (TUIs redraw constantly). */
@@ -32,18 +41,42 @@ const MAX_PENDING_OUTPUT_CHARS = SNAPSHOT_PARSE_CHARS;
 const EXIT_STREAM_RECOVERY_MS = 2_500;
 const EMPTY_BLOCKS: ChatBlock[] = [];
 
-function EmbeddedChatTerminalView({ session }: Props) {
+function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const dragDepthRef = useRef(0);
   const parserRef = useRef<ChatTranscriptParser | null>(null);
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPromptState] = useState(() => chatDraftForSession(session.id));
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const attachmentRef = useRef<HTMLInputElement | null>(null);
+  const sendingRef = useRef(false);
+  const flushRef = useRef<(() => void) | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const { snapshot, snapshotRef, historyError } = useNativeChat(session);
+  function setPrompt(value: string) {
+    saveChatDraft(session.id, value);
+    setPromptState(value);
+  }
   const [sentPrompts, setSentPrompts] = useState<SentPromptBlock[]>(() => promptHistoryForSession(session));
   const sentPromptsRef = useRef(sentPrompts);
   const titleRef = useRef(session.title);
   const [chatBlocks, setChatBlocks] = useState<ChatBlock[]>(EMPTY_BLOCKS);
   const chatBlocksRef = useRef(chatBlocks);
   const [imageDropActive, setImageDropActive] = useState(false);
+  const visibleBlocks = snapshot
+    ? nativeChatBlocks(snapshot.messages, sentPrompts, session.title, confirmedChatPrompts(session.id))
+    : chatBlocks;
+  const visibleSignature = visibleBlocks.map((block) => `${block.id}:${block.text.length}`).join("|");
+
+  useLayoutEffect(() => {
+    const input = composerRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(160, Math.max(42, input.scrollHeight))}px`;
+  }, [prompt]);
 
   // Rebuild the visible blocks from the parser; re-render only when they changed
   // (the parser returns the same array instance when nothing visible changed).
@@ -82,6 +115,7 @@ function EmbeddedChatTerminalView({ session }: Props) {
     let droppedChars = 0;
     let flushTimer = 0;
     let lastFlushAt = -Infinity;
+    let attachRetryTimer = 0;
     const clearFlushTimer = () => {
       if (flushTimer) window.clearTimeout(flushTimer);
       flushTimer = 0;
@@ -112,6 +146,7 @@ function EmbeddedChatTerminalView({ session }: Props) {
       parser.skip(dropped);
       appendNow(data);
     };
+    flushRef.current = flushPendingData;
     const scheduleFlush = () => {
       if (flushTimer) return;
       const wait = Math.max(CHAT_OUTPUT_IDLE_FLUSH_MS, lastFlushAt + CHAT_OUTPUT_FLUSH_MS - performance.now());
@@ -181,8 +216,18 @@ function EmbeddedChatTerminalView({ session }: Props) {
     const attachStream = async () => {
       const generation = ++attachGeneration;
       attached = false;
-      const snapshot = await desktop.attachEmbeddedTerminalStream(session.id).catch(() => null);
-      if (!snapshot || !mounted || generation !== attachGeneration) return;
+      let snapshot;
+      try {
+        snapshot = await desktop.attachEmbeddedTerminalStream(session.id);
+      } catch (error) {
+        if (!mounted || generation !== attachGeneration) return;
+        setStreamError(error instanceof Error ? error.message : "Could not connect to the conversation.");
+        beforeAttach.length = 0;
+        attachRetryTimer = window.setTimeout(() => void attachStream(), 2_000);
+        return;
+      }
+      if (!mounted || generation !== attachGeneration) return;
+      setStreamError(null);
       streamEpoch = snapshot.epoch;
       throughSequence = snapshot.throughSequence;
       resetStream(snapshot.buffer);
@@ -209,6 +254,8 @@ function EmbeddedChatTerminalView({ session }: Props) {
       mounted = false;
       attachGeneration += 1;
       if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
+      window.clearTimeout(attachRetryTimer);
+      flushRef.current = null;
       clearFlushTimer();
       pendingData = "";
       beforeAttach.length = 0;
@@ -216,7 +263,7 @@ function EmbeddedChatTerminalView({ session }: Props) {
       removeExit();
       if (parserRef.current === parser) parserRef.current = null;
     };
-  }, [publish, session.id]);
+  }, [publish, session.id, retry]);
 
   // Follow new output only when the blocks changed and the reader is already at
   // the bottom (tracked on scroll), so reading older bubbles is never yanked.
@@ -224,17 +271,31 @@ function EmbeddedChatTerminalView({ session }: Props) {
     if (!stickToBottomRef.current) return;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [chatBlocks]);
+  }, [visibleSignature]);
 
   async function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = prompt.trim();
-    if (!trimmed || session.status !== "running") return;
+    if (!trimmed || session.status !== "running" || sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    setSendError(null);
+    // Pending terminal output belongs to the preceding turn, not this prompt.
+    flushRef.current?.();
     const marker = parserRef.current?.position ?? 0;
-    setPrompt("");
+    const nativeAfter = snapshotRef.current?.messages.at(-1)?.id;
     stickToBottomRef.current = true;
-    setSentPrompts(recordChatPromptForSession(session.id, trimmed, marker));
-    await writePromptToSession(session, trimmed);
+    try {
+      await writePromptToSession(session, trimmed);
+      setSentPrompts(recordChatPromptForSession(session.id, trimmed, marker, nativeAfter));
+      setPrompt("");
+    } catch (error) {
+      setSendError(`Message could not be sent: ${error instanceof Error ? error.message : String(error)}. Your draft is saved. Open the terminal to check whether any text reached the agent before retrying.`);
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+    }
   }
 
   useEffect(() => {
@@ -249,7 +310,7 @@ function EmbeddedChatTerminalView({ session }: Props) {
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
   }
@@ -283,10 +344,16 @@ function EmbeddedChatTerminalView({ session }: Props) {
 
     const images = Array.from(event.dataTransfer.files).filter(isImageFile);
     if (images.length === 0) return;
+    await attachImages(images);
+  }
+
+  async function attachImages(images: File[]) {
     const paths = await desktop.getDroppedFilePaths(images).catch(() => []);
     const pasted = paths.filter(Boolean).map(quoteTerminalPath).join(" ");
-    if (!pasted) return;
-    setPrompt((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${pasted} `);
+    if (!pasted) { setSendError("Could not attach the image. Try dragging it from your file manager."); return; }
+    const current = chatDraftForSession(session.id);
+    setPrompt(`${current}${current && !current.endsWith(" ") ? " " : ""}${pasted} `);
+    composerRef.current?.focus();
   }
 
   return (
@@ -299,32 +366,47 @@ function EmbeddedChatTerminalView({ session }: Props) {
     >
       <div className="embeddedChatStatus">
         <span className={`chatStatusDot ${session.status}`} />
-        <strong>{session.status === "running" ? "Running" : "Exited"}</strong>
-        <em>{session.kind}{session.pid ? ` · PID ${session.pid}` : ""}</em>
+        <strong>{session.status === "running" ? (sending ? "Sending…" : "Connected") : session.status === "failed" ? "Failed" : "Exited"}</strong>
+        <em>{session.title}</em>
+        {session.status === "running" && <button type="button" disabled={sending} title="Send Escape to interrupt or dismiss a prompt" onClick={() => {
+          void desktop.writeEmbeddedTerminal(session.id, "\x1b").catch((error) => setSendError(String(error)));
+        }}>Esc</button>}
+        {onOpenTerminal && <button type="button" onClick={onOpenTerminal} title="Open terminal for approvals, menus, and live activity"><TerminalSquare size={14} /> Terminal</button>}
       </div>
-      <div className="embeddedChatTranscript" ref={scrollRef} onScroll={handleTranscriptScroll}>
-        {chatBlocks.length ? (
-          chatBlocks.map((block) => <ChatBubble key={block.id} block={block} />)
+      <div className="embeddedChatTranscript" ref={scrollRef} onScroll={handleTranscriptScroll} aria-label="Conversation">
+        {visibleBlocks.length ? (
+          visibleBlocks.map((block) => <ChatBubble key={block.id} block={block} />)
         ) : (
           <div className="chatEmptyState">
-            <strong>{session.status === "running" ? "Waiting for assistant output" : "No useful transcript captured"}</strong>
-            <span>{session.status === "running" ? "Startup chrome and control/status lines are hidden in chat mode." : "Terminal output did not contain readable assistant content."}</span>
+            <strong>{session.status === "running" ? `Message ${session.title}` : "No conversation captured"}</strong>
+            <span>{session.status === "running" ? "Send a message to get started. Open Terminal if the agent needs an approval or a menu selection." : "Open Terminal to inspect the session output."}</span>
           </div>
         )}
       </div>
       <form className="embeddedChatComposer" onSubmit={submitPrompt}>
-        <ImagePlus size={15} />
+        {(sendError || streamError || historyError || session.error) && <div className="chatError" role="alert">
+          <span>{sendError || streamError || historyError || session.error}</span>
+          {streamError && <button type="button" onClick={() => setRetry((value) => value + 1)}>Reconnect</button>}
+        </div>}
+        <input ref={attachmentRef} type="file" accept="image/*" multiple hidden onChange={(event) => {
+          void attachImages(Array.from(event.target.files ?? []));
+          event.target.value = "";
+        }} />
+        <button type="button" title="Attach image" aria-label="Attach image" disabled={session.status !== "running" || sending} onClick={() => attachmentRef.current?.click()}><ImagePlus size={16} /></button>
         <textarea
+          ref={composerRef}
+          aria-label={`Message ${session.title}`}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={handleComposerKeyDown}
           placeholder={session.status === "running" ? `Message ${session.title}` : "Session is not running"}
-          disabled={session.status !== "running"}
+          disabled={session.status !== "running" || sending}
           rows={1}
         />
-        <button type="submit" disabled={session.status !== "running" || prompt.trim().length === 0} title="Send message">
+        <button type="submit" disabled={session.status !== "running" || sending || prompt.trim().length === 0} title="Send message" aria-label="Send message">
           <Send size={14} />
         </button>
+        <small className="chatComposerHint">Enter to send · Shift+Enter for a new line</small>
       </form>
     </div>
   );
@@ -337,7 +419,14 @@ const ChatBubble = memo(function ChatBubble({ block }: { block: ChatBlock }) {
         {block.role === "status" ? <AlertTriangle size={13} /> : block.role === "assistant" ? <TerminalSquare size={13} /> : null}
         {block.label}
       </span>
-      <pre>{block.text}</pre>
+      {block.role === "assistant"
+        ? <div className="chatMarkdown"><Markdown remarkPlugins={[remarkGfm]} components={{
+            a: ({ children, href }) => <a href={href} onClick={(event) => {
+              event.preventDefault();
+              if (href) void desktop.openExternalUrl(href).catch(() => undefined);
+            }}>{children}</a>,
+          }}>{block.text}</Markdown></div>
+        : <pre>{block.text}</pre>}
     </article>
   );
 }, (prev, next) => prev.block === next.block || (
@@ -360,6 +449,8 @@ export const EmbeddedChatTerminal = memo(EmbeddedChatTerminalView, (prev, next) 
     && a.pid === b.pid
     && a.title === b.title
     && a.initialTask === b.initialTask
+    && a.providerSessionId === b.providerSessionId
+    && a.error === b.error
   );
 });
 
@@ -367,7 +458,7 @@ async function writePromptToSession(session: EmbeddedTerminalSession, prompt: st
   await writePromptSequence(
     session.kind,
     prompt,
-    (data) => desktop.writeEmbeddedTerminal(session.id, data).catch(() => undefined),
+    (data) => desktop.writeEmbeddedTerminal(session.id, data),
     delay,
   );
 }
@@ -387,5 +478,5 @@ function isImageFile(file: File): boolean {
 }
 
 function quoteTerminalPath(path: string): string {
-  return `"${path.replace(/(["\\$`])/g, "\\$1")}"`;
+  return `"${path.replace(/"/g, '\\"')}"`;
 }

@@ -43,8 +43,21 @@ export type AdapterStatus = {
   command_path: string | null;
 };
 
+export type NativeChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  timestamp: string | null;
+};
+
+export type NativeChatSnapshot = { messages: NativeChatMessage[]; revision: string };
+
 export class BackendClient {
   constructor(private readonly baseUrl: string) {}
+
+  async chatMessages(provider: string, sessionId: string, signal: AbortSignal): Promise<NativeChatSnapshot> {
+    return this.json(`/agents/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/chat`, { signal });
+  }
 
   async hermesStatus(): Promise<HermesStatus> {
     const response = await this.json<{ hermes: HermesStatus }>("/hermes/status");

@@ -54,6 +54,12 @@ jobs:
         working-directory: client
         run: npm run build
 
+      - name: Test chat in Chromium
+        working-directory: client
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:chat-ui
+
       - name: Build and smoke-test bundled backend
         working-directory: client
         run: |
@@ -86,6 +92,7 @@ jobs:
           python -m pytest
           tests/test_hermes.py
           tests/test_app.py
+          tests/test_chat_messages.py
           tests/test_mcp_client.py
           tests/test_mcp_server.py
 

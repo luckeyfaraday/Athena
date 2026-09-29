@@ -31,8 +31,8 @@ export type ChatBlock = {
 export type ChatPrompt = ChatBlock & { role: "user"; marker: number };
 
 export const MAX_TRANSCRIPT_CHARS = 14_000;
-export const MAX_OUTPUT_BLOCKS = 8;
-export const MAX_CHAT_BLOCKS = 12;
+export const MAX_OUTPUT_BLOCKS = 100;
+export const MAX_CHAT_BLOCKS = 200;
 /** A single (newline-free) line keeps at most its last MAX_LINE_CHARS chars. */
 export const MAX_LINE_CHARS = 64_000;
 /** Raw PTY text kept around to re-split a segment when a prompt marker lands in the past. */
@@ -294,22 +294,14 @@ function cleanTerminalLine(line: string): string {
   return out.replace(BRAILLE_SPINNER, "");
 }
 
-function isJsWhitespace(c: number): boolean {
-  return c === 0x20 || (c >= 0x09 && c <= 0x0d) || c === 0xa0 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a)
-    || c === 0x2028 || c === 0x2029 || c === 0x202f || c === 0x205f || c === 0x3000 || c === 0xfeff;
-}
-
-function isBorderOrSpace(c: number): boolean {
-  return c === 0x7c || c === 0x2502 || c === 0x2503 || c === 0x2551 || isJsWhitespace(c);
-}
-
-/** Same as `.replace(/^[\s|│┃║]+/, "").replace(/[\s|│┃║]+$/, "").trimEnd()`, without regex backtracking. */
 function stripDecorativeBorders(line: string): string {
-  let start = 0;
-  let end = line.length;
-  while (start < end && isBorderOrSpace(line.charCodeAt(start))) start++;
-  while (end > start && isBorderOrSpace(line.charCodeAt(end - 1))) end--;
-  return start === 0 && end === line.length ? line : line.slice(start, end);
+  // Preserve code indentation and Markdown tables. Only strip actual TUI walls.
+  const trimmed = line.trimEnd();
+  const first = trimmed.search(/\S/);
+  let start = first >= 0 && "│┃║".includes(trimmed[first]) ? first + 1 : 0;
+  if (start && trimmed[start] === " ") start++;
+  const end = "│┃║".includes(trimmed.at(-1) ?? " ") ? trimmed.length - 1 : trimmed.length;
+  return trimmed.slice(start, end).trimEnd();
 }
 
 function normalizePromptPrefix(line: string): string {
@@ -339,7 +331,6 @@ const STARTUP_PANEL_START = anchoredUnion([
   /Available Skills\b/,
   /\[Context Workspace\]\s+\w+\s+ready\.?$/,
   /\[Context Workspace\]\s+(?:Codex|OpenCode|Claude)\s+(?:Hermes prompt|Athena context):/,
-  /╭/,
 ]);
 const STARTUP_PANEL_END = /^(?:Welcome to Hermes Agent|✦?\s*Tip:|Working \(|Ready\.|[›❯]\s*)/i;
 
@@ -373,8 +364,6 @@ const DOUBLE_NORMALIZED_CHROME = [
   // isThinkingLine
   ...THINKING_PATTERNS,
   // isLowValueFragment
-  /(?:[●•·\-*]\s*)?hi$/,
-  /[0-9]+$/,
   /[\s.·•*_-]{1,12}$/,
   // isRecallInjectionLine (first pattern)
   /You are running inside an embedded Context Workspace terminal\./,
@@ -530,9 +519,9 @@ function isStatusLine(line: string): boolean {
 /** `normalized` is normalizePromptPrefix(line); `promptComparable` is the normalized prompt text or "". */
 function isPromptEchoLine(line: string, normalized: string, promptComparable: string): boolean {
   if (EMPTY_PROMPT_LINE.test(normalized)) return true;
-  if (promptComparable && normalizeChatComparable(normalized).includes(promptComparable)) return true;
+  if (promptComparable && normalizeChatComparable(normalized) === promptComparable) return true;
   const trimmed = line.trim();
-  if (trimmed.startsWith("›") || trimmed.startsWith(">")) return true;
+  if (trimmed.startsWith("›") || trimmed.startsWith("❯")) return true;
   if (line.indexOf("@") !== -1 && SHELL_PROMPT_LINE.test(line)) return true;
   return CURRENT_STATUS_LINE.test(normalized);
 }
@@ -555,11 +544,12 @@ function classifyLine(raw: string): LineInfo {
     if (hit) return hit;
   }
   const cleaned = stripDecorativeBorders(cleanTerminalLine(raw));
+  const trimmed = cleaned.trim();
   let flags = 0;
-  if (RECALL_BLOCK_START.test(cleaned)) flags |= STARTS_RECALL;
-  if (RECALL_BLOCK_END.test(cleaned)) flags |= ENDS_RECALL;
-  if (STARTUP_PANEL_START.test(cleaned)) flags |= STARTS_PANEL;
-  if (STARTUP_PANEL_END.test(cleaned)) flags |= ENDS_PANEL;
+  if (RECALL_BLOCK_START.test(trimmed)) flags |= STARTS_RECALL;
+  if (RECALL_BLOCK_END.test(trimmed)) flags |= ENDS_RECALL;
+  if (STARTUP_PANEL_START.test(trimmed)) flags |= STARTS_PANEL;
+  if (STARTUP_PANEL_END.test(trimmed)) flags |= ENDS_PANEL;
   if (isMeaningfulChatLine(cleaned)) flags |= MEANINGFUL;
   const info = { cleaned, flags };
   if (cacheable) {
@@ -718,9 +708,8 @@ function interleaveChatTurns(outputBlocks: ChatBlock[], prompts: readonly ChatPr
   const outputBySegment = new Map<number, ChatBlock[]>();
 
   for (const block of outputBlocks) {
-    // Note: fallback-* ids fall through to segment 0 (legacy behaviour).
-    const match = /^output-(\d+)-|^status-(\d+)-/.exec(block.id);
-    const segment = Number(match?.[1] ?? match?.[2] ?? 0);
+    const match = /^(?:output|status|fallback-status|fallback)-(\d+)-/.exec(block.id);
+    const segment = Number(match?.[1] ?? 0);
     const list = outputBySegment.get(segment);
     if (list) list.push(block);
     else outputBySegment.set(segment, [block]);

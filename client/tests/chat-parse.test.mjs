@@ -173,7 +173,7 @@ test("prompt history rollover keeps segments aligned with the right prompts", ()
     fed += reply;
     assert.deepEqual(parser.view(prompts, TITLE), parseChatTranscript(fed, prompts, TITLE), `turn ${turn}`);
   }
-  assert.equal(prompts.length, 5);
+  assert.equal(prompts.length, 8);
 });
 
 test("reset parses the snapshot window from scratch", () => {
@@ -386,4 +386,17 @@ test("chatStreamEndForBuffer maps buffers into stable stream offsets", () => {
   assert.equal(chatStreamEndForBuffer(sessionId, trimmed), first.length + 14);
   // Unrelated content (anchor scrolled out): everything is treated as new.
   assert.equal(chatStreamEndForBuffer(sessionId, "fresh\r\n"), first.length + 14 + 7);
+});
+
+test("boxed startup banners cannot swallow every following reply", () => {
+  const parser = new ChatTranscriptParser();
+  parser.append("╭──────────────────╮\r\n│ Agent ready │\r\n╰──────────────────╯\r\nThe answer is here.\r\n");
+  assert.match(parser.view([], TITLE).map((block) => block.text).join("\n"), /The answer is here/);
+});
+
+test("short replies, quotes and code indentation survive terminal fallback", () => {
+  const text = "Hi\r\n42\r\n```python\r\nif True:\r\n    print(42)\r\n```\r\n> quoted answer\r\nThe word hello is a greeting.";
+  const blocks = parseChatTranscript(text, [prompt("hello", 0, 0)], TITLE);
+  const body = blocks.map((block) => block.text).join("\n");
+  for (const expected of ["Hi", "42", "    print(42)", "> quoted answer", "The word hello is a greeting."]) assert.ok(body.includes(expected), expected);
 });

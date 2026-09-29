@@ -87,6 +87,7 @@ export function CommandRoom({
   const [activeTerminalPaneByWorkspace, setActiveTerminalPaneByWorkspace] = useState<Record<string, string>>({});
   const [paneHeightsByWorkspace, setPaneHeightsByWorkspace] = useState<Record<string, Record<string, number>>>({});
   const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const [terminalViewIds, setTerminalViewIds] = useState<Set<string>>(new Set());
   const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const dragTargetRef = useRef<string | null>(null);
   const paneSetSignatureByWorkspaceRef = useRef(new Map<string, string>());
@@ -515,8 +516,15 @@ export function CommandRoom({
                 </button>
               </div>
               {displayed && !collapsedPaneIds.has(session.id) && (
-                interfaceMode === "chat"
-                  ? <EmbeddedChatTerminal session={session} />
+                interfaceMode === "chat" && session.kind !== "shell"
+                  ? terminalViewIds.has(session.id)
+                    ? <div className="chatTerminalFallback">
+                        <button type="button" className="chatViewReturn" onClick={() => setTerminalViewIds((current) => {
+                          const next = new Set(current); next.delete(session.id); return next;
+                        })}>← Back to chat</button>
+                        <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
+                      </div>
+                    : <EmbeddedChatTerminal session={session} onOpenTerminal={() => setTerminalViewIds((current) => new Set(current).add(session.id))} />
                   : <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
               )}
               {displayed && !collapsedPaneIds.has(session.id) && activeMaximizedPaneId !== session.id && (

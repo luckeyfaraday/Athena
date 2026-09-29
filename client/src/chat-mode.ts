@@ -1,6 +1,7 @@
 import type { EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
+import { INPUT_SUBMIT_DELAY_MS, terminalInputWritesForKind } from "../electron/input-sequencing.ts";
 
-export const CODEX_PROMPT_SUBMIT_DELAY_MS = 120;
+export const CODEX_PROMPT_SUBMIT_DELAY_MS = INPUT_SUBMIT_DELAY_MS;
 const chatPromptHistoryEvent = "athena:chat-prompt-history";
 
 export type SentPromptBlock = {
@@ -9,9 +10,24 @@ export type SentPromptBlock = {
   label: string;
   text: string;
   marker: number;
+  sentAt?: number;
+  nativeAfter?: string;
 };
 
 const sentPromptHistoryBySession = new Map<string, SentPromptBlock[]>();
+const drafts = new Map<string, string>();
+const nativeConfirmations = new Map<string, Map<string, string>>();
+
+export function chatDraftForSession(id: string): string { return drafts.get(id) ?? ""; }
+export function saveChatDraft(id: string, text: string): void {
+  if (text) drafts.set(id, text);
+  else drafts.delete(id);
+}
+export function confirmedChatPrompts(id: string): Map<string, string> {
+  let confirmed = nativeConfirmations.get(id);
+  if (!confirmed) { confirmed = new Map(); nativeConfirmations.set(id, confirmed); }
+  return confirmed;
+}
 
 /**
  * Prompt markers are offsets in a per-session "chat stream" coordinate system
@@ -51,7 +67,7 @@ export function updateChatStreamAnchor(sessionId: string, end: number, tail: str
 }
 
 export function promptWritesForKind(kind: EmbeddedTerminalKind, prompt: string): string[] {
-  return kind === "codex" || kind === "grok" ? [prompt, "\r"] : [`${prompt}\r`];
+  return terminalInputWritesForKind(kind, prompt).map((write) => write.data);
 }
 
 export async function writePromptSequence(
@@ -60,11 +76,9 @@ export async function writePromptSequence(
   write: (data: string) => Promise<unknown>,
   delay: (ms: number) => Promise<void>,
 ): Promise<void> {
-  const writes = promptWritesForKind(kind, prompt);
-  await write(writes[0]);
-  if (writes.length > 1) {
-    await delay(CODEX_PROMPT_SUBMIT_DELAY_MS);
-    await write(writes[1]);
+  for (const step of terminalInputWritesForKind(kind, prompt)) {
+    await write(step.data);
+    if (step.delayAfterMs) await delay(step.delayAfterMs);
   }
 }
 
@@ -84,15 +98,17 @@ export function promptHistoryForSession(session: EmbeddedTerminalSession): SentP
   return initial;
 }
 
-export function recordChatPromptForSession(sessionId: string, text: string, marker: number): SentPromptBlock[] {
+export function recordChatPromptForSession(sessionId: string, text: string, marker: number, nativeAfter?: string): SentPromptBlock[] {
   const block: SentPromptBlock = {
     id: `prompt-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     role: "user",
     label: "You",
     text,
     marker,
+    sentAt: Date.now(),
+    nativeAfter,
   };
-  const next = [...(sentPromptHistoryBySession.get(sessionId) ?? []).slice(-4), block];
+  const next = [...(sentPromptHistoryBySession.get(sessionId) ?? []).slice(-99), block];
   sentPromptHistoryBySession.set(sessionId, next);
   notifyChatPromptHistoryChanged(sessionId);
   return next;

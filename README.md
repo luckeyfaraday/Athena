@@ -84,7 +84,7 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 - Launch four-pane grids for parallel work; drag panes to reorder, resize, minimize, or maximize them.
 - Shell Focus hides the surrounding chrome so terminals fill the window (Esc exits).
 - The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, grouped by provider, with Resume, Rename, and Focus actions.
-- Chat view renders agent output as chat bubbles instead of a raw terminal.
+- Chat view reads native user and assistant messages for Codex, Claude Code, OpenCode, Athena Code, Grok, and Hermes, with terminal output as a fallback. Replies retain Markdown, code blocks, and short answers. Use the pane's **Terminal** button for approvals, menus, and live tool output, then **Back to chat** to continue with your draft intact.
 
 ### Subscription Usage
 
@@ -263,6 +263,8 @@ Run the client unit suites and build checks:
 ```bash
 cd client
 npm run test:chat
+npx playwright install chromium
+npm run test:chat-ui
 npm run test:electron
 npm run test:regression
 npm run build

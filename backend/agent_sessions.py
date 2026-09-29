@@ -559,7 +559,10 @@ def _render_codex_event(entry: dict[str, Any]) -> str | None:
             if isinstance(content, list):
                 text = "\n".join(_string_property(item, "text") or _string_property(item, "output_text") or "" for item in content if isinstance(item, dict))
                 if text.strip():
-                    return f"{prefix}: assistant\n\n{text.strip()}"
+                    # Codex records user prompts and injected developer context
+                    # as message items too; keep the role so readers can tell them apart.
+                    role = _string_property(payload, "role") or "assistant"
+                    return f"{prefix}: {role}\n\n{text.strip()}"
         name = _string_property(payload, "name")
         arguments = _string_property(payload, "arguments")
         output = _string_property(payload, "output")

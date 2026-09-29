@@ -1,4 +1,3 @@
-import type { RecallSourceSession, RecallStatus } from "./api";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
 import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
 import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils";
@@ -6,26 +5,6 @@ import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils";
 export { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
 
 export type SessionProviderFilter = AgentSession["provider"] | "all";
-
-export type AgentTranscriptState = {
-  key: string;
-  text: string;
-  loading: boolean;
-  error: string | null;
-};
-
-export type HandoffPreview = {
-  markdown: string;
-  bytes: number;
-  sourceCount: number;
-  sourceTitles: string[];
-  schemaVersion: number;
-  handoffId: string;
-  confidence: string;
-  sourceWorkspaces: string[];
-  sourceSessions: RecallSourceSession[];
-  workspace: string;
-};
 
 const deletedAgentSessionsStoragePrefix = "context-workspace:deleted-agent-sessions:";
 const renamedSessionsStoragePrefix = "context-workspace:renamed-sessions:";
@@ -115,24 +94,6 @@ export function formatAge(ageSeconds: number): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function formatAbsoluteTime(value: string): string {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value;
-  return new Date(timestamp).toLocaleString();
-}
-
-export function recallAuditLines(recall: RecallStatus | null): string[] {
-  if (!recall) return [];
-  return [
-    recall.source ? `Source: ${recall.source}` : null,
-    recall.source_count != null ? `Sources: ${recall.source_count}` : null,
-    recall.source_titles.length ? `Source titles: ${recall.source_titles.slice(0, 3).join("; ")}` : null,
-    recall.used_for_launch_at
-      ? `Used for launch: ${formatAbsoluteTime(recall.used_for_launch_at)}${recall.last_launch_agent ? ` (${recall.last_launch_agent})` : ""}`
-      : "Used for launch: not yet",
-  ].filter((line): line is string => Boolean(line));
-}
-
 export function terminalGridTitles(kind: EmbeddedTerminalKind): string[] {
   if (kind === "hermes") return ["Hermes"];
   if (kind === "codex") return ["Codex Builder", "Codex Reviewer", "Codex Scout", "Codex Fixer"];
@@ -176,8 +137,4 @@ export function formatSessionTime(value: string): string {
   if (!Number.isFinite(timestamp)) return "unknown";
   const ageSeconds = Math.max(0, (Date.now() - timestamp) / 1000);
   return formatAge(ageSeconds);
-}
-
-export function byteLength(value: string): number {
-  return new TextEncoder().encode(value).length;
 }

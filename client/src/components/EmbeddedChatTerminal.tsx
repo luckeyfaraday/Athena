@@ -1,4 +1,4 @@
-import { DragEvent, FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, FormEvent, KeyboardEvent, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, ImagePlus, Send, TerminalSquare } from "lucide-react";
 import {
   desktop,
@@ -7,41 +7,67 @@ import {
   type EmbeddedTerminalSession,
 } from "../electron";
 import {
+  CHAT_STREAM_ANCHOR_CHARS,
+  chatStreamEndForBuffer,
   promptHistoryForSession,
   recordChatPromptForSession,
   subscribeChatPromptHistory,
   type SentPromptBlock,
+  updateChatStreamAnchor,
   writePromptSequence,
 } from "../chat-mode";
+import { ChatTranscriptParser, SNAPSHOT_PARSE_CHARS, type ChatBlock } from "../chat-parse";
 import { isNearScrollBottom } from "../embedded-scroll";
 
 type Props = {
   session: EmbeddedTerminalSession;
 };
 
-const MAX_CHAT_BUFFER_CHARS = 80_000;
-const MAX_OUTPUT_CHARS = 14_000;
-const MAX_OUTPUT_BLOCKS = 8;
-const CHAT_OUTPUT_FLUSH_MS = 32;
+/** Minimum spacing between parses/renders while output keeps streaming (TUIs redraw constantly). */
+const CHAT_OUTPUT_FLUSH_MS = 200;
+/** Delay for the first flush after a quiet period, so sporadic output (echo, short replies) stays snappy. */
+const CHAT_OUTPUT_IDLE_FLUSH_MS = 32;
+/** Output beyond this per flush is dropped from the front (the parser records the gap). */
+const MAX_PENDING_OUTPUT_CHARS = SNAPSHOT_PARSE_CHARS;
 const EXIT_STREAM_RECOVERY_MS = 2_500;
+const EMPTY_BLOCKS: ChatBlock[] = [];
 
-type ChatBlock = {
-  id: string;
-  role: "user" | "assistant" | "status";
-  label: string;
-  text: string;
-};
-
-export function EmbeddedChatTerminal({ session }: Props) {
+function EmbeddedChatTerminalView({ session }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const dragDepthRef = useRef(0);
-  const [buffer, setBuffer] = useState("");
+  const parserRef = useRef<ChatTranscriptParser | null>(null);
   const [prompt, setPrompt] = useState("");
   const [sentPrompts, setSentPrompts] = useState<SentPromptBlock[]>(() => promptHistoryForSession(session));
+  const sentPromptsRef = useRef(sentPrompts);
+  const titleRef = useRef(session.title);
+  const [chatBlocks, setChatBlocks] = useState<ChatBlock[]>(EMPTY_BLOCKS);
+  const chatBlocksRef = useRef(chatBlocks);
   const [imageDropActive, setImageDropActive] = useState(false);
 
+  // Rebuild the visible blocks from the parser; re-render only when they changed
+  // (the parser returns the same array instance when nothing visible changed).
+  const publish = useCallback((parser: ChatTranscriptParser | null) => {
+    if (!parser || parser !== parserRef.current) return;
+    const next = parser.view(sentPromptsRef.current, titleRef.current);
+    if (next === chatBlocksRef.current) return;
+    chatBlocksRef.current = next;
+    setChatBlocks(next);
+  }, []);
+
+  useLayoutEffect(() => {
+    sentPromptsRef.current = sentPrompts;
+    titleRef.current = session.title;
+    publish(parserRef.current);
+  }, [publish, sentPrompts, session.title]);
+
   useEffect(() => {
+    const parser = new ChatTranscriptParser();
+    parserRef.current = parser;
+    if (chatBlocksRef.current !== EMPTY_BLOCKS) {
+      chatBlocksRef.current = EMPTY_BLOCKS;
+      setChatBlocks(EMPTY_BLOCKS);
+    }
     let mounted = true;
     let attached = false;
     let streamEpoch: string | null = null;
@@ -53,20 +79,51 @@ export function EmbeddedChatTerminal({ session }: Props) {
     let exitRecoveryTimer = 0;
     const beforeAttach: EmbeddedTerminalDataPayload[] = [];
     let pendingData = "";
+    let droppedChars = 0;
     let flushTimer = 0;
-    const flushPendingData = () => {
+    let lastFlushAt = -Infinity;
+    const clearFlushTimer = () => {
+      if (flushTimer) window.clearTimeout(flushTimer);
       flushTimer = 0;
-      if (!mounted || !pendingData) return;
-      const data = pendingData;
+    };
+    const resetStream = (text: string) => {
+      clearFlushTimer();
       pendingData = "";
-      setBuffer((current) => capChatBuffer(`${current}${data}`));
+      droppedChars = 0;
+      // Map the snapshot into the session's stream coordinates so prompt
+      // markers recorded before a remount still land in the right place.
+      const end = chatStreamEndForBuffer(session.id, text);
+      parser.reset(text, sentPromptsRef.current.map((block) => block.marker), end - text.length);
+      publish(parser);
+    };
+    const appendNow = (text: string) => {
+      parser.append(text);
+      updateChatStreamAnchor(session.id, parser.position, parser.recentRaw(CHAT_STREAM_ANCHOR_CHARS));
+      publish(parser);
+    };
+    const flushPendingData = () => {
+      clearFlushTimer();
+      if (!mounted || (!pendingData && !droppedChars)) return;
+      const data = pendingData;
+      const dropped = droppedChars;
+      pendingData = "";
+      droppedChars = 0;
+      lastFlushAt = performance.now();
+      parser.skip(dropped);
+      appendNow(data);
     };
     const scheduleFlush = () => {
       if (flushTimer) return;
-      flushTimer = window.setTimeout(flushPendingData, CHAT_OUTPUT_FLUSH_MS);
+      const wait = Math.max(CHAT_OUTPUT_IDLE_FLUSH_MS, lastFlushAt + CHAT_OUTPUT_FLUSH_MS - performance.now());
+      flushTimer = window.setTimeout(flushPendingData, wait);
     };
     const enqueueOutput = (data: string) => {
-      pendingData = capChatBuffer(`${pendingData}${data}`);
+      pendingData += data;
+      if (pendingData.length > MAX_PENDING_OUTPUT_CHARS) {
+        const excess = pendingData.length - MAX_PENDING_OUTPUT_CHARS;
+        droppedChars += excess;
+        pendingData = pendingData.slice(excess);
+      }
       scheduleFlush();
     };
     const renderPendingExit = () => {
@@ -83,10 +140,10 @@ export function EmbeddedChatTerminal({ session }: Props) {
         if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
         exitRecoveryTimer = 0;
         flushPendingData();
-        setBuffer((current) => capChatBuffer(
-          `${current}\n[Athena: final terminal history expired before this view attached]`
+        appendNow(
+          "\n[Athena: final terminal history expired before this view attached]"
           + `\n[process exited: ${exit.exitCode ?? "unknown"}]\n`,
-        ));
+        );
         return;
       }
       if ((pendingExit.throughSequence ?? throughSequence) > throughSequence) {
@@ -104,7 +161,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
       if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
       exitRecoveryTimer = 0;
       flushPendingData();
-      setBuffer((current) => capChatBuffer(`${current}\n[process exited: ${exit.exitCode ?? "unknown"}]\n`));
+      appendNow(`\n[process exited: ${exit.exitCode ?? "unknown"}]\n`);
     };
     const applyPayload = (payload: EmbeddedTerminalDataPayload) => {
       if (!attached) {
@@ -117,14 +174,8 @@ export function EmbeddedChatTerminal({ session }: Props) {
       }
       if (payload.sequence <= throughSequence) return;
       throughSequence = payload.sequence;
-      if (payload.reset) {
-        if (flushTimer) window.clearTimeout(flushTimer);
-        flushTimer = 0;
-        pendingData = "";
-        setBuffer(capChatBuffer(payload.data));
-      } else {
-        enqueueOutput(payload.data);
-      }
+      if (payload.reset) resetStream(payload.data);
+      else enqueueOutput(payload.data);
       renderPendingExit();
     };
     const attachStream = async () => {
@@ -134,8 +185,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
       if (!snapshot || !mounted || generation !== attachGeneration) return;
       streamEpoch = snapshot.epoch;
       throughSequence = snapshot.throughSequence;
-      pendingData = "";
-      setBuffer(capChatBuffer(snapshot.buffer));
+      resetStream(snapshot.buffer);
       attached = true;
       const deferred = beforeAttach.splice(0);
       for (const payload of deferred) {
@@ -159,27 +209,28 @@ export function EmbeddedChatTerminal({ session }: Props) {
       mounted = false;
       attachGeneration += 1;
       if (exitRecoveryTimer) window.clearTimeout(exitRecoveryTimer);
-      if (flushTimer) window.clearTimeout(flushTimer);
+      clearFlushTimer();
       pendingData = "";
       beforeAttach.length = 0;
       removeData();
       removeExit();
+      if (parserRef.current === parser) parserRef.current = null;
     };
-  }, [session.id]);
+  }, [publish, session.id]);
 
-  const outputBlocks = useMemo(() => terminalTextToBlocks(buffer, session, sentPrompts), [buffer, session, sentPrompts]);
-  const chatBlocks = useMemo(() => interleaveChatTurns(outputBlocks, sentPrompts).slice(-12), [outputBlocks, sentPrompts]);
-
-  useEffect(() => {
+  // Follow new output only when the blocks changed and the reader is already at
+  // the bottom (tracked on scroll), so reading older bubbles is never yanked.
+  useLayoutEffect(() => {
     if (!stickToBottomRef.current) return;
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [buffer, chatBlocks]);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chatBlocks]);
 
   async function submitPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = prompt.trim();
     if (!trimmed || session.status !== "running") return;
-    const marker = buffer.length;
+    const marker = parserRef.current?.position ?? 0;
     setPrompt("");
     stickToBottomRef.current = true;
     setSentPrompts(recordChatPromptForSession(session.id, trimmed, marker));
@@ -253,15 +304,7 @@ export function EmbeddedChatTerminal({ session }: Props) {
       </div>
       <div className="embeddedChatTranscript" ref={scrollRef} onScroll={handleTranscriptScroll}>
         {chatBlocks.length ? (
-          chatBlocks.map((block) => (
-            <article key={block.id} className={`chatBubble ${block.role}`}>
-              <span>
-                {block.role === "status" ? <AlertTriangle size={13} /> : block.role === "assistant" ? <TerminalSquare size={13} /> : null}
-                {block.label}
-              </span>
-              <pre>{block.text}</pre>
-            </article>
-          ))
+          chatBlocks.map((block) => <ChatBubble key={block.id} block={block} />)
         ) : (
           <div className="chatEmptyState">
             <strong>{session.status === "running" ? "Waiting for assistant output" : "No useful transcript captured"}</strong>
@@ -287,6 +330,39 @@ export function EmbeddedChatTerminal({ session }: Props) {
   );
 }
 
+const ChatBubble = memo(function ChatBubble({ block }: { block: ChatBlock }) {
+  return (
+    <article className={`chatBubble ${block.role}`}>
+      <span>
+        {block.role === "status" ? <AlertTriangle size={13} /> : block.role === "assistant" ? <TerminalSquare size={13} /> : null}
+        {block.label}
+      </span>
+      <pre>{block.text}</pre>
+    </article>
+  );
+}, (prev, next) => prev.block === next.block || (
+  prev.block.role === next.block.role
+  && prev.block.label === next.block.label
+  && prev.block.text === next.block.text
+));
+
+/**
+ * Parent panes re-render (and hand us fresh session objects) on every session
+ * poll; only re-render for the session fields this view actually reads.
+ */
+export const EmbeddedChatTerminal = memo(EmbeddedChatTerminalView, (prev, next) => {
+  const a = prev.session;
+  const b = next.session;
+  return a === b || (
+    a.id === b.id
+    && a.kind === b.kind
+    && a.status === b.status
+    && a.pid === b.pid
+    && a.title === b.title
+    && a.initialTask === b.initialTask
+  );
+});
+
 async function writePromptToSession(session: EmbeddedTerminalSession, prompt: string): Promise<void> {
   await writePromptSequence(
     session.kind,
@@ -296,392 +372,8 @@ async function writePromptToSession(session: EmbeddedTerminalSession, prompt: st
   );
 }
 
-function terminalTextToBlocks(value: string, session: EmbeddedTerminalSession, sentPrompts: SentPromptBlock[]): ChatBlock[] {
-  const segments = splitBufferIntoTurnSegments(value, sentPrompts.map((block) => block.marker));
-  const blocks: ChatBlock[] = [];
-
-  segments.forEach((segment, segmentIndex) => {
-    const transcript = normalizeTerminalText(segment);
-    if (!transcript) return;
-
-    const promptText = sentPrompts[segmentIndex - 1]?.text;
-    const lines = transcript.split("\n");
-    const statusLines = lines.filter(isStatusLine).slice(-2);
-    const body = lines
-      .filter((line) => !isStatusLine(line))
-      .filter((line) => !isPromptEchoLine(line, promptText))
-      .filter((line) => !isThinkingLine(line))
-      .join("\n")
-      .trim();
-
-    statusLines.forEach((line, index) => {
-      blocks.push({
-        id: `status-${segmentIndex}-${index}-${line}`,
-        role: "status",
-        label: "Status",
-        text: line,
-      });
-    });
-
-    const chunks = splitOutputIntoChunks(body);
-    if (chunks.length === 0) {
-      const fallback = rawTranscriptFallback(lines, promptText);
-      if (fallback) {
-        blocks.push({
-          id: `fallback-status-${segmentIndex}-${fallback.slice(0, 32)}`,
-          role: "status",
-          label: "Fallback",
-          text: "Raw transcript shown because chat parsing could not confidently group this output.",
-        });
-        blocks.push({
-          id: `fallback-${segmentIndex}-${fallback.slice(0, 32)}`,
-          role: "assistant",
-          label: session.title,
-          text: fallback,
-        });
-      }
-      return;
-    }
-    chunks.forEach((chunk, index) => {
-      blocks.push({
-        id: `output-${segmentIndex}-${index}-${chunk.slice(0, 32)}`,
-        role: "assistant",
-        label: session.title,
-        text: chunk,
-      });
-    });
-  });
-
-  return blocks.slice(-MAX_OUTPUT_BLOCKS);
-}
-
-function interleaveChatTurns(outputBlocks: ChatBlock[], sentPrompts: SentPromptBlock[]): ChatBlock[] {
-  const blocks: ChatBlock[] = [];
-  const outputBySegment = new Map<number, ChatBlock[]>();
-
-  for (const block of outputBlocks) {
-    const match = /^output-(\d+)-|^status-(\d+)-/.exec(block.id);
-    const segment = Number(match?.[1] ?? match?.[2] ?? 0);
-    outputBySegment.set(segment, [...(outputBySegment.get(segment) ?? []), block]);
-  }
-
-  if (sentPrompts.length === 0) blocks.push(...(outputBySegment.get(0) ?? []));
-  sentPrompts.forEach((promptBlock, index) => {
-    blocks.push(promptBlock);
-    blocks.push(...(outputBySegment.get(index + 1) ?? []));
-  });
-
-  for (const [segment, segmentBlocks] of outputBySegment) {
-    if (segment > sentPrompts.length) blocks.push(...segmentBlocks);
-  }
-  return blocks;
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function splitBufferIntoTurnSegments(value: string, markers: number[]): string[] {
-  const validMarkers = [...new Set(markers)]
-    .filter((marker) => marker >= 0 && marker < value.length)
-    .sort((left, right) => left - right);
-  if (validMarkers.length === 0) return [value];
-
-  const segments: string[] = [];
-  let start = 0;
-  for (const marker of validMarkers) {
-    segments.push(value.slice(start, marker));
-    start = marker;
-  }
-  segments.push(value.slice(start));
-  return segments;
-}
-
-function normalizeTerminalText(value: string): string {
-  const lines = renderTerminalSnapshot(value)
-    .replace(/\r\n/g, "\n")
-    .replace(/\r+/g, "\n")
-    .split("\n")
-    .map(cleanTerminalLine)
-    .map(stripDecorativeBorders);
-  const clean = filterMeaningfulChatLines(lines)
-    .filter((line, index, lines) => line.trim() || lines[index - 1]?.trim())
-    .join("\n")
-    .trim()
-    .slice(-MAX_OUTPUT_CHARS);
-  return clean;
-}
-
-function renderTerminalSnapshot(value: string): string {
-  if (!value.trim()) return "";
-  return stripAnsi(value);
-}
-
-function capChatBuffer(value: string): string {
-  return value.length > MAX_CHAT_BUFFER_CHARS ? value.slice(-MAX_CHAT_BUFFER_CHARS) : value;
-}
-
-function stripAnsi(value: string): string {
-  return value
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x9b[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b[()][A-Za-z0-9]/g, "")
-    .replace(/\x1b[@-_]/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
-
-function cleanTerminalLine(line: string): string {
-  return line
-    .replace(/\u001b/g, "")
-    .replace(/\[[0-9]+;[0-9]+H/g, "")
-    .replace(/\[[0-9]+[A-Z]/g, "")
-    .replace(/[⠁-⣿⠀]/g, "")
-    .replace(/[ \t]+$/g, "");
-}
-
-function filterMeaningfulChatLines(lines: string[]): string[] {
-  const filtered: string[] = [];
-  let skippingStartupPanel = false;
-  let skippingRecallBlock = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (startsRecallBlock(trimmed)) {
-      skippingRecallBlock = true;
-      continue;
-    }
-    if (skippingRecallBlock) {
-      if (/^(Working \(|Ready\.|Welcome to Hermes Agent|[›❯]\s*)/i.test(trimmed)) skippingRecallBlock = false;
-      else continue;
-    }
-
-    if (startsStartupPanel(trimmed)) {
-      skippingStartupPanel = true;
-      continue;
-    }
-    if (skippingStartupPanel) {
-      if (/^(Welcome to Hermes Agent|✦?\s*Tip:|Working \(|Ready\.|[›❯]\s*)/i.test(trimmed)) {
-        skippingStartupPanel = false;
-      }
-      continue;
-    }
-
-    if (isMeaningfulChatLine(line)) filtered.push(line);
-  }
-  return filtered;
-}
-
-function stripDecorativeBorders(line: string): string {
-  return line
-    .replace(/^[\s|│┃║]+/, "")
-    .replace(/[\s|│┃║]+$/, "")
-    .trimEnd();
-}
-
-function startsStartupPanel(line: string): boolean {
-  return /^Available Tools\b/i.test(line)
-    || /^MCP Servers\b/i.test(line)
-    || /^Available Skills\b/i.test(line)
-    || /^\[Context Workspace\]\s+\w+\s+ready\.?$/i.test(line)
-    || /^\[Context Workspace\]\s+(Codex|OpenCode|Claude)\s+(Hermes prompt|Athena context):/i.test(line)
-    || /^╭/.test(line);
-}
-
-function startsRecallBlock(line: string): boolean {
-  return /^[›❯]?\s*You are running inside an embedded Context Workspace terminal\./i.test(line);
-}
-
-function isMeaningfulChatLine(line: string): boolean {
-  const trimmed = normalizePromptPrefix(line.trim());
-  if (!trimmed) return true;
-  if (isTransientControlLine(trimmed)) return false;
-  if (isThinkingLine(trimmed)) return false;
-  if (isLowValueFragment(trimmed)) return false;
-  if (isBoxDrawingLine(trimmed)) return false;
-  if (isStartupChromeLine(trimmed)) return false;
-  if (isRecallInjectionLine(trimmed)) return false;
-  if (isRedrawNoiseLine(trimmed)) return false;
-  return true;
-}
-
-function isBoxDrawingLine(line: string): boolean {
-  const boxChars = line.match(/[╭╮╯╰│─┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬━┃┏┓┗┛┣┫┳┻╋]/g)?.length ?? 0;
-  return boxChars > 0 && boxChars / Math.max(line.length, 1) > 0.18;
-}
-
-function isStartupChromeLine(line: string): boolean {
-  return /^\[Context Workspace\]\s+\w+\s+ready\.?$/i.test(line)
-    || /^\[Context Workspace\]\s+(Codex|OpenCode|Claude)\s+(Hermes prompt|Athena context):/i.test(line)
-    || /^\[Context Workspace\]\s+OpenCode baseline binary selected/i.test(line)
-    || /^Available Tools\b/i.test(line)
-    || /^MCP Servers\b/i.test(line)
-    || /^Available Skills\b/i.test(line)
-    || /^\(?and \d+ more toolsets/i.test(line)
-    || /^\d+\s+tools\s+·\s+\d+\s+skills/i.test(line)
-    || /^Welcome to Hermes Agent/i.test(line)
-    || /^✦?\s*Tip:/i.test(line)
-    || /^[-•]?\s*Starting MCP servers/i.test(line)
-    || /^Working \(/i.test(line)
-    || /^Ready\.$/i.test(line)
-    || /^[_>]\s+OpenAI Codex/i.test(line)
-    || /^OpenCode\b/i.test(line)
-    || /^model:\s+/i.test(line)
-    || /^directory:\s+/i.test(line)
-    || /^cwd:\s+/i.test(line)
-    || /^provider:\s+/i.test(line)
-    || /^session:\s+/i.test(line)
-    || /^\/\w+\s+to\s+/i.test(line)
-    || /^Tip:\s+/i.test(line)
-    || /^gpt-[\w.-]+\s+/i.test(line)
-    || /^MiniMax-[\w.-]+\s+·/i.test(line)
-    || /^Session:\s+\d{8}_/i.test(line)
-    || /^(browser|browser-cdp|clarify|code_execution|computer_use|cronjob|delegation|discord|email|gaming|general|github|hermes-agent|mcp|media|mlops|note-taking|productivity|projects|research|software-development|trading):\s+/i.test(line);
-}
-
-function isRecallInjectionLine(line: string): boolean {
-  const trimmed = normalizePromptPrefix(line);
-  return /^You are running inside an embedded Context Workspace terminal\./i.test(trimmed)
-    || /^Agent:\s+/i.test(line)
-    || /^Pane:\s+/i.test(line)
-    || /^Workspace:\s+/i.test(line)
-    || /^Context Workspace refreshed Hermes recall/i.test(line)
-    || /^Recall cache path:/i.test(line)
-    || /^Use the recall cache as short-lived project context/i.test(line)
-    || /^Hermes session recall is attached below/i.test(line)
-    || /^# Hermes recall for Context Workspace/i.test(line)
-    || /^Generated by Context Workspace/i.test(line)
-    || /^## (Current workspace|Operating contract|Native agent sessions)$/i.test(line)
-    || /^- Project:\s+/i.test(line)
-    || /^- Task hint:\s+/i.test(line)
-    || /^- Backend:\s+/i.test(line)
-    || /^- Hermes owns durable memory/i.test(line)
-    || /^- Context Workspace owns app-side tools/i.test(line)
-    || /^- Agents should consume this generated recall/i.test(line)
-    || /^Native agent sessions for this workspace:/i.test(line)
-    || /^-\s+\d{4}-\d{2}-\d{2}T.*\[(codex|opencode|athena|claude|hermes),/i.test(line)
-    || /^resume:\s+`?(codex|opencode|athena-code|claude|hermes)\s+/i.test(line)
-    || /^Hermes memory is attached below/i.test(line)
-    || /^No Hermes memory entries are available\./i.test(line);
-}
-
-function isRedrawNoiseLine(line: string): boolean {
-  const compact = line.replace(/\s+/g, "");
-  return compact.length > 80 && /(StartingMCP|openaiDeveloperDocs|Working\(|esc to interrupt)/i.test(compact)
-    || /(.)\1{8,}/.test(compact)
-    || /(?:Sta|Start|Starti|Starting|MCP|server|servers).*(?:Sta|Start|Starti|Starting|MCP|server|servers).*(?:Sta|Start|Starti|Starting|MCP|server|servers)/i.test(line);
-}
-
-function isTransientControlLine(line: string): boolean {
-  const trimmed = normalizePromptPrefix(line);
-  return /^msg=interrupt\s+·?\s*\/queue\s+·?\s*\/bg\s+·?\s*\/steer\s+·?\s*Ctrl\+C cancel/i.test(trimmed)
-    || /^msg=interrupt\s+\/queue\s+\/bg\s+\/steer/i.test(trimmed)
-    || /^Initializing agent/i.test(trimmed)
-    || /^(ctx|tokens?)\s/i.test(trimmed)
-    || /^\d+(?:\.\d+)?[KMB]?\s*\(\d+%\)/i.test(trimmed)
-    || /^Starting MCP servers/i.test(trimmed)
-    || /^Working\s*\(/i.test(trimmed)
-    || /^Explore\s*\(/i.test(trimmed)
-    || /^Build\s*·/i.test(trimmed)
-    || /^Parent up\s+Prev left\s+Next right/i.test(trimmed)
-    || /^\d+s\s*·\s*esc to interrupt/i.test(trimmed)
-    || /^esc to interrupt/i.test(trimmed)
-    || /^\]?\d+;rgb:[0-9a-f/]+$/i.test(trimmed);
-}
-
-function isThinkingLine(line: string): boolean {
-  const trimmed = normalizePromptPrefix(line);
-  return /^\S*[\s)]*(reflecting|reasoning|ruminating|thinking|working|formulating|mulling|cogitating)\.{0,3}$/i.test(trimmed)
-    || /^\(.*\)\s*(reflecting|reasoning|ruminating|thinking|working|formulating|mulling|cogitating)\.{0,3}$/i.test(trimmed);
-}
-
-function isLowValueFragment(line: string): boolean {
-  const trimmed = normalizePromptPrefix(line);
-  return /^(?:[●•·\-*]\s*)?hi$/i.test(trimmed)
-    || /^etc\.?\s+in\s+config\.ya?ml\.?$/i.test(line)
-    || /^[0-9]+$/.test(trimmed)
-    || /^[\s.·•*_-]{1,12}$/.test(trimmed);
-}
-
-function splitOutputIntoChunks(value: string): string[] {
-  if (!value.trim()) return [];
-  return value
-    .split(/\n{3,}/)
-    .map((chunk) => chunk.trim())
-    .filter(Boolean)
-    .flatMap((chunk) => splitLargeChunk(chunk, 2600));
-}
-
-function splitLargeChunk(value: string, maxChars: number): string[] {
-  if (value.length <= maxChars) return [value];
-  const chunks: string[] = [];
-  let remaining = value;
-  while (remaining.length > maxChars) {
-    const splitAt = Math.max(remaining.lastIndexOf("\n", maxChars), Math.floor(maxChars * 0.72));
-    chunks.push(remaining.slice(0, splitAt).trim());
-    remaining = remaining.slice(splitAt).trim();
-  }
-  if (remaining) chunks.push(remaining);
-  return chunks;
-}
-
-function rawTranscriptFallback(lines: string[], promptText?: string): string {
-  return lines
-    .map(stripDecorativeBorders)
-    .map((line) => line.trimEnd())
-    .filter((line) => isRawFallbackLine(line, promptText))
-    .join("\n")
-    .trim()
-    .slice(-4000);
-}
-
-function isRawFallbackLine(line: string, promptText?: string): boolean {
-  const trimmed = normalizePromptPrefix(line.trim());
-  if (!trimmed) return false;
-  if (isStatusLine(trimmed)) return false;
-  if (isPromptEchoLine(line, promptText)) return false;
-  if (isThinkingLine(trimmed)) return false;
-  if (isLowValueFragment(trimmed)) return false;
-  if (isBoxDrawingLine(trimmed)) return false;
-  if (isStartupChromeLine(trimmed)) return false;
-  if (isRecallInjectionLine(trimmed)) return false;
-  if (isTransientControlLine(trimmed)) return false;
-  return true;
-}
-
-function isStatusLine(line: string): boolean {
-  return /^\[process exited:/i.test(line)
-    || /\b(error|failed|exception|traceback|permission denied|not found)\b/i.test(line);
-}
-
-function isPromptEchoLine(line: string, promptText?: string): boolean {
-  const trimmed = normalizePromptPrefix(line);
-  const comparable = normalizeChatComparable(trimmed);
-  const promptComparable = promptText ? normalizeChatComparable(promptText) : "";
-  return /^(?:[$#>]\s*)?$/.test(trimmed)
-    || Boolean(promptComparable && comparable === promptComparable)
-    || Boolean(promptComparable && comparable.includes(promptComparable))
-    || Boolean(promptComparable && /^task:\s*/i.test(comparable) && comparable.includes(promptComparable))
-    || /^›\s*/.test(line.trim())
-    || /^>\s*/.test(line.trim())
-    || /^[\w.-]+@[\w.-]+:[^$#]*[$#]\s*$/.test(line)
-    || /^Current status:\s*$/i.test(trimmed);
-}
-
-function normalizeChatComparable(value: string): string {
-  return value
-    .replace(/\s+/g, " ")
-    .replace(/[.。]+$/g, "")
-    .trim()
-    .toLowerCase();
-}
-
-function normalizePromptPrefix(line: string): string {
-  return line
-    .replace(/^[\s⚕✦●•·*_\-│┃║]+/, "")
-    .replace(/^[›❯>$#]\s*/, "")
-    .trim();
 }
 
 function hasImageFiles(dataTransfer: DataTransfer): boolean {

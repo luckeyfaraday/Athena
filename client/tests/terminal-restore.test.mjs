@@ -6,10 +6,14 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { readFilePrefix } from "../dist-electron/file-prefix.js";
 import {
   claudeProjectPathCandidates,
+  codexDatedSessionDirectories,
+  codexDiscoveryFiles,
   codexSessionIdForWorkspace,
   encodeResolvedClaudeProjectPath,
+  readLeadingLines,
   effectiveCreationMs,
   hasMissingSavedRestoreIdentity,
   openCodeDatabaseCandidates,
@@ -308,7 +312,7 @@ test("openCodeSessionCandidates keeps only rows for the selected workspace", () 
 });
 
 test("opencode session discovery finds the session created by this spawn", async (t) => {
-  if (!(await hasPython())) return t.skip("python3 is not available");
+  if (!(await hasPython())) return t.skip("no sqlite driver (node:sqlite or python3) is available");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-opencode-db-"));
   const workspace = path.join(root, "workspace");
   const dbPath = path.join(root, "opencode-.db");
@@ -326,7 +330,129 @@ test("opencode session discovery finds the session created by this spawn", async
   assert.equal(await openCodeSessionExists([path.join(root, "missing.db")], "ses_own"), false);
 });
 
+function localDayPath(root, ms) {
+  const date = new Date(ms);
+  return path.join(root, String(date.getFullYear()), String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0"));
+}
+
+test("codex discovery covers the local and UTC days of the spawn window, including midnight rollover", () => {
+  const sessions = path.join(path.sep, "home", "dev", ".codex", "sessions");
+  const now = new Date(2026, 8, 30, 0, 0, 5).getTime();
+  const since = now - 60_000;
+  const directories = codexDatedSessionDirectories(sessions, since, now);
+  assert.ok(directories.includes(localDayPath(sessions, since)), "yesterday (local) is scanned across midnight");
+  assert.ok(directories.includes(localDayPath(sessions, now)), "today (local) is scanned");
+  assert.ok(directories.length <= 4, "only local + UTC calendar days of the window are listed");
+  assert.equal(allDatedFolders(directories), true);
+  // Restores of old entries (wide windows) fall back to the bounded walk.
+  assert.equal(codexDatedSessionDirectories(sessions, now - 10 * 24 * 60 * 60 * 1000, now), null);
+});
+
+function allDatedFolders(directories) {
+  return directories.every((directory) => /[\\/]\d{4}[\\/]\d{2}[\\/]\d{2}$/.test(directory));
+}
+
+test("codex discovery lists today's dated folder instead of walking the whole history", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-dated-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const sessions = path.join(root, "sessions");
+  const now = Date.now();
+  const workspace = path.join(root, "workspace");
+  const oldDay = path.join(sessions, "2020", "01", "01");
+  const today = localDayPath(sessions, now);
+  await fs.mkdir(oldDay, { recursive: true });
+  await fs.mkdir(today, { recursive: true });
+  // Same workspace, freshly written, but filed under an old day: a full walk
+  // would consider it; dated discovery must not even list it.
+  await fs.writeFile(path.join(oldDay, "stale.jsonl"), JSON.stringify({ type: "session_meta", payload: { id: "stale-folder", cwd: workspace } }));
+
+  assert.deepEqual(await codexDiscoveryFiles(sessions, now - 10_000, now), []);
+  assert.equal(await codexSessionIdForWorkspace(sessions, workspace, now - 5_000), null);
+
+  await fs.writeFile(path.join(today, "rollout-today.jsonl"), JSON.stringify({ type: "session_meta", payload: { id: "today-session", cwd: workspace } }));
+  assert.deepEqual((await codexDiscoveryFiles(sessions, now - 10_000, now)).map((file) => path.basename(file)), ["rollout-today.jsonl"]);
+  assert.equal(await codexSessionIdForWorkspace(sessions, workspace, now - 5_000), "today-session");
+
+  // A wide window (restore of an old entry) keeps the bounded most-recent walk.
+  const wide = (await codexDiscoveryFiles(sessions, now - 30 * 24 * 60 * 60 * 1000, now)).map((file) => path.basename(file)).sort();
+  assert.deepEqual(wide, ["rollout-today.jsonl", "stale.jsonl"]);
+});
+
+test("codex discovery walks flat and unknown layouts", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-codex-flat-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, "nested"), { recursive: true });
+  await fs.writeFile(path.join(root, "a.jsonl"), "{}");
+  await fs.writeFile(path.join(root, "nested", "b.jsonl"), "{}");
+  const files = (await codexDiscoveryFiles(root, Date.now() - 10_000, Date.now())).map((file) => path.basename(file)).sort();
+  assert.deepEqual(files, ["a.jsonl", "b.jsonl"]);
+});
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+test("readLeadingLines returns exactly what one prefix read split into lines would", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-leading-lines-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const random = seededRandom(0x5eed);
+  // Multibyte characters and bare "\r" make chunk boundaries and CRLF pairs
+  // the interesting cases.
+  const pieces = ["a", "é", "😀", "{\"k\":1}", " ", "\r"];
+  for (let fileIndex = 0; fileIndex < 8; fileIndex += 1) {
+    const lines = [];
+    const lineCount = fileIndex === 0 ? 0 : Math.floor(random() * 300);
+    for (let index = 0; index < lineCount; index += 1) {
+      const length = Math.floor(random() ** 3 * 4000);
+      let line = "";
+      while (line.length < length) line += pieces[Math.floor(random() * pieces.length)];
+      lines.push(random() < 0.1 ? "" : line);
+    }
+    const ending = random() < 0.5 ? "\n" : "\r\n";
+    const text = lines.join(ending) + (random() < 0.5 ? ending : "");
+    const filePath = path.join(root, `file-${fileIndex}.jsonl`);
+    await fs.writeFile(filePath, text);
+    const size = Buffer.byteLength(text);
+    for (const maxBytes of [1, 100, 5_000, 40_000, 512_000]) {
+      const prefix = await readFilePrefix(filePath, maxBytes);
+      for (const [separator, dropEmpty] of [["\n", true], ["\n", false], [/\r?\n/, true], [/\r?\n/, false]]) {
+        for (const maxLines of [1, 7, 120, 240, Number.POSITIVE_INFINITY]) {
+          const expected = prefix.split(separator).filter((line) => !dropEmpty || line).slice(0, maxLines);
+          for (const options of [{ initialBytes: 64 }, { initialBytes: 64, size }, {}]) {
+            const { lines: actual } = await readLeadingLines(filePath, { maxBytes, maxLines, separator, dropEmpty, ...options });
+            assert.deepEqual(actual, expected, `file ${fileIndex}, maxBytes ${maxBytes}, maxLines ${maxLines}, ${String(separator)}, dropEmpty ${dropEmpty}, ${JSON.stringify(options)}`);
+          }
+        }
+      }
+    }
+  }
+});
+
+test("readLeadingLines stops reading once the needed lines are available", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "athena-leading-bytes-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const filePath = path.join(root, "long.jsonl");
+  await fs.writeFile(filePath, Array.from({ length: 20_000 }, (_unused, index) => JSON.stringify({ index })).join("\n"));
+  const window = await readLeadingLines(filePath, { maxBytes: 512_000, maxLines: 120, separator: "\n", dropEmpty: true });
+  assert.equal(window.lines.length, 120);
+  assert.equal(window.bytesRead, 32 * 1024, "120 short lines fit in the first 32 KiB read");
+  const found = await readLeadingLines(filePath, {
+    maxBytes: 512_000,
+    maxLines: 240,
+    separator: "\n",
+    dropEmpty: false,
+    initialBytes: 1024,
+    enough: (lines) => lines.some((line) => line.includes("\"index\":3")),
+  });
+  assert.equal(found.bytesRead, 1024);
+});
+
 async function hasPython() {
+  if (await nodeSqlite()) return true;
   try {
     await execFileAsync("python3", ["-c", "import sqlite3"]);
     return true;
@@ -335,7 +461,28 @@ async function hasPython() {
   }
 }
 
+async function nodeSqlite() {
+  try {
+    return process.getBuiltinModule?.("node:sqlite") ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function createOpenCodeDb(dbPath, rows) {
+  const sqlite = await nodeSqlite();
+  if (sqlite) {
+    const database = new sqlite.DatabaseSync(dbPath);
+    try {
+      database.exec("create table session (id text primary key, directory text, project_id text, time_created integer)");
+      database.exec("create table project (id text primary key, worktree text)");
+      const insert = database.prepare("insert into session (id, directory, project_id, time_created) values (?, ?, null, ?)");
+      for (const row of rows) insert.run(...row);
+    } finally {
+      database.close();
+    }
+    return;
+  }
   const script = [
     "import json, sqlite3, sys",
     "con = sqlite3.connect(sys.argv[1])",

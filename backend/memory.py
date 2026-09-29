@@ -29,6 +29,19 @@ class MemoryEntry:
     text: str
 
 
+@dataclass(frozen=True)
+class _IndexedEntry:
+    """A parsed entry plus the lowered/normalized forms searches scan."""
+
+    entry: MemoryEntry
+    lowered: str
+    project_normalized: str
+
+
+# (st_mtime_ns, st_size, st_ino) of the file the cached entries were parsed from.
+_FileKey = tuple[int, int, int]
+
+
 class HermesMemoryStore:
     def __init__(
         self,
@@ -42,6 +55,9 @@ class HermesMemoryStore:
         self.memory_path = memory_path or base / "MEMORY.md"
         self.user_path = user_path or base / "USER.md"
         self.lock_path = self.memory_path.with_suffix(self.memory_path.suffix + ".lock")
+        # Parsed entries are reused until MEMORY.md changes on disk, so repeated
+        # reads do not re-read and regex-normalize the whole file every call.
+        self._cache: tuple[_FileKey, tuple[_IndexedEntry, ...]] | None = None
 
     @classmethod
     def from_hermes_home(
@@ -59,7 +75,30 @@ class HermesMemoryStore:
         return cls(memory_path=memory_path, user_path=user_path)
 
     def entries(self) -> list[MemoryEntry]:
-        return [MemoryEntry(text=entry) for entry in parse_memory_entries(_read_text(self.memory_path))]
+        return [indexed.entry for indexed in self._indexed_entries()]
+
+    def _indexed_entries(self) -> tuple[_IndexedEntry, ...]:
+        try:
+            stat = self.memory_path.stat()
+        except FileNotFoundError:
+            self._cache = None
+            return ()
+        key: _FileKey = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+        cached = self._cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        # A write racing this read leaves newer text under the older key; the
+        # next stat then sees a new key and re-parses, so the cache self-heals.
+        indexed = tuple(
+            _IndexedEntry(
+                entry=MemoryEntry(text=text),
+                lowered=text.lower(),
+                project_normalized=_normalize_for_project_match(text),
+            )
+            for text in parse_memory_entries(_read_text(self.memory_path))
+        )
+        self._cache = (key, indexed)
+        return indexed
 
     def recent(self, *, limit: int = 10) -> list[MemoryEntry]:
         bounded = max(1, min(limit, 100))
@@ -70,13 +109,11 @@ class HermesMemoryStore:
         if not terms:
             return []
 
-        entries = self.entries()
         scored: list[tuple[int, int, MemoryEntry]] = []
-        for index, entry in enumerate(entries):
-            haystack = entry.text.lower()
-            score = sum(haystack.count(term) for term in terms)
+        for index, indexed in enumerate(self._indexed_entries()):
+            score = sum(indexed.lowered.count(term) for term in terms)
             if score:
-                scored.append((score, index, entry))
+                scored.append((score, index, indexed.entry))
 
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [entry for _, _, entry in scored[: max(1, min(limit, 100))]]
@@ -92,6 +129,7 @@ class HermesMemoryStore:
             prefix = "" if not existing.strip() else "\n"
             with self.memory_path.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(f"{prefix}{ENTRY_SEPARATOR}\n{sanitized}\n")
+            self._cache = None
         return MemoryEntry(text=sanitized)
 
     def remove_exact(self, text: str) -> int:
@@ -107,6 +145,7 @@ class HermesMemoryStore:
             if removed:
                 self.memory_path.parent.mkdir(parents=True, exist_ok=True)
                 self.memory_path.write_text(_render_memory_entries(kept), encoding="utf-8", newline="\n")
+                self._cache = None
             return removed
 
     def format_query_response(self, query: str, *, limit: int = 10) -> str:
@@ -133,14 +172,14 @@ class HermesMemoryStore:
             return []
 
         scored: list[tuple[int, int, MemoryEntry]] = []
-        for index, entry in enumerate(self.entries()):
-            haystack = _normalize_for_project_match(entry.text)
+        for index, indexed in enumerate(self._indexed_entries()):
+            haystack = indexed.project_normalized
             score = 0
             for needle, weight in needles:
                 if needle in haystack:
                     score += weight
             if score:
-                scored.append((score, index, entry))
+                scored.append((score, index, indexed.entry))
 
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         return [entry for _, _, entry in scored[: max(1, min(limit, 100))]]

@@ -1,38 +1,24 @@
-"""FastAPI app wiring for the backend-only MVP."""
+"""FastAPI app wiring for the Athena desktop backend."""
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
-import tempfile
 import threading
 import time
-from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .adapters.base import AgentAdapter
 from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
-from .adapters.codex import CodexAdapter
-from .adapters.grok import GrokAdapter
-from .context_bundle import ContextBundleStore
-from .context_artifacts import RunArtifacts
-from .executor import ExecutionResult, RunExecutor
 from .hermes import HermesManager
 from .memory import HermesMemoryStore
-from .memory_admission import LaunchMemoryAdmission
-from .runs import Run, RunRegistry, RunStatus
-from .runtime import RuntimeLimits, adapter_statuses, check_runtime_limits
+from .runtime import AdapterStatusCache
 from .safety import resolve_project_dir
 
 
@@ -43,14 +29,6 @@ class MemoryStoreRequest(BaseModel):
 
 class MemoryDeleteRequest(BaseModel):
     text: str = Field(min_length=1)
-
-
-class SpawnAgentRequest(BaseModel):
-    agent_type: str = "codex"
-    project_dir: str
-    task: str = Field(min_length=1, max_length=200000)
-    memory_query: str | None = Field(default=None, max_length=20000)
-    timeout_seconds: float | None = Field(default=None, gt=0, le=3600)
 
 
 class HermesInstallRequest(BaseModel):
@@ -66,84 +44,19 @@ class HermesAskRequest(BaseModel):
     timeout_seconds: float = Field(default=120, gt=0, le=600)
 
 
-class HermesRecallRefreshRequest(BaseModel):
-    project_dir: str
-    task_hint: str | None = None
-    timeout_seconds: float = Field(default=120, gt=0, le=600)
-
-
-class HermesRecallWriteRequest(BaseModel):
-    project_dir: str
-    markdown: str = Field(min_length=1, max_length=131072)
-    source: str = Field(default="athena-session-handoff", min_length=1, max_length=120)
-    source_count: int | None = Field(default=None, ge=0, le=500)
-    source_titles: list[str] = Field(default_factory=list, max_length=500)
-    schema_version: int | None = Field(default=None, ge=1, le=20)
-    handoff_id: str | None = Field(default=None, max_length=120)
-    confidence: str | None = Field(default=None, max_length=20)
-    source_workspaces: list[str] = Field(default_factory=list, max_length=500)
-    source_sessions: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
-
-
-class HermesRecallMarkUsedRequest(BaseModel):
-    project_dir: str
-    agent: str = Field(min_length=1, max_length=80)
-
-
-class ContextBundleCreateRequest(BaseModel):
-    project_dir: str
-    mode: str = Field(pattern=r"^immersive(?:_curated)?$")
-    agent: str = Field(min_length=1, max_length=80)
-    task: str = Field(default="", max_length=20000)
-    context: str = Field(default="", max_length=100000)
-
-
-class ContextTurnRecordRequest(BaseModel):
-    project_dir: str
-    session_id: str = Field(min_length=1, max_length=200)
-    agent: str = Field(min_length=1, max_length=80)
-    mode: str = Field(pattern=r"^(?:clean|immersive)$")
-    user_message: str = Field(min_length=1, max_length=100000)
-    assistant_message: str = Field(min_length=1, max_length=200000)
-
-
-RECALL_STALE_AFTER_SECONDS = 24 * 60 * 60
 ALL_SESSIONS_CACHE_TTL_SECONDS = float(os.environ.get("CONTEXT_WORKSPACE_SESSIONS_CACHE_TTL", "60"))
 # The cache key includes the caller-supplied search query, so without a cap a
 # client issuing many distinct queries would grow this dict without bound.
 ALL_SESSIONS_CACHE_MAX_ENTRIES = 32
-HERMES_REFRESH_COMMAND_ENV = "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD"
-BACKEND_URL_ENV = "CONTEXT_WORKSPACE_BACKEND_URL"
-BACKEND_PORT_ENV = "CONTEXT_WORKSPACE_BACKEND_PORT"
 
 
 def create_app(
     *,
     memory: HermesMemoryStore | None = None,
     hermes: HermesManager | None = None,
-    registry: RunRegistry | None = None,
-    executor: RunExecutor | None = None,
-    adapters: dict[str, AgentAdapter] | None = None,
-    limits: RuntimeLimits | None = None,
-    memory_admission: LaunchMemoryAdmission | None = None,
-    execute_inline: bool = False,
+    agent_executables: dict[str, str] | None = None,
 ) -> FastAPI:
-    @asynccontextmanager
-    async def lifespan(application: FastAPI):
-        try:
-            yield
-        finally:
-            application.state.executor.begin_shutdown()
-            # Prevent queued work from entering the executor after its process
-            # snapshot.  Running work either appears in that snapshot or sees
-            # the executor's post-Popen shutdown gate and reaps itself.
-            application.state.pool.shutdown(wait=False, cancel_futures=True)
-            application.state.executor.shutdown()
-            # Waiting last drains bookkeeping for the workers whose process
-            # groups were just terminated, without admitting queued launches.
-            application.state.pool.shutdown(wait=True, cancel_futures=True)
-
-    app = FastAPI(title="Context Workspace Backend", lifespan=lifespan)
+    app = FastAPI(title="Context Workspace Backend")
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
@@ -152,17 +65,10 @@ def create_app(
         allow_headers=["Content-Type"],
     )
     app.state.hermes = hermes or HermesManager()
-    app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.status().hermes_home)
-    app.state.registry = registry or RunRegistry()
-    app.state.executor = executor or RunExecutor(registry=app.state.registry)
-    app.state.context_bundles = ContextBundleStore()
-    app.state.adapters = adapters or {"codex": CodexAdapter(), "grok": GrokAdapter()}
-    app.state.limits = limits or RuntimeLimits()
-    app.state.memory_admission = (
-        memory_admission if memory_admission is not None else LaunchMemoryAdmission()
-    )
-    app.state.pool = ThreadPoolExecutor(max_workers=4)
-    app.state.execute_inline = execute_inline
+    # Resolve memory from the configured Hermes home directly: status() probes
+    # the Hermes executable, which must not block backend startup.
+    app.state.memory = memory or HermesMemoryStore.from_hermes_home(app.state.hermes.hermes_home)
+    app.state.adapter_statuses = AdapterStatusCache(agent_executables)
     app.state.all_sessions_cache = {}
     app.state.project_sessions_cache = {}
     # Both session endpoints traverse the same provider corpora. A shared lock
@@ -174,132 +80,10 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/workspace/snapshot")
-    def workspace_snapshot(project_dir: str = Query(min_length=1)) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=400, detail=f"Project directory does not exist: {project_dir}") from exc
-        return _workspace_snapshot(project)
-
-    @app.post("/context/bundles")
-    def create_context_bundle(request: ContextBundleCreateRequest) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(request.project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
-            memory_excerpt = app.state.memory.format_project_context(project, limit=10)
-        except OSError:
-            memory_excerpt = ""
-        bundle = app.state.context_bundles.create(
-            project,
-            mode=request.mode,
-            agent=request.agent,
-            task=request.task,
-            curated_context=request.context if request.mode == "immersive_curated" else "",
-            memory_excerpt=memory_excerpt,
-            recall_metadata=_recall_status_payload(project),
-        )
-        return {"bundle": bundle.payload()}
-
-    @app.get("/context/bundles/{bundle_id}")
-    def get_context_bundle(bundle_id: str, project_dir: str = Query(min_length=1)) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(project_dir)
-            bundle = app.state.context_bundles.read(project, bundle_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"bundle": bundle.payload()}
-
-    @app.post("/context/turns")
-    def record_context_turn(request: ContextTurnRecordRequest) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(request.project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        turn = app.state.context_bundles.record_turn(
-            project,
-            session_id=request.session_id,
-            agent=request.agent,
-            mode=request.mode,
-            user_message=request.user_message,
-            assistant_message=request.assistant_message,
-        )
-        return {"turn": turn}
-
     @app.get("/hermes/status")
-    def hermes_status() -> dict[str, Any]:
-        return {"hermes": _hermes_status_payload(app.state.hermes.status())}
-
-    @app.get("/hermes/recall/status")
-    def hermes_recall_status(project_dir: str = Query(min_length=1)) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"recall": _recall_status_payload(project)}
-
-    @app.post("/hermes/recall/refresh")
-    def refresh_hermes_recall(request: HermesRecallRefreshRequest) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(request.project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        command = os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()
-        if not command:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Set {HERMES_REFRESH_COMMAND_ENV} to enable Hermes recall refresh.",
-            )
-
-        result = _run_recall_refresh_command(
-            command,
-            project_dir=project,
-            task_hint=request.task_hint or "",
-            timeout_seconds=request.timeout_seconds,
-        )
-        recall = _recall_status_payload(project)
-        return {"refresh": result, "recall": recall}
-
-    @app.post("/hermes/recall/write")
-    def write_hermes_recall(request: HermesRecallWriteRequest) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(request.project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        markdown = request.markdown.strip()
-        if not markdown:
-            raise HTTPException(status_code=400, detail="Recall markdown cannot be empty.")
-
-        recall = _write_recall_cache(
-            project,
-            markdown,
-            source=request.source.strip(),
-            source_count=request.source_count,
-            source_titles=request.source_titles,
-            schema_version=request.schema_version,
-            handoff_id=request.handoff_id,
-            confidence=request.confidence,
-            source_workspaces=request.source_workspaces,
-            source_sessions=request.source_sessions,
-        )
-        return {"recall": recall}
-
-    @app.post("/hermes/recall/mark-used")
-    def mark_hermes_recall_used(request: HermesRecallMarkUsedRequest) -> dict[str, Any]:
-        try:
-            project = resolve_project_dir(request.project_dir)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        recall = _mark_recall_used(project, agent=request.agent.strip())
-        return {"recall": recall}
+    def hermes_status(refresh: bool = Query(default=False)) -> dict[str, Any]:
+        status = app.state.hermes.status(refresh=True) if refresh else app.state.hermes.status()
+        return {"hermes": _hermes_status_payload(status)}
 
     @app.post("/hermes/install")
     def install_hermes(request: HermesInstallRequest) -> dict[str, Any]:
@@ -326,11 +110,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        recall_answer = _direct_recall_answer(project, request.question)
-        if recall_answer is not None:
-            return recall_answer
-
-        context = _hermes_ask_context(project, request.context)
+        context = request.context.strip() if request.context and request.context.strip() else None
         try:
             result = app.state.hermes.ask(
                 project_dir=project,
@@ -406,8 +186,8 @@ def create_app(
             raise _memory_unavailable_exception(exc) from exc
 
     @app.get("/agents/adapters")
-    def get_agent_adapters() -> dict[str, Any]:
-        return {"adapters": adapter_statuses(app.state.adapters)}
+    def get_agent_adapters(refresh: bool = Query(default=False)) -> dict[str, Any]:
+        return {"adapters": app.state.adapter_statuses.get(refresh=refresh)}
 
     @app.get("/agents/sessions")
     def list_agent_sessions(
@@ -516,146 +296,10 @@ def create_app(
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    @app.post("/agents/spawn", status_code=202)
-    def spawn_agent(request: SpawnAgentRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-        agent_type = request.agent_type.strip().lower()
-        adapter = app.state.adapters.get(agent_type)
-        if adapter is None:
-            raise HTTPException(status_code=400, detail=f"Unsupported agent type: {request.agent_type}")
-
-        try:
-            limit_decision = check_runtime_limits(
-                app.state.registry,
-                app.state.limits,
-                project_dir=request.project_dir,
-                agent_type=agent_type,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not limit_decision.allowed:
-            raise HTTPException(status_code=429, detail=limit_decision.reason)
-
-        memory_decision = app.state.memory_admission.reserve()
-        if not memory_decision.allowed:
-            # This must happen before create_run: a rejected launch may not
-            # consume an agent id, occupy a registry slot, or write artifacts.
-            raise HTTPException(status_code=429, detail=memory_decision.reason)
-
-        try:
-            run = app.state.registry.create_run(
-                agent_type=agent_type,
-                project_dir=request.project_dir,
-                task=request.task,
-            )
-        except ValueError as exc:
-            app.state.memory_admission.release(memory_decision.reservation_id)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        memory_excerpt = ""
-        _try_append_memory(app.state.memory, f"[{run.agent_id}] Task: {run.task} | Status: pending")
-        timeout_seconds = request.timeout_seconds
-        if timeout_seconds is None:
-            timeout_seconds = app.state.limits.default_timeout_seconds
-
-        try:
-            if app.state.execute_inline:
-                _execute_and_record(app.state.executor, app.state.memory, run, adapter, memory_excerpt, timeout_seconds)
-                # Inline execution has already reached a terminal state, so
-                # no delayed descendant allocation remains to reserve for.
-                app.state.memory_admission.release(memory_decision.reservation_id)
-            else:
-                background_tasks.add_task(
-                    app.state.pool.submit,
-                    _execute_and_record,
-                    app.state.executor,
-                    app.state.memory,
-                    run,
-                    adapter,
-                    memory_excerpt,
-                    timeout_seconds,
-                )
-                # Async launches retain the short TTL reservation while the
-                # child and its MCP descendants grow toward steady-state RSS.
-        except Exception:
-            app.state.memory_admission.release(memory_decision.reservation_id)
-            raise
-
-        return {"run": _run_payload(run)}
-
-    @app.get("/agents/runs")
-    def list_runs() -> dict[str, Any]:
-        return {"runs": [_run_payload(run) for run in app.state.registry.list_runs()]}
-
-    @app.get("/agents/runs/{run_id}")
-    def get_run(run_id: str) -> dict[str, Any]:
-        run = _get_run_or_404(app.state.registry, run_id)
-        artifacts = app.state.executor.artifacts.paths_for(run)
-        return {"run": _run_payload(run), "artifacts": _artifacts_payload(run.run_id, artifacts)}
-
-    @app.post("/agents/runs/{run_id}/cancel")
-    def cancel_run(run_id: str) -> dict[str, Any]:
-        run = _get_run_or_404(app.state.registry, run_id)
-        if run.status in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}:
-            return {"cancelled": False, "run": _run_payload(run)}
-
-        updated = app.state.registry.request_cancel(run.run_id)
-        terminated = app.state.executor.cancel(run.run_id)
-        _try_append_memory(app.state.memory, f"[{updated.agent_id}] cancellation requested for task: {updated.task}")
-        return {"cancelled": True, "terminated_process": terminated, "run": _run_payload(updated)}
-
-    @app.get("/agents/runs/{run_id}/artifacts/{artifact_name}", response_class=PlainTextResponse)
-    def get_run_artifact(
-        run_id: str,
-        artifact_name: str,
-        max_bytes: int = Query(default=65536, ge=1, le=1048576),
-        tail: bool = Query(default=True),
-    ) -> str:
-        run = _get_run_or_404(app.state.registry, run_id)
-        artifacts = app.state.executor.artifacts.paths_for(run)
-        path = _artifact_path(artifacts, artifact_name)
-        if path is None:
-            raise HTTPException(status_code=404, detail=f"Unknown artifact: {artifact_name}")
-        if not path.exists():
-            raise HTTPException(status_code=404, detail=f"Artifact not found: {artifact_name}")
-        return _read_bounded_text(path, max_bytes=max_bytes, tail=tail)
-
     return app
 
 
 app = create_app()
-
-
-def _execute_and_record(
-    executor: RunExecutor,
-    memory: HermesMemoryStore,
-    run: Run,
-    adapter: AgentAdapter,
-    memory_excerpt: str,
-    timeout_seconds: float | None,
-) -> ExecutionResult:
-    try:
-        result = executor.execute(
-            run,
-            adapter,
-            memory_excerpt=memory_excerpt,
-            timeout_seconds=timeout_seconds,
-        )
-    except Exception as exc:
-        # Last-resort backstop: this runs on the thread pool, where the
-        # submitted Future is never inspected, so an escaping exception would
-        # vanish and leave the run active forever.
-        failed = executor.registry.fail(run.run_id, str(exc))
-        _try_append_memory(
-            memory,
-            f"[{failed.agent_id}] failed task: {failed.task} | Error: {exc}",
-        )
-        raise
-    _try_append_memory(
-        memory,
-        f"[{result.run.agent_id}] completed task: {result.run.task} | "
-        f"Status: {result.run.status.value} | Summary: {result.summary}",
-    )
-    return result
 
 
 def _memory_unavailable_exception(exc: OSError) -> HTTPException:
@@ -663,13 +307,6 @@ def _memory_unavailable_exception(exc: OSError) -> HTTPException:
         status_code=503,
         detail=f"Hermes memory is unavailable. Check Hermes status and memory path permissions: {exc}",
     )
-
-
-def _try_append_memory(memory: HermesMemoryStore, text: str) -> None:
-    try:
-        memory.append(text)
-    except OSError:
-        return
 
 
 def _project_scoped_memory_text(project: Path, text: str) -> str:
@@ -680,60 +317,6 @@ def _project_scoped_memory_text(project: Path, text: str) -> str:
     if str(project) in stripped:
         return stripped
     return f"{project_marker} {stripped}"
-
-
-def _run_payload(run: Run) -> dict[str, Any]:
-    payload = asdict(run)
-    payload["project_dir"] = str(run.project_dir)
-    payload["status"] = run.status.value
-    for key in ("created_at", "updated_at"):
-        value = payload[key]
-        if isinstance(value, datetime):
-            payload[key] = value.isoformat()
-    return payload
-
-
-def _get_run_or_404(registry: RunRegistry, run_id: str) -> Run:
-    try:
-        return registry.get(run_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-def _artifacts_payload(run_id: str, artifacts: RunArtifacts) -> dict[str, Any]:
-    return {
-        name: {
-            "name": name,
-            "exists": path.exists(),
-            "size_bytes": path.stat().st_size if path.exists() else 0,
-            "url": f"/agents/runs/{run_id}/artifacts/{name}",
-        }
-        for name, path in _artifact_paths(artifacts).items()
-    }
-
-
-def _artifact_paths(artifacts: RunArtifacts) -> dict[str, Path]:
-    return {
-        "context": artifacts.context,
-        "stdout": artifacts.stdout,
-        "stderr": artifacts.stderr,
-        "result": artifacts.result,
-    }
-
-
-def _artifact_path(artifacts: RunArtifacts, artifact_name: str) -> Path | None:
-    return _artifact_paths(artifacts).get(artifact_name.strip().lower())
-
-
-def _read_bounded_text(path: Path, *, max_bytes: int, tail: bool) -> str:
-    size = path.stat().st_size
-    with path.open("rb") as handle:
-        if tail and size > max_bytes:
-            handle.seek(size - max_bytes)
-        data = handle.read(max_bytes)
-    return data.decode("utf-8", errors="replace")
 
 
 def _resolve_read_project_dir(project_dir: str) -> Path:
@@ -779,360 +362,3 @@ def _hermes_status_payload(status: Any) -> dict[str, Any]:
         "setup_required": status.setup_required,
         "message": status.message,
     }
-
-
-def _recall_status_payload(project_dir: Path) -> dict[str, Any]:
-    cache_dir = project_dir / ".context-workspace" / "hermes"
-    recall_path = cache_dir / "session-recall.md"
-    metadata_path = cache_dir / "last-refresh.json"
-    exists = recall_path.exists()
-    metadata = _read_json_object(metadata_path)
-    refreshed_at = _metadata_refreshed_at(metadata)
-    now = datetime.now(timezone.utc)
-    age_seconds = max(0.0, (now - refreshed_at).total_seconds()) if refreshed_at else None
-    stale = not exists or refreshed_at is None or (age_seconds is not None and age_seconds > RECALL_STALE_AFTER_SECONDS)
-    if not exists:
-        status = "missing"
-    elif stale:
-        status = "stale"
-    else:
-        status = "fresh"
-    return {
-        "project_dir": str(project_dir),
-        "exists": exists,
-        "status": status,
-        "stale": stale,
-        "path": str(recall_path),
-        "metadata_path": str(metadata_path),
-        "bytes": recall_path.stat().st_size if exists else 0,
-        "refreshed_at": refreshed_at.isoformat().replace("+00:00", "Z") if refreshed_at else None,
-        "age_seconds": age_seconds,
-        "stale_after_seconds": RECALL_STALE_AFTER_SECONDS,
-        "source": metadata.get("source") if isinstance(metadata.get("source"), str) else None,
-        "source_count": metadata.get("source_count") if isinstance(metadata.get("source_count"), int) else None,
-        "source_titles": metadata.get("source_titles") if isinstance(metadata.get("source_titles"), list) else [],
-        "schema_version": metadata.get("schema_version") if isinstance(metadata.get("schema_version"), int) else None,
-        "handoff_id": metadata.get("handoff_id") if isinstance(metadata.get("handoff_id"), str) else None,
-        "confidence": metadata.get("confidence") if isinstance(metadata.get("confidence"), str) else None,
-        "source_workspaces": metadata.get("source_workspaces") if isinstance(metadata.get("source_workspaces"), list) else [],
-        "source_sessions": metadata.get("source_sessions") if isinstance(metadata.get("source_sessions"), list) else [],
-        "used_for_launch_at": metadata.get("used_for_launch_at") if isinstance(metadata.get("used_for_launch_at"), str) else None,
-        "last_launch_agent": metadata.get("last_launch_agent") if isinstance(metadata.get("last_launch_agent"), str) else None,
-        "refresh_configured": bool(os.environ.get(HERMES_REFRESH_COMMAND_ENV, "").strip()),
-    }
-
-
-def _direct_recall_answer(project_dir: Path, question: str) -> dict[str, Any] | None:
-    if not _looks_like_recall_context_request(question):
-        return None
-
-    status = _recall_status_payload(project_dir)
-    recall = _read_recall_markdown(project_dir)
-    if not recall:
-        answer = (
-            f"No Athena session recall cache exists for `{project_dir}` yet. "
-            "Refresh session recall from Athena/Hermes first, then ask again."
-        )
-    else:
-        answer = "\n\n".join(
-            [
-                f"Athena session recall cache for `{project_dir}`:",
-                recall,
-            ]
-        )
-    return {
-        "answer": answer,
-        "project_dir": str(project_dir),
-        "source": "athena-recall-cache",
-        "returncode": 0,
-        "stderr": "",
-        "recall": status,
-    }
-
-
-def _looks_like_recall_context_request(question: str) -> bool:
-    normalized = question.strip().lower()
-    if not normalized:
-        return False
-    has_recall = "session recall" in normalized or "recall cache" in normalized or "athena recall" in normalized
-    has_context_intent = any(
-        token in normalized
-        for token in ("context", "use", "read", "show", "get", "summarize", "summarise", "refresh")
-    )
-    return has_recall and has_context_intent
-
-
-def _hermes_ask_context(project_dir: Path, context: str | None) -> str | None:
-    parts: list[str] = []
-    recall = _read_recall_markdown(project_dir)
-    if recall:
-        parts.extend(
-            [
-                "Athena session recall cache for this workspace:",
-                _bounded_text(recall, max_chars=12000),
-            ]
-        )
-    if context and context.strip():
-        parts.extend(["Caller-provided context:", context.strip()])
-    return "\n\n".join(parts) if parts else None
-
-
-def _read_recall_markdown(project_dir: Path) -> str:
-    recall_path = project_dir / ".context-workspace" / "hermes" / "session-recall.md"
-    if not recall_path.exists():
-        return ""
-    try:
-        return recall_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
-def _bounded_text(text: str, *, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    return "[truncated]\n" + text[-max_chars:]
-
-
-def _workspace_snapshot(project_dir: Path) -> dict[str, Any]:
-    generated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    root = _git_output(project_dir, ["rev-parse", "--show-toplevel"])
-    if root["returncode"] != 0:
-        return {
-            "project_dir": str(project_dir),
-            "generated_at": generated_at,
-            "git": {
-                "available": False,
-                "root": None,
-                "branch": None,
-                "head": None,
-                "dirty_count": 0,
-                "status_short": [],
-                "recent_commits": [],
-                "error": root["error"] or "Not a git workspace.",
-            },
-        }
-
-    branch = _git_output(project_dir, ["branch", "--show-current"])
-    head = _git_output(project_dir, ["rev-parse", "--short", "HEAD"])
-    status = _git_output(project_dir, ["status", "--short"])
-    commits = _git_output(project_dir, ["log", "--oneline", "-5"])
-    status_lines = _bounded_lines(status["stdout"], limit=80)
-    return {
-        "project_dir": str(project_dir),
-        "generated_at": generated_at,
-        "git": {
-            "available": True,
-            "root": root["stdout"].strip() or None,
-            "branch": branch["stdout"].strip() or None,
-            "head": head["stdout"].strip() or None,
-            "dirty_count": len(status_lines),
-            "status_short": status_lines,
-            "recent_commits": _bounded_lines(commits["stdout"], limit=5),
-            "error": status["error"] or commits["error"] or None,
-        },
-    }
-
-
-def _git_output(project_dir: Path, args: list[str]) -> dict[str, Any]:
-    try:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=project_dir,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"returncode": 1, "stdout": "", "error": str(exc)}
-    return {
-        "returncode": completed.returncode,
-        "stdout": completed.stdout.strip(),
-        "error": completed.stderr.strip() if completed.returncode != 0 else "",
-    }
-
-
-def _bounded_lines(value: str, *, limit: int) -> list[str]:
-    return [line[:500] for line in value.splitlines() if line.strip()][:limit]
-
-
-def _bounded_string_list(values: list[str], *, limit: int, max_chars: int) -> list[str]:
-    bounded: list[str] = []
-    for value in values[:limit]:
-        text = str(value).strip()
-        if text:
-            bounded.append(text[:max_chars])
-    return bounded
-
-
-def _bounded_source_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    allowed = {
-        "key",
-        "kind",
-        "provider",
-        "title",
-        "workspace",
-        "id",
-        "status",
-        "usable",
-        "evidence_score",
-        "terminal_id",
-        "provider_session_id",
-        "branch",
-        "model",
-    }
-    bounded: list[dict[str, Any]] = []
-    for session in sessions[:80]:
-        item: dict[str, Any] = {}
-        for key, value in session.items():
-            if key not in allowed:
-                continue
-            if isinstance(value, str):
-                item[key] = value[:300]
-            elif isinstance(value, (int, float, bool)) or value is None:
-                item[key] = value
-        if item:
-            bounded.append(item)
-    return bounded
-
-
-def _write_recall_cache(
-    project_dir: Path,
-    markdown: str,
-    *,
-    source: str,
-    source_count: int | None = None,
-    source_titles: list[str] | None = None,
-    schema_version: int | None = None,
-    handoff_id: str | None = None,
-    confidence: str | None = None,
-    source_workspaces: list[str] | None = None,
-    source_sessions: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    cache_dir = project_dir / ".context-workspace" / "hermes"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    recall_path = cache_dir / "session-recall.md"
-    metadata_path = cache_dir / "last-refresh.json"
-    text = markdown.rstrip() + "\n"
-    _atomic_write_text(recall_path, text)
-    written_bytes = recall_path.stat().st_size
-    metadata = {
-        "refreshed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "source": source or "athena-session-handoff",
-        "bytes": written_bytes,
-    }
-    if source_count is not None:
-        metadata["source_count"] = source_count
-    if source_titles:
-        metadata["source_titles"] = [str(title)[:160] for title in source_titles[:20]]
-    if schema_version is not None:
-        metadata["schema_version"] = schema_version
-    if handoff_id:
-        metadata["handoff_id"] = str(handoff_id)[:120]
-    if confidence:
-        metadata["confidence"] = str(confidence)[:20]
-    if source_workspaces:
-        metadata["source_workspaces"] = _bounded_string_list(source_workspaces, limit=40, max_chars=300)
-    if source_sessions:
-        metadata["source_sessions"] = _bounded_source_sessions(source_sessions)
-    _atomic_write_text(metadata_path, json.dumps(metadata, indent=2) + "\n")
-    return _recall_status_payload(project_dir)
-
-
-def _mark_recall_used(project_dir: Path, *, agent: str) -> dict[str, Any]:
-    cache_dir = project_dir / ".context-workspace" / "hermes"
-    metadata_path = cache_dir / "last-refresh.json"
-    metadata = _read_json_object(metadata_path)
-    metadata["used_for_launch_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    metadata["last_launch_agent"] = agent
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(metadata_path, json.dumps(metadata, indent=2) + "\n")
-    return _recall_status_payload(project_dir)
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_path = Path(handle.name)
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
-
-
-def _read_json_object(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _metadata_refreshed_at(metadata: dict[str, Any]) -> datetime | None:
-    value = metadata.get("refreshed_at")
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _run_recall_refresh_command(
-    command: str,
-    *,
-    project_dir: Path,
-    task_hint: str,
-    timeout_seconds: float,
-) -> dict[str, Any]:
-    env = {
-        **os.environ,
-        "CONTEXT_WORKSPACE_PROJECT_DIR": str(project_dir),
-        "CONTEXT_WORKSPACE_TASK_HINT": task_hint,
-    }
-    if BACKEND_URL_ENV not in env:
-        port = env.get(BACKEND_PORT_ENV, "8000")
-        env[BACKEND_URL_ENV] = f"http://127.0.0.1:{port}"
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=project_dir,
-            env=env,
-            shell=True,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HTTPException(status_code=504, detail=f"Hermes recall refresh timed out after {timeout_seconds:g}s.") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=502, detail=f"Hermes recall refresh failed to start: {exc}") from exc
-
-    payload = {
-        "configured": True,
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
-    }
-    if completed.returncode != 0:
-        raise HTTPException(status_code=502, detail=payload)
-    return payload

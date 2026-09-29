@@ -1,38 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Minus, Square, X } from "lucide-react";
+import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus } from "./api";
 import {
-  Eye,
-  Minus,
-  Search,
-  ShieldCheck,
-  Square,
-  Wrench,
-  X,
-} from "lucide-react";
-import { BackendClient, type BackendStatus, type ElectronControlStatus } from "./api";
-import { desktop, type AgentContextMode, type AgentMessage, type AgentSession, type AthenaLaunchState, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type GraphicsPreference, type GraphicsRuntimeStatus, type PerformanceDiagnostics, type WorkspacePath } from "./electron";
-import { AppSidebar, AthenaMark } from "./components/AppSidebar";
-import { ContextGlance, LiveWorkflow, SharedMemorySnapshot } from "./components/DashboardPanels";
+  desktop,
+  type AgentSession,
+  type AthenaLaunchState,
+  type EmbeddedTerminalKind,
+  type EmbeddedTerminalSession,
+  type GraphicsPreference,
+  type GraphicsRuntimeStatus,
+  type PerformanceDiagnostics,
+  type WorkspacePath,
+} from "./electron";
+import { AthenaMark } from "./components/AthenaMark";
+import athenaMarkUrl from "./assets/athena-mark.png";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { CommandRoom } from "./rooms/CommandRoom";
-import { MemoryRoom } from "./rooms/MemoryRoom";
-import { ReviewRoom } from "./rooms/ReviewRoom";
 import { SettingsRoom } from "./rooms/SettingsRoom";
-import { SwarmRoom, type AgentRole } from "./rooms/SwarmRoom";
-import { WorkspaceRoom, type WorkspaceSummary } from "./rooms/WorkspaceRoom";
-import { roomRouteById, type ActiveRoom } from "./routes";
+import { roomRoutes, type ActiveRoom } from "./routes";
 import {
-  emptyLoadState,
-  sameAgentMessages,
   sameAgentSessions,
   sameBackendStatus,
   sameElectronControlStatus,
-  sameLoadState,
+  sameJsonValue,
   samePerformanceDiagnostics,
-  type LoadState,
 } from "./app-state";
-import { recordChatPromptForSession, writePromptSequence } from "./chat-mode";
+import { chatStreamEndForBuffer, recordChatPromptForSession, writePromptSequence } from "./chat-mode";
 import { mergeWorkspaceAttention, type WorkspaceAttention, type WorkspaceAttentionKind } from "./workspace-attention";
-import { handoffLaunchOptions, type HandoffAgentKind } from "./handoff-launch";
 import {
   applyAgentSessionRenames,
   applyEmbeddedSessionRenames,
@@ -42,27 +36,40 @@ import {
   readRenamedSessions,
   selectedAgentSessionKey,
   terminalGridTitles,
-  type AgentTranscriptState,
-  type HandoffPreview,
   writeRenamedSessions,
 } from "./session-utils";
+import {
+  interfaceModeStorageKey,
+  parseInterfaceMode,
+  parseStoredWorkspace,
+  parseTerminalFocus,
+  parseUiTheme,
+  readInterfaceMode,
+  readTerminalFocus,
+  readUiTheme,
+  readWorkspaceList,
+  readWorkspaceListValue,
+  storedValue,
+  terminalFocusStorageKey,
+  uiThemeStorageKey,
+  upsertWorkspace,
+  workspaceListStorageKey,
+  workspaceStorageKey,
+  writeInterfaceMode,
+  writeStoredWorkspace,
+  writeTerminalFocus,
+  writeUiTheme,
+  writeWorkspaceList,
+  type InterfaceMode,
+  type UiTheme,
+} from "./ui-preferences";
 import { normalizeWorkspaceKey, sameWorkspacePath, workspaceDisplayName, workspaceKey } from "./workspace-utils";
 
-type InterfaceMode = "terminal" | "chat";
-type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
-
-const workspaceStorageKey = "context-workspace:lastWorkspace";
-const workspaceListStorageKey = "context-workspace:workspaces";
-const interfaceModeStorageKey = "context-workspace:interfaceMode";
-const uiThemeStorageKey = "context-workspace:uiTheme";
-const terminalFocusStorageKey = "context-workspace:terminalFocus";
-const appRefreshIntervalMs = 15_000;
-const nativeSessionRefreshIntervalMs = 60_000;
+// Cheap in-process health checks only. Anything that makes the backend spawn
+// subprocesses (Hermes/adapter detection) is fetched on demand instead.
+const statusPollIntervalMs = 15_000;
+const agentSessionMaxAgeMs = 60_000;
 const uiThemeStyleElementId = "athena-selected-ui-theme";
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
 
 const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
   monolith: () => import("./themes/monolith.css?raw"),
@@ -71,144 +78,12 @@ const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ defaul
   "mono-dark": () => import("./themes/mono-dark.css?raw"),
 };
 
-function isRecallLaunchKind(kind: EmbeddedTerminalKind): kind is Exclude<EmbeddedTerminalKind, "shell" | "hermes"> {
-  return kind !== "shell" && kind !== "hermes";
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function storedWorkspaceValue(): string | null {
-  return storedValue(workspaceStorageKey);
-}
-
-function storedValue(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function parseStoredWorkspace(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    const parsed = JSON.parse(value) as Partial<WorkspacePath>;
-    return parsed.nativePath || null;
-  } catch {
-    return value;
-  }
-}
-
-function readWorkspaceListValue(value: string | null): WorkspacePath[] {
-  try {
-    const parsed = JSON.parse(value ?? "[]") as Partial<WorkspacePath>[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is WorkspacePath =>
-      typeof item?.nativePath === "string" &&
-      typeof item.displayPath === "string" &&
-      (typeof item.wslPath === "string" || item.wslPath === null),
-    );
-  } catch {
-    return [];
-  }
-}
-
-function readWorkspaceList(): WorkspacePath[] {
-  try {
-    return readWorkspaceListValue(window.localStorage.getItem(workspaceListStorageKey));
-  } catch {
-    return [];
-  }
-}
-
-function writeStorageValue(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Ignore storage failures; Electron preferences remain authoritative.
-  }
-  void desktop.setPreference(key, value).catch(() => undefined);
-}
-
-function removeStorageValue(key: string): void {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    // Ignore storage failures; Electron preferences remain authoritative.
-  }
-  void desktop.removePreference(key).catch(() => undefined);
-}
-
-function writeWorkspaceList(workspaces: WorkspacePath[]): void {
-  writeStorageValue(workspaceListStorageKey, JSON.stringify(workspaces));
-}
-
-function readInterfaceMode(): InterfaceMode {
-  try {
-    return readInterfaceModeValue(window.localStorage.getItem(interfaceModeStorageKey)) ?? "terminal";
-  } catch {
-    return "terminal";
-  }
-}
-
-function readInterfaceModeValue(value: string | null): InterfaceMode | null {
-  if (value === "chat" || value === "terminal") return value;
-  return null;
-}
-
-function writeInterfaceMode(mode: InterfaceMode): void {
-  writeStorageValue(interfaceModeStorageKey, mode);
-}
-
-function readUiTheme(): UiTheme {
-  try {
-    return parseUiTheme(window.localStorage.getItem(uiThemeStorageKey)) ?? "classic";
-  } catch {
-    return "classic";
-  }
-}
-
-function parseUiTheme(value: string | null): UiTheme | null {
-  if (
-    value === "classic" ||
-    value === "monolith" ||
-    value === "press" ||
-    value === "mono-light" ||
-    value === "mono-dark"
-  ) {
-    return value;
-  }
-  return null;
-}
-
-function writeUiTheme(theme: UiTheme): void {
-  writeStorageValue(uiThemeStorageKey, theme);
-}
-
-function readTerminalFocus(): boolean {
-  try {
-    return readTerminalFocusValue(window.localStorage.getItem(terminalFocusStorageKey)) ?? false;
-  } catch {
-    return false;
-  }
-}
-
-function readTerminalFocusValue(value: string | null): boolean | null {
-  if (value === "1") return true;
-  if (value === "0") return false;
-  return null;
-}
-
-function writeTerminalFocus(focused: boolean): void {
-  writeStorageValue(terminalFocusStorageKey, focused ? "1" : "0");
-}
-
-function writeStoredWorkspace(workspacePath: WorkspacePath | null): void {
-  if (workspacePath?.nativePath.trim()) writeStorageValue(workspaceStorageKey, JSON.stringify(workspacePath));
-  else removeStorageValue(workspaceStorageKey);
-}
-
-function upsertWorkspace(workspaces: WorkspacePath[], workspace: WorkspacePath): WorkspacePath[] {
-  const key = workspaceKey(workspace);
-  return [workspace, ...workspaces.filter((item) => workspaceKey(item) !== key)].slice(0, 12);
+function documentVisible(): boolean {
+  return document.visibilityState === "visible";
 }
 
 function sameEmbeddedSessions(a: EmbeddedTerminalSession[], b: EmbeddedTerminalSession[]): boolean {
@@ -234,11 +109,12 @@ export function App() {
   const workspace = workspacePath?.nativePath ?? "";
   const workspaceDisplay = workspacePath?.displayPath ?? workspace;
   const [workspaceTabs, setWorkspaceTabs] = useState<WorkspacePath[]>(() => readWorkspaceList());
-  const [state, setState] = useState<LoadState>(emptyLoadState);
+  const [hermes, setHermes] = useState<HermesStatus | null>(null);
+  const [adapters, setAdapters] = useState<Record<string, AdapterStatus>>({});
   const [embeddedSessions, setEmbeddedSessions] = useState<EmbeddedTerminalSession[]>([]);
   const [workspaceAttention, setWorkspaceAttention] = useState<Record<string, WorkspaceAttention>>({});
   const [agentSessionsByWorkspace, setAgentSessionsByWorkspace] = useState<Record<string, AgentSession[]>>({});
-  const [sessionRenames, setSessionRenames] = useState<Record<string, string>>(() => readRenamedSessions(workspace));
+  const [sessionRenames, setSessionRenames] = useState<Record<string, string>>(() => readRenamedSessions(""));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeRoom, setActiveRoom] = useState<ActiveRoom>("command");
@@ -246,26 +122,26 @@ export function App() {
   const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => readUiTheme());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
-  const [recallRefreshing, setRecallRefreshing] = useState(false);
   const [installingHermes, setInstallingHermes] = useState(false);
-  const [selectedSessionKey, setSelectedSessionKey] = useState<string | null>(null);
-  const [agentTranscript, setAgentTranscript] = useState<AgentTranscriptState | null>(null);
   const [performanceDiagnostics, setPerformanceDiagnostics] = useState<PerformanceDiagnostics | null>(null);
-  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [launchState, setLaunchState] = useState<AthenaLaunchState | null>(null);
   const [graphicsStatus, setGraphicsStatus] = useState<GraphicsRuntimeStatus | null>(null);
-  const [restoreRequest, setRestoreRequest] = useState<{ workspaceKey: string; nonce: number } | null>(null);
+  const [restoreRequest, setRestoreRequest] = useState<{ workspace: WorkspacePath; nonce: number } | null>(null);
   const backendRefreshInFlight = useRef(false);
-  const dataRefreshInFlight = useRef(false);
   const agentSessionsRefreshInFlight = useRef<Set<string>>(new Set());
   const agentSessionsLastRefreshAt = useRef<Map<string, number>>(new Map());
   const activeWorkspaceRef = useRef("");
+  const activeRoomRef = useRef<ActiveRoom>("command");
+  const sessionRenamesRef = useRef(sessionRenames);
   const embeddedSessionsRef = useRef<EmbeddedTerminalSession[]>([]);
   const embeddedSessionWorkspaceKeysRef = useRef<Map<string, string>>(new Map());
   const lastWorkspaceAttentionAt = useRef<Map<string, number>>(new Map());
-  const autoRecallRefreshWorkspace = useRef<string | null>(null);
   const startupAttempted = useRef(false);
   const preferencesLoaded = useRef(false);
+
+  activeWorkspaceRef.current = workspace;
+  activeRoomRef.current = activeRoom;
+  sessionRenamesRef.current = sessionRenames;
 
   function setInterfaceMode(mode: InterfaceMode) {
     setInterfaceModeState(mode);
@@ -275,6 +151,12 @@ export function App() {
   function setUiTheme(theme: UiTheme) {
     setUiThemeState(theme);
     writeUiTheme(theme);
+  }
+
+  function setTerminalFocus(focused: boolean) {
+    setTerminalFocusState(focused);
+    writeTerminalFocus(focused);
+    if (focused) setActiveRoom("command");
   }
 
   function clearWorkspaceAttention(nextWorkspace: WorkspacePath | string) {
@@ -288,8 +170,8 @@ export function App() {
   }
 
   function markWorkspaceAttention(sessionId: string, kind: WorkspaceAttentionKind) {
-    const key = workspaceAttentionKeyForSession(sessionId);
-    if (!key) return;
+    const key = embeddedSessionWorkspaceKeysRef.current.get(sessionId);
+    if (!key || key === normalizeWorkspaceKey(activeWorkspaceRef.current)) return;
     const throttleKey = `${sessionId}:${kind}`;
     const now = Date.now();
     if (now - (lastWorkspaceAttentionAt.current.get(throttleKey) ?? 0) < 30_000) return;
@@ -299,18 +181,6 @@ export function App() {
       ...current,
       [key]: mergeWorkspaceAttention(current[key], kind),
     }));
-  }
-
-  function workspaceAttentionKeyForSession(sessionId: string): string | null {
-    const key = embeddedSessionWorkspaceKeysRef.current.get(sessionId);
-    if (!key || key === normalizeWorkspaceKey(activeWorkspaceRef.current)) return null;
-    return key;
-  }
-
-  function setTerminalFocus(focused: boolean) {
-    setTerminalFocusState(focused);
-    writeTerminalFocus(focused);
-    if (focused) setActiveRoom("command");
   }
 
   function updateGraphicsPreference(preference: GraphicsPreference) {
@@ -327,147 +197,95 @@ export function App() {
     return agentSessionsByWorkspace[normalizeWorkspaceKey(workspace)] ?? [];
   }, [agentSessionsByWorkspace, workspace]);
 
-  const reviewAgentSessions = useMemo(() => {
-    const orderedKeys = new Set<string>();
-    if (workspace) orderedKeys.add(normalizeWorkspaceKey(workspace));
-    for (const tab of workspaceTabs) orderedKeys.add(workspaceKey(tab));
-    for (const key of Object.keys(agentSessionsByWorkspace)) orderedKeys.add(key);
-    const sessions: AgentSession[] = [];
-    const seen = new Set<string>();
-    for (const key of orderedKeys) {
-      for (const session of agentSessionsByWorkspace[key] ?? []) {
-        const sessionKey = `${normalizeWorkspaceKey(session.workspace)}:${selectedAgentSessionKey(session)}`;
-        if (seen.has(sessionKey)) continue;
-        seen.add(sessionKey);
-        sessions.push(session);
-      }
-    }
-    return sessions;
-  }, [agentSessionsByWorkspace, workspace, workspaceTabs]);
-
   const refreshBackend = useCallback(async () => {
-    if (backendRefreshInFlight.current) return null;
+    if (backendRefreshInFlight.current) return;
     backendRefreshInFlight.current = true;
     try {
       const status = await desktop.checkBackendHealth();
       setBackend((current) => sameBackendStatus(current, status) ? current : status);
-      return status;
+    } catch (err) {
+      setError(String(err));
     } finally {
       backendRefreshInFlight.current = false;
     }
   }, []);
 
   const refreshElectronControl = useCallback(async () => {
+    let status: ElectronControlStatus;
     try {
-      const status = await desktop.checkControlHealth();
-      setElectronControl((current) => sameElectronControlStatus(current, status) ? current : status);
-      return status;
+      status = await desktop.checkControlHealth();
     } catch (err) {
-      const status = {
-        baseUrl: null,
-        port: null,
-        running: false,
-        lastError: String(err),
-      };
-      setElectronControl((current) => sameElectronControlStatus(current, status) ? current : status);
-      return status;
+      status = { baseUrl: null, port: null, running: false, lastError: String(err) };
     }
+    setElectronControl((current) => sameElectronControlStatus(current, status) ? current : status);
   }, []);
 
   const refreshSessions = useCallback(async () => {
     try {
-      const nextSessions = applyEmbeddedSessionRenames(await desktop.listEmbeddedTerminals(), sessionRenames);
+      const nextSessions = applyEmbeddedSessionRenames(await desktop.listEmbeddedTerminals(), sessionRenamesRef.current);
       setEmbeddedSessions((current) => sameEmbeddedSessions(current, nextSessions) ? current : nextSessions);
     } catch (err) {
       setError(String(err));
     }
-  }, [sessionRenames]);
+  }, []);
 
-  async function clearTerminalRestorePause() {
-    const nextState = await desktop.clearTerminalRestorePause();
-    setLaunchState(nextState);
-    setError(null);
-  }
-
-  const refreshWorkspaceAgentSessions = useCallback(async (targetWorkspace: string, options: { force?: boolean } = {}) => {
-    if (!targetWorkspace) return;
-    const requestedWorkspace = targetWorkspace;
-    const requestedWorkspaceKey = normalizeWorkspaceKey(requestedWorkspace);
-    if (agentSessionsRefreshInFlight.current.has(requestedWorkspaceKey)) return;
+  // Native session history is only needed while the Sessions tab is open, so
+  // the Command Room pulls it on demand instead of App scanning on every
+  // terminal change.
+  const refreshAgentSessions = useCallback(async (maxAgeMs = agentSessionMaxAgeMs) => {
+    const requestedWorkspace = activeWorkspaceRef.current;
+    if (!requestedWorkspace) return;
+    const requestedKey = normalizeWorkspaceKey(requestedWorkspace);
+    if (agentSessionsRefreshInFlight.current.has(requestedKey)) return;
     const now = Date.now();
-    const lastRefreshAt = agentSessionsLastRefreshAt.current.get(requestedWorkspaceKey) ?? 0;
-    if (!options.force && now - lastRefreshAt < nativeSessionRefreshIntervalMs) return;
-    agentSessionsLastRefreshAt.current.set(requestedWorkspaceKey, now);
-    agentSessionsRefreshInFlight.current.add(requestedWorkspaceKey);
+    if (now - (agentSessionsLastRefreshAt.current.get(requestedKey) ?? 0) < maxAgeMs) return;
+    agentSessionsLastRefreshAt.current.set(requestedKey, now);
+    agentSessionsRefreshInFlight.current.add(requestedKey);
     try {
-      const renames = sameWorkspacePath(requestedWorkspace, workspace) ? sessionRenames : readRenamedSessions(requestedWorkspace);
-      const sessions = applyAgentSessionRenames(await desktop.listAgentSessions(requestedWorkspace), renames);
+      // Read renames for the requested workspace directly: this can run (from
+      // the Sessions tab) before the workspace effect swaps sessionRenames.
+      const sessions = applyAgentSessionRenames(
+        await desktop.listAgentSessions(requestedWorkspace),
+        readRenamedSessions(requestedWorkspace),
+      );
       setAgentSessionsByWorkspace((current) => (
-        sameAgentSessions(current[requestedWorkspaceKey] ?? [], sessions)
+        sameAgentSessions(current[requestedKey] ?? [], sessions)
           ? current
-          : { ...current, [requestedWorkspaceKey]: sessions }
+          : { ...current, [requestedKey]: sessions }
       ));
     } catch (err) {
-      if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedWorkspaceKey) setError(String(err));
+      if (normalizeWorkspaceKey(activeWorkspaceRef.current) === requestedKey) setError(String(err));
     } finally {
-      agentSessionsRefreshInFlight.current.delete(requestedWorkspaceKey);
+      agentSessionsRefreshInFlight.current.delete(requestedKey);
     }
-  }, [sessionRenames, workspace]);
-
-  const refreshAgentSessions = useCallback(async (options: { force?: boolean } = {}) => {
-    if (!workspace) return;
-    await refreshWorkspaceAgentSessions(workspace, options);
-  }, [refreshWorkspaceAgentSessions, workspace]);
+  }, []);
 
   const refreshPerformanceDiagnostics = useCallback(async () => {
     try {
       const nextDiagnostics = await desktop.getPerformanceDiagnostics();
       setPerformanceDiagnostics((current) => samePerformanceDiagnostics(current, nextDiagnostics) ? current : nextDiagnostics);
     } catch {
-      setPerformanceDiagnostics((current) => samePerformanceDiagnostics(current, null) ? current : null);
+      setPerformanceDiagnostics(null);
     }
   }, []);
 
-  const refreshAgentMessages = useCallback(async () => {
-    if (!workspace) {
-      setAgentMessages((current) => sameAgentMessages(current, []) ? current : []);
-      return;
+  const refreshBackendDetails = useCallback(async () => {
+    if (!client) return;
+    const [nextHermes, nextAdapters] = await Promise.allSettled([client.hermesStatus(), client.adapters()]);
+    if (nextHermes.status === "fulfilled") {
+      setHermes((current) => sameJsonValue(current, nextHermes.value) ? current : nextHermes.value);
     }
-    try {
-      const nextMessages = await desktop.listAgentMessages(workspace, 100);
-      setAgentMessages((current) => sameAgentMessages(current, nextMessages) ? current : nextMessages);
-    } catch {
-      setAgentMessages((current) => sameAgentMessages(current, []) ? current : []);
+    if (nextAdapters.status === "fulfilled") {
+      setAdapters((current) => sameJsonValue(current, nextAdapters.value) ? current : nextAdapters.value);
     }
-  }, [workspace]);
-
-  const refreshData = useCallback(async () => {
-    if (!client || dataRefreshInFlight.current) return;
-    dataRefreshInFlight.current = true;
-    try {
-      const [hermes, recall, adapters, memory] = await Promise.all([
-        client.hermesStatus(),
-        workspace ? client.recallStatus(workspace) : Promise.resolve(null),
-        client.adapters(),
-        workspace ? client.projectMemory(workspace, 30) : client.recentMemory(30),
-      ]);
-      const nextState = { hermes, recall, adapters, memory };
-      setState((current) => sameLoadState(current, nextState) ? current : nextState);
-      setError(null);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      dataRefreshInFlight.current = false;
-    }
-  }, [client, workspace]);
+  }, [client]);
 
   useEffect(() => {
     let cancelled = false;
     if (uiTheme === "classic") {
       delete document.documentElement.dataset.theme;
       delete document.documentElement.dataset.themeLoaded;
-      const themeStyle = document.getElementById(uiThemeStyleElementId);
-      themeStyle?.remove();
+      document.getElementById(uiThemeStyleElementId)?.remove();
       return;
     }
 
@@ -508,24 +326,27 @@ export function App() {
         const fallbackTheme = parseUiTheme(storedValue(uiThemeStorageKey));
         if (fallbackTheme) writeUiTheme(fallbackTheme);
       }
-      const preferredMode = readInterfaceModeValue(preferences[interfaceModeStorageKey] ?? null);
+      const preferredMode = parseInterfaceMode(preferences[interfaceModeStorageKey] ?? null);
       if (preferredMode) setInterfaceModeState(preferredMode);
       else {
-        const fallbackMode = readInterfaceModeValue(storedValue(interfaceModeStorageKey));
+        const fallbackMode = parseInterfaceMode(storedValue(interfaceModeStorageKey));
         if (fallbackMode) writeInterfaceMode(fallbackMode);
       }
-      const preferredFocus = readTerminalFocusValue(preferences[terminalFocusStorageKey] ?? null);
+      const preferredFocus = parseTerminalFocus(preferences[terminalFocusStorageKey] ?? null);
       if (preferredFocus != null) setTerminalFocusState(preferredFocus);
       else {
-        const fallbackFocus = readTerminalFocusValue(storedValue(terminalFocusStorageKey));
+        const fallbackFocus = parseTerminalFocus(storedValue(terminalFocusStorageKey));
         if (fallbackFocus != null) writeTerminalFocus(fallbackFocus);
       }
       const preferredTabs = readWorkspaceListValue(preferences[workspaceListStorageKey] ?? null);
       if (preferredTabs.length > 0) setWorkspaceTabs(preferredTabs);
-      else if (readWorkspaceList().length > 0) writeWorkspaceList(readWorkspaceList());
+      else {
+        const fallbackTabs = readWorkspaceList();
+        if (fallbackTabs.length > 0) writeWorkspaceList(fallbackTabs);
+      }
       preferencesLoaded.current = true;
 
-      const stored = parseStoredWorkspace(preferences[workspaceStorageKey] ?? storedWorkspaceValue());
+      const stored = parseStoredWorkspace(preferences[workspaceStorageKey] ?? storedValue(workspaceStorageKey));
       const workspacePromise = stored ? desktop.toWorkspacePath(stored) : desktop.getDefaultWorkspace();
       workspacePromise
         // Restoring here brings saved terminals back on app launch; the main
@@ -535,13 +356,7 @@ export function App() {
         .catch((err) => setError(String(err)));
     })();
 
-    desktop
-      .getBackendState()
-      .then((status) => {
-        setBackend(status);
-        if (status.healthy) void refreshData();
-      })
-      .catch((err) => setError(String(err)));
+    desktop.getBackendState().then(setBackend).catch((err) => setError(String(err)));
     desktop
       .getControlState()
       .then((status) => {
@@ -559,15 +374,14 @@ export function App() {
       })
       .catch(() => undefined);
     desktop.getGraphicsStatus().then(setGraphicsStatus).catch(() => undefined);
-  }, [refreshData, refreshElectronControl, refreshSessions, sessionRenames]);
+  }, [refreshElectronControl]);
 
   useEffect(() => {
-    if (!workspacePath || !restoreRequest || restoreRequest.workspaceKey !== workspaceKey(workspacePath)) return;
-    const allowedWorkspaces = [workspacePath.nativePath].filter(Boolean);
+    if (!restoreRequest) return;
     desktop
-      .restoreEmbeddedTerminals(allowedWorkspaces)
+      .restoreEmbeddedTerminals([restoreRequest.workspace.nativePath])
       .then((sessions) => {
-        const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenames);
+        const nextSessions = applyEmbeddedSessionRenames(sessions, sessionRenamesRef.current);
         setEmbeddedSessions((current) => {
           const byId = new Map(current.map((session) => [session.id, session]));
           for (const session of nextSessions) byId.set(session.id, session);
@@ -579,17 +393,7 @@ export function App() {
         setError(String(err));
         void refreshSessions();
       });
-  }, [refreshSessions, restoreRequest, sessionRenames, workspacePath]);
-
-  useEffect(() => {
-    void refreshAgentSessions({ force: true });
-  }, [refreshAgentSessions, embeddedSessions]);
-
-  useEffect(() => {
-    const workspaces = new Set(workspaceTabs.map((tab) => tab.nativePath).filter(Boolean));
-    if (workspace) workspaces.add(workspace);
-    for (const reviewWorkspace of workspaces) void refreshWorkspaceAgentSessions(reviewWorkspace);
-  }, [embeddedSessions, refreshWorkspaceAgentSessions, workspace, workspaceTabs]);
+  }, [refreshSessions, restoreRequest]);
 
   useEffect(() => {
     embeddedSessionsRef.current = embeddedSessions;
@@ -599,17 +403,25 @@ export function App() {
   }, [embeddedSessions]);
 
   useEffect(() => {
-    activeWorkspaceRef.current = workspace;
     clearWorkspaceAttention(workspace);
     const nextRenames = readRenamedSessions(workspace);
+    sessionRenamesRef.current = nextRenames;
     setSessionRenames(nextRenames);
     setEmbeddedSessions((current) => applyEmbeddedSessionRenames(current, nextRenames));
     if (workspace) agentSessionsLastRefreshAt.current.set(normalizeWorkspaceKey(workspace), 0);
   }, [workspace]);
 
+  // Hermes and adapter detection can spawn subprocesses in the backend. Load
+  // them when the backend (re)connects and whenever Settings is opened.
   useEffect(() => {
-    void refreshData();
-  }, [refreshData]);
+    void refreshBackendDetails();
+  }, [refreshBackendDetails]);
+
+  useEffect(() => {
+    if (activeRoom !== "settings") return;
+    void refreshBackendDetails();
+    void refreshPerformanceDiagnostics();
+  }, [activeRoom, refreshBackendDetails, refreshPerformanceDiagnostics]);
 
   useEffect(() => {
     const removeSession = desktop.onEmbeddedTerminalSession((session) => {
@@ -644,31 +456,37 @@ export function App() {
     };
   }, []);
 
+  // One stable poll loop. It does nothing while the window is hidden or
+  // minimized, and catches up as soon as the window becomes visible again.
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refreshBackend().then((status) => {
-        if (status?.healthy) void refreshData();
-      });
+    const tick = () => {
+      if (!documentVisible()) return;
+      void refreshBackend();
       void refreshElectronControl();
       void refreshSessions();
-      if (activeRoom === "command" || activeRoom === "review" || activeRoom === "swarm") {
-        void refreshAgentSessions();
-      }
-      if (activeRoom === "settings") void refreshPerformanceDiagnostics();
-      if (activeRoom === "swarm") void refreshAgentMessages();
-    }, appRefreshIntervalMs);
+      if (activeRoomRef.current === "settings") void refreshPerformanceDiagnostics();
+    };
+    const timer = window.setInterval(tick, statusPollIntervalMs);
+    const handleVisibility = () => {
+      if (documentVisible()) tick();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [refreshBackend, refreshElectronControl, refreshPerformanceDiagnostics, refreshSessions]);
+
+  // While the backend is starting (or down), check more often so the status
+  // flips to Ready promptly; once healthy the regular poll takes over.
+  const backendHealthy = Boolean(backend?.healthy);
+  useEffect(() => {
+    if (backendHealthy) return undefined;
+    const timer = window.setInterval(() => {
+      if (documentVisible()) void refreshBackend();
+    }, 3_000);
     return () => window.clearInterval(timer);
-  }, [activeRoom, refreshBackend, refreshData, refreshElectronControl, refreshSessions, refreshAgentSessions, refreshPerformanceDiagnostics, refreshAgentMessages]);
-
-  useEffect(() => {
-    if (activeRoom !== "settings") return;
-    void refreshPerformanceDiagnostics();
-  }, [activeRoom, refreshPerformanceDiagnostics]);
-
-  useEffect(() => {
-    if (activeRoom !== "swarm") return;
-    void Promise.all([refreshAgentMessages(), refreshPerformanceDiagnostics()]);
-  }, [activeRoom, refreshAgentMessages, refreshPerformanceDiagnostics]);
+  }, [backendHealthy, refreshBackend]);
 
   useEffect(() => {
     if (!terminalFocus) return undefined;
@@ -679,18 +497,10 @@ export function App() {
     return () => document.removeEventListener("keydown", exitOnEscape);
   }, [terminalFocus]);
 
-  useEffect(() => {
-    if (!workspace || !state.recall?.stale || !state.recall.refresh_configured) return;
-    if (autoRecallRefreshWorkspace.current === workspace) return;
-    autoRecallRefreshWorkspace.current = workspace;
-    void refreshRecall("Workspace selected", { surfaceError: false });
-  }, [workspace, state.recall?.stale, state.recall?.refresh_configured]);
-
-  async function restartBackend() {
+  async function runBusy(action: () => Promise<void>) {
     setBusy(true);
     try {
-      const status = await desktop.restartBackend();
-      setBackend(status);
+      await action();
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -699,16 +509,20 @@ export function App() {
     }
   }
 
-  async function restartElectronControl() {
-    setBusy(true);
+  function restartBackend() {
+    return runBusy(async () => setBackend(await desktop.restartBackend()));
+  }
+
+  function restartElectronControl() {
+    return runBusy(async () => setElectronControl(await desktop.restartControl()));
+  }
+
+  async function clearTerminalRestorePause() {
     try {
-      const status = await desktop.restartControl();
-      setElectronControl(status);
+      setLaunchState(await desktop.clearTerminalRestorePause());
       setError(null);
     } catch (err) {
       setError(String(err));
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -730,15 +544,11 @@ export function App() {
     }
   }
 
-  function activateWorkspace(nextWorkspace: WorkspacePath, options: { restoreTerminals?: boolean } = {}) {
+  function activateWorkspace(nextWorkspace: WorkspacePath) {
     setWorkspacePath(nextWorkspace);
     setWorkspaceTabs((current) => upsertWorkspace(current, nextWorkspace));
     clearWorkspaceAttention(nextWorkspace);
-    setSelectedSessionKey(null);
-    setState((current) => ({ ...current, recall: null }));
-    if (options.restoreTerminals !== false) {
-      setRestoreRequest({ workspaceKey: workspaceKey(nextWorkspace), nonce: Date.now() });
-    }
+    setRestoreRequest({ workspace: nextWorkspace, nonce: Date.now() });
   }
 
   function closeWorkspaceTab(tab: WorkspacePath) {
@@ -748,7 +558,8 @@ export function App() {
       .filter((session) => sameWorkspacePath(session.workspace, tab.nativePath))
       .map((session) => session.id);
     if (workspaceSessionIds.length > 0) {
-      setEmbeddedSessions((current) => current.filter((session) => !workspaceSessionIds.includes(session.id)));
+      const closing = new Set(workspaceSessionIds);
+      setEmbeddedSessions((current) => current.filter((session) => !closing.has(session.id)));
       void Promise.allSettled(workspaceSessionIds.map((id) => desktop.killEmbeddedTerminal(id))).then((results) => {
         const failure = results.find((result): result is PromiseRejectedResult =>
           result.status === "rejected" && !String(result.reason).includes("Embedded terminal not found"),
@@ -764,19 +575,13 @@ export function App() {
     });
     setWorkspaceTabs((current) => {
       const next = current.filter((item) => workspaceKey(item) !== key);
-      if (workspacePath && workspaceKey(workspacePath) === key) {
-        const replacement = next[0] ?? null;
-        setWorkspacePath(replacement);
-        setSelectedSessionKey(null);
-        setState((currentState) => ({ ...currentState, recall: null }));
-      }
+      if (normalizeWorkspaceKey(activeWorkspaceRef.current) === key) setWorkspacePath(next[0] ?? null);
       return next;
     });
   }
 
   function renameWorkspaceTab(tab: WorkspacePath) {
-    const nextName = window.prompt("Workspace display name", workspaceDisplayName(tab));
-    const trimmed = nextName?.trim();
+    const trimmed = window.prompt("Workspace display name", workspaceDisplayName(tab))?.trim();
     if (!trimmed) return;
     setWorkspaceTabs((current) =>
       current.map((item) => workspaceKey(item) === workspaceKey(tab) ? { ...item, displayPath: trimmed } : item),
@@ -787,27 +592,9 @@ export function App() {
   async function openWorkspaceInFiles(tab: WorkspacePath) {
     try {
       const opened = await desktop.openPath(tab.nativePath);
-      if (!opened) setError(`Unable to open workspace folder: ${tab.nativePath}`);
-      else setError(null);
+      setError(opened ? null : `Unable to open workspace folder: ${tab.nativePath}`);
     } catch (err) {
       setError(String(err));
-    }
-  }
-
-  async function refreshRecall(taskHint = "Manual recall refresh", options: { surfaceError?: boolean } = {}) {
-    if (!client || !workspace || recallRefreshing) return null;
-    const surfaceError = options.surfaceError ?? true;
-    setRecallRefreshing(true);
-    if (surfaceError) setError(null);
-    try {
-      const result = await client.refreshRecall(workspace, taskHint);
-      setState((current) => ({ ...current, recall: result.recall }));
-      return result.recall;
-    } catch (err) {
-      if (surfaceError) setError(String(err));
-      return null;
-    } finally {
-      setRecallRefreshing(false);
     }
   }
 
@@ -817,7 +604,7 @@ export function App() {
     setError(null);
     try {
       const result = await client.installHermes();
-      setState((current) => ({ ...current, hermes: result.hermes }));
+      setHermes(result.hermes);
       if (result.returncode !== 0) {
         setError(result.stderr.trim() || `Hermes install exited with status ${result.returncode}.`);
       }
@@ -828,44 +615,28 @@ export function App() {
     }
   }
 
-  async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1, contextMode?: AgentContextMode) {
+  async function launchEmbedded(kind: EmbeddedTerminalKind, count = 1) {
     if (!workspace || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
+    await runBusy(async () => {
       const titles = terminalGridTitles(kind);
       const launchOptions = Array.from({ length: count }, (_, index) => ({
         kind,
-        title: contextMode === "immersive" && count === 1 && isRecallLaunchKind(kind)
-          ? `${providerLabel(kind)} Recall`
-          : titles[index] ?? `${kind}-${index + 1}`,
+        title: titles[index] ?? `${kind}-${index + 1}`,
         cols: 96,
         rows: 28,
-        sessionLabel: kind === "shell" || kind === "hermes" ? undefined : contextMode === "immersive" ? "Recall" : "New",
-        contextMode,
+        sessionLabel: kind === "shell" || kind === "hermes" ? undefined : "New",
       }));
       const created = await desktop.spawnEmbeddedTerminals(workspace, launchOptions);
       setEmbeddedSessions((current) => count > 1
         ? [...created.reverse(), ...current.filter((item) => !created.some((createdItem) => createdItem.id === item.id))]
         : appendEmbeddedSessions(current, created));
       if (count > 1) setLayoutResetNonce((value) => value + 1);
-      const launchSucceeded = created.length === count && created.every((session) => session.status === "running");
-      if (launchSucceeded && contextMode === "immersive" && client && state.recall?.exists && isRecallLaunchKind(kind)) {
-        const result = await client.markRecallUsed(workspace, kind);
-        setState((current) => ({ ...current, recall: result.recall }));
-      }
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function resumeAgentSession(session: AgentSession) {
     if (!workspace || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
+    await runBusy(async () => {
       const created = await desktop.spawnEmbeddedTerminal(workspace, {
         kind: session.provider,
         title: `${providerLabel(session.provider)} Resume`,
@@ -876,13 +647,8 @@ export function App() {
         providerSessionId: session.id,
       });
       setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
-      setTerminalFocus(true);
       setActiveRoom("command");
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function closeEmbeddedTerminal(id: string) {
@@ -897,8 +663,7 @@ export function App() {
   async function renameEmbeddedSession(session: EmbeddedTerminalSession) {
     const nextTitle = window.prompt("Rename session", session.title)?.trim();
     if (!nextTitle || nextTitle === session.title) return;
-    const key = embeddedSessionKey(session);
-    const nextRenames = { ...sessionRenames, [key]: nextTitle };
+    const nextRenames = { ...sessionRenames, [embeddedSessionKey(session)]: nextTitle };
     setSessionRenames(nextRenames);
     writeRenamedSessions(workspace, nextRenames);
     setEmbeddedSessions((current) => current.map((item) => item.id === session.id ? { ...item, title: nextTitle } : item));
@@ -910,15 +675,15 @@ export function App() {
     if (!nextTitle || nextTitle === session.title) return;
     const key = selectedAgentSessionKey(session);
     const renameWorkspace = session.workspace || workspace;
-    const existingRenames = sameWorkspacePath(renameWorkspace, workspace) ? sessionRenames : readRenamedSessions(renameWorkspace);
-    const nextRenames = { ...existingRenames, [key]: nextTitle };
-    if (sameWorkspacePath(renameWorkspace, workspace)) setSessionRenames(nextRenames);
+    const activeWorkspace = sameWorkspacePath(renameWorkspace, workspace);
+    const nextRenames = { ...(activeWorkspace ? sessionRenames : readRenamedSessions(renameWorkspace)), [key]: nextTitle };
+    if (activeWorkspace) setSessionRenames(nextRenames);
     writeRenamedSessions(renameWorkspace, nextRenames);
     setAgentSessionsByWorkspace((current) => {
-      const workspaceKey = normalizeWorkspaceKey(renameWorkspace);
+      const renameKey = normalizeWorkspaceKey(renameWorkspace);
       return {
         ...current,
-        [workspaceKey]: (current[workspaceKey] ?? []).map((item) => selectedAgentSessionKey(item) === key ? { ...item, title: nextTitle } : item),
+        [renameKey]: (current[renameKey] ?? []).map((item) => selectedAgentSessionKey(item) === key ? { ...item, title: nextTitle } : item),
       };
     });
   }
@@ -928,17 +693,22 @@ export function App() {
     if (!trimmed || sessionIds.length === 0) return;
 
     const sessionById = new Map(embeddedSessions.map((session) => [session.id, session]));
+    const chatView = interfaceMode === "chat";
     const results = await Promise.allSettled(sessionIds.map(async (id) => {
       const session = sessionById.get(id);
       if (!session) throw new Error(`Embedded session ${id} is no longer available.`);
-      const marker = await desktop.getEmbeddedTerminalBuffer(id).then((value) => value.length).catch(() => 0);
+      // Only the chat view needs a buffer marker to anchor the prompt bubble;
+      // skip copying the whole terminal buffer over IPC otherwise.
+      const marker = chatView
+        ? await desktop.getEmbeddedTerminalBuffer(id).then((value) => chatStreamEndForBuffer(id, value)).catch(() => 0)
+        : 0;
       await writePromptSequence(
         session.kind,
         trimmed,
         (data) => desktop.writeEmbeddedTerminal(id, data),
         delay,
       );
-      recordChatPromptForSession(id, trimmed, marker);
+      if (chatView) recordChatPromptForSession(id, trimmed, marker);
     }));
     const failed = results.filter((result) => result.status === "rejected").length;
     if (failed > 0) {
@@ -948,235 +718,37 @@ export function App() {
     setError(null);
   }
 
-  async function sendAgentMessage(toTerminalId: string, text: string, replyRequested: boolean) {
-    if (!toTerminalId.trim() || !text.trim()) return;
-    try {
-      await desktop.sendAgentMessage({ to: toTerminalId, text, workspace, replyRequested });
-      await Promise.all([refreshAgentMessages(), refreshPerformanceDiagnostics()]);
-      setError(null);
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
-  async function deleteMemoryEntry(entry: string) {
-    if (!client || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await client.deleteMemory(entry);
-      await refreshData();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveHandoffToRecall(markdown: string, metadata: {
-    sourceCount?: number;
-    sourceTitles?: string[];
-    schemaVersion?: number;
-    handoffId?: string;
-    confidence?: string;
-    sourceWorkspaces?: string[];
-    sourceSessions?: HandoffPreview["sourceSessions"];
-  } = {}) {
-    if (!client || !workspace) throw new Error("Backend or workspace is not available.");
-    const result = await client.writeRecall(workspace, markdown, "athena-session-handoff", {
-      source_count: metadata.sourceCount,
-      source_titles: metadata.sourceTitles,
-      schema_version: metadata.schemaVersion,
-      handoff_id: metadata.handoffId,
-      confidence: metadata.confidence,
-      source_workspaces: metadata.sourceWorkspaces,
-      source_sessions: metadata.sourceSessions,
-    });
-    setState((current) => ({ ...current, recall: result.recall }));
-    setError(null);
-  }
-
-  const loadWorkspaceSnapshot = useCallback(async () => {
-    if (!client || !workspace) return null;
-    return client.workspaceSnapshot(workspace);
-  }, [client, workspace]);
-
-  async function startFreshFromHandoff(
-    kind: HandoffAgentKind,
-    preview: HandoffPreview,
-  ) {
-    if (!client || !workspace) throw new Error("Backend or workspace is not available.");
-    if (!sameWorkspacePath(preview.workspace, workspace)) {
-      throw new Error("This handoff was generated for a different workspace. Create a new preview before launching.");
-    }
-
-    await saveHandoffToRecall(preview.markdown, {
-      sourceCount: preview.sourceCount,
-      sourceTitles: preview.sourceTitles,
-      schemaVersion: preview.schemaVersion,
-      handoffId: preview.handoffId,
-      confidence: preview.confidence,
-      sourceWorkspaces: preview.sourceWorkspaces,
-      sourceSessions: preview.sourceSessions,
-    });
-    const created = await desktop.spawnEmbeddedTerminal(workspace, handoffLaunchOptions(kind, preview.markdown));
-    if (created.status === "failed") {
-      throw new Error(created.error || `Unable to launch ${providerLabel(kind)} from the handoff.`);
-    }
-
-    setEmbeddedSessions((current) => appendEmbeddedSessions(current, [created]));
-    setTerminalFocus(true);
-    setActiveRoom("command");
-    try {
-      const result = await client.markRecallUsed(workspace, kind);
-      setState((current) => ({ ...current, recall: result.recall }));
-    } catch (err) {
-      setError(`Handoff launched, but recall usage could not be recorded: ${String(err)}`);
-    }
-  }
-
   const activeEmbeddedSessions = useMemo(
     () => embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace)),
     [embeddedSessions, workspace],
   );
-  const selectedEmbeddedSession = embeddedSessions.find((session) => embeddedSessionKey(session) === selectedSessionKey) ?? null;
-  const selectedAgentSession = reviewAgentSessions.find((session) => selectedAgentSessionKey(session) === selectedSessionKey) ?? null;
-  const memoryEntries = [...state.memory].reverse();
-  const codexInstalled = Boolean(state.adapters.codex?.installed);
-  const installedAdapters = Object.values(state.adapters).filter((adapter) => adapter.installed).length;
-  const liveSessionCount = activeEmbeddedSessions.filter((session) => session.status === "running").length;
-  const reviewSessionCount = embeddedSessions.length + reviewAgentSessions.length;
-  const activeRoute = roomRouteById[activeRoom];
-  const workspaceSummaries = useMemo<WorkspaceSummary[]>(() => {
-    return workspaceTabs.map((tab) => {
-      const tabTerminals = embeddedSessions.filter((session) => sameWorkspacePath(session.workspace, tab.nativePath));
-      const active = workspacePath ? workspaceKey(workspacePath) === workspaceKey(tab) : false;
-      const latestTerminalAt = tabTerminals
-        .map((session) => session.createdAt)
-        .filter(Boolean)
-        .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
-      const latestAgentAt = active
-        ? agentSessions
-            .map((session) => session.updatedAt)
-            .filter(Boolean)
-            .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null
-        : null;
-      const lastActiveAt = [latestTerminalAt, latestAgentAt]
-        .filter((value): value is string => Boolean(value))
-        .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
-      return {
-        workspace: tab,
-        active,
-        runningTerminals: tabTerminals.filter((session) => session.status === "running").length,
-        totalTerminals: tabTerminals.length,
-        agentSessions: active ? agentSessions.length : null,
-        memoryEntries: active ? state.memory.length : null,
-        recall: active ? state.recall : null,
-        lastActiveAt,
-      };
-    });
-  }, [agentSessions, embeddedSessions, state.memory.length, state.recall, workspacePath, workspaceTabs]);
-
-  const loadAgentTranscript = useCallback(async (session: AgentSession) => {
-    const key = selectedAgentSessionKey(session);
-    setSelectedSessionKey(key);
-    setActiveRoom("review");
-    setAgentTranscript({ key, text: "", loading: true, error: null });
-    if (!client) {
-      setAgentTranscript({ key, text: "", loading: false, error: "Backend is not available." });
-      return "";
-    }
-    try {
-      const text = await client.agentSessionTranscript(session.provider, session.id);
-      setAgentTranscript({ key, text, loading: false, error: null });
-      return text;
-    } catch (err) {
-      setAgentTranscript({ key, text: "", loading: false, error: String(err) });
-      return "";
-    }
-  }, [client]);
-
-  const readAgentTranscript = useCallback(async (session: AgentSession) => {
-    if (!client) return "";
-    return client.agentSessionTranscript(session.provider, session.id);
-  }, [client]);
-
-  const agentRoles: AgentRole[] = [
-    {
-      role: "Builder",
-      type: "codex",
-      icon: <Wrench size={18} />,
-      status: liveSessionCount ? "running" : codexInstalled ? "ready" : "offline",
-      brief: "Implements changes against the active workspace.",
-    },
-    {
-      role: "Reviewer",
-      type: "codex",
-      icon: <Eye size={18} />,
-      status: codexInstalled ? "ready" : "offline",
-      brief: "Inspects diffs, checks, and session output.",
-    },
-    {
-      role: "Scout",
-      type: "opencode",
-      icon: <Search size={18} />,
-      status: state.adapters.opencode?.installed ? "ready" : "waiting",
-      brief: "Explores code, docs, and Hermes memory for context.",
-    },
-    {
-      role: "Fixer",
-      type: "claude",
-      icon: <ShieldCheck size={18} />,
-      status: state.adapters.claude?.installed ? "ready" : "waiting",
-      brief: "Works through failures and follow-up fixes.",
-    },
-  ];
+  const shellFocus = terminalFocus && activeRoom === "command";
+  const notice = error ?? (!backend?.healthy ? backend?.lastError : null) ?? (!electronControl?.running ? electronControl?.lastError : null) ?? null;
 
   return (
     <div className="appFrame">
       <AppTitleBar
-        activeLabel={activeRoute.label}
-        workspace={workspaceDisplay}
-        backendOnline={Boolean(backend?.healthy)}
-        controlOnline={Boolean(electronControl?.running)}
-        shellFocus={terminalFocus && activeRoom === "command"}
-      />
-      <main className={terminalFocus && activeRoom === "command" ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
-      <AppSidebar
         activeRoom={activeRoom}
         backendOnline={Boolean(backend?.healthy)}
         controlOnline={Boolean(electronControl?.running)}
-        hermesOnline={Boolean(state.hermes?.installed)}
         onNavigate={setActiveRoom}
       />
-
-      <section className={terminalFocus && activeRoom === "command" ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
-        {(error || (!backend?.healthy && backend?.lastError) || (!electronControl?.running && electronControl?.lastError)) && (
-          <div className="noticeBar">{error ?? backend?.lastError ?? electronControl?.lastError}</div>
-        )}
-        <section className="dashboardGrid">
-          <div className="commandColumn">
-            <header className="dashboardHeader">
-              <div>
-                <h1>{activeRoute.label}</h1>
-                <p>{activeRoute.description}</p>
-              </div>
-            </header>
-            <WorkspaceTabs
-              workspaces={workspaceTabs}
-              activeWorkspace={workspacePath}
-              terminalSessions={embeddedSessions}
-              attentionByWorkspace={workspaceAttention}
-              onSelect={activateWorkspace}
-              onClose={closeWorkspaceTab}
-              onAdd={selectWorkspace}
-              onCreate={createWorkspace}
-              onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
-            />
-
-            {terminalFocus && activeRoom === "command" && (
+      <main className={shellFocus ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
+        <section className={shellFocus ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
+          <section className="dashboardGrid">
+            <div className="commandColumn">
+              {notice && (
+                <div className="noticeBar" role="status">
+                  <span>{notice}</span>
+                  {error && (
+                    <button type="button" className="noticeDismiss" onClick={() => setError(null)} aria-label="Dismiss message">
+                      <X size={12} />
+                    </button>
+                  )}
+                </div>
+              )}
               <WorkspaceTabs
-                className="focusWorkspaceTabs"
+                className={shellFocus ? "focusWorkspaceTabs" : ""}
                 workspaces={workspaceTabs}
                 activeWorkspace={workspacePath}
                 terminalSessions={embeddedSessions}
@@ -1185,175 +757,76 @@ export function App() {
                 onClose={closeWorkspaceTab}
                 onAdd={selectWorkspace}
                 onCreate={createWorkspace}
-                onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
-              />
-            )}
-
-            {activeRoom === "command" && (
-              <CommandRoom
-                workspace={workspace}
-                sessions={activeEmbeddedSessions}
-                agentSessions={agentSessions}
-                busy={busy}
-                focused={terminalFocus}
-                recallAvailable={Boolean(state.recall?.exists)}
-                layoutResetNonce={layoutResetNonce}
-                interfaceMode={interfaceMode}
-                onFocusChange={setTerminalFocus}
-                onLaunch={launchEmbedded}
-                onClose={closeEmbeddedTerminal}
-                onBroadcastPrompt={broadcastPromptToAgents}
-                onResumeSession={resumeAgentSession}
-                onInspectEmbeddedSession={(session) => {
-                  setSelectedSessionKey(embeddedSessionKey(session));
-                  setActiveRoom("review");
-                }}
-                onRenameEmbeddedSession={renameEmbeddedSession}
-                onInspectAgentSession={(session) => {
-                  setSelectedSessionKey(selectedAgentSessionKey(session));
-                  setActiveRoom("review");
-                }}
-                onRenameAgentSession={renameAgentSession}
-                onViewAgentTranscript={loadAgentTranscript}
-                emptyMark={<AthenaMark />}
-              />
-            )}
-            {activeRoom === "workspace" && (
-              <WorkspaceRoom
-                summaries={workspaceSummaries}
-                activeWorkspace={workspacePath}
-                terminalSessions={embeddedSessions}
-                agentSessions={agentSessions}
-                busy={busy || recallRefreshing}
-                onAdd={selectWorkspace}
-                onOpen={activateWorkspace}
-                onOpenInFiles={(workspace) => void openWorkspaceInFiles(workspace)}
-                onRemove={closeWorkspaceTab}
                 onRename={renameWorkspaceTab}
-                onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
+                onOpenInFiles={(tab) => void openWorkspaceInFiles(tab)}
               />
-            )}
-            {activeRoom === "swarm" && (
-              <SwarmRoom
-                roles={agentRoles}
-                sessions={activeEmbeddedSessions}
-                agentSessions={agentSessions}
-                agentMessages={agentMessages}
-                terminalControl={performanceDiagnostics?.terminalControl ?? []}
-                onOpenCommand={() => setActiveRoom("command")}
-                onSendAgentMessage={sendAgentMessage}
-                onInspectEmbeddedSession={(session) => {
-                  setSelectedSessionKey(embeddedSessionKey(session));
-                  setActiveRoom("review");
-                }}
-                onInspectAgentSession={(session) => {
-                  setSelectedSessionKey(selectedAgentSessionKey(session));
-                  setActiveRoom("review");
-                }}
-              />
-            )}
-            {activeRoom === "review" && (
-              <ReviewRoom
-                embeddedSessions={embeddedSessions}
-                agentSessions={reviewAgentSessions}
-                selectedEmbeddedSession={selectedEmbeddedSession}
-                selectedAgentSession={selectedAgentSession}
-                selectedSessionKey={selectedSessionKey}
-                agentTranscript={agentTranscript}
-                workspace={workspace}
-                onSelectEmbeddedSession={(session) => setSelectedSessionKey(embeddedSessionKey(session))}
-                onSelectAgentSession={(session) => setSelectedSessionKey(selectedAgentSessionKey(session))}
-                onLoadAgentTranscript={loadAgentTranscript}
-                onReadAgentTranscript={readAgentTranscript}
-                onLoadWorkspaceSnapshot={loadWorkspaceSnapshot}
-                onSaveHandoff={(preview) => saveHandoffToRecall(preview.markdown, {
-                  sourceCount: preview.sourceCount,
-                  sourceTitles: preview.sourceTitles,
-                  schemaVersion: preview.schemaVersion,
-                  handoffId: preview.handoffId,
-                  confidence: preview.confidence,
-                  sourceWorkspaces: preview.sourceWorkspaces,
-                  sourceSessions: preview.sourceSessions,
-                })}
-                onStartFreshFromHandoff={startFreshFromHandoff}
-              />
-            )}
-            {activeRoom === "memory" && <MemoryRoom entries={memoryEntries} busy={busy} onDelete={deleteMemoryEntry} mark={<AthenaMark />} />}
-            {activeRoom === "settings" && (
-              <SettingsRoom
-                workspace={workspaceDisplay}
-                backend={backend}
-                electronControl={electronControl}
-                hermes={state.hermes}
-                recall={state.recall}
-                adapters={state.adapters}
-                busy={busy}
-                refreshing={recallRefreshing}
-                installingHermes={installingHermes}
-                onInstallHermes={installHermes}
-                interfaceMode={interfaceMode}
-                uiTheme={uiTheme}
-                terminalFocus={terminalFocus}
-                performance={performanceDiagnostics}
-                launchState={launchState}
-                graphics={graphicsStatus}
-                onSelectWorkspace={selectWorkspace}
-                onRestartBackend={restartBackend}
-                onRestartControl={restartElectronControl}
-                onClearTerminalRestorePause={clearTerminalRestorePause}
-                onRefreshRecall={() => void refreshRecall("Manual recall refresh")}
-                onInterfaceModeChange={setInterfaceMode}
-                onThemeChange={setUiTheme}
-                onTerminalFocusChange={setTerminalFocus}
-                onGraphicsPreferenceChange={updateGraphicsPreference}
-              />
-            )}
 
-            <LiveWorkflow activeSessions={liveSessionCount} reviewSessions={reviewSessionCount} memoryCount={state.memory.length} />
-          </div>
-
-          <aside className="glanceColumn">
-            <ContextGlance
-              tasks={reviewSessionCount}
-              active={liveSessionCount}
-              agents={installedAdapters}
-              memory={state.memory.length}
-              reviews={reviewSessionCount}
-              onNavigate={setActiveRoom}
-            />
-          </aside>
-
-          <SharedMemorySnapshot
-            workspace={workspaceDisplay}
-            entries={memoryEntries}
-            hermes={state.hermes}
-            recall={state.recall}
-            embeddedSessions={activeEmbeddedSessions}
-            agentSessions={agentSessions}
-            refreshing={recallRefreshing}
-            onRefresh={() => void refreshRecall("Manual recall refresh")}
-          />
+              {activeRoom === "command" && (
+                <CommandRoom
+                  workspace={workspace}
+                  sessions={activeEmbeddedSessions}
+                  agentSessions={agentSessions}
+                  busy={busy}
+                  focused={terminalFocus}
+                  layoutResetNonce={layoutResetNonce}
+                  interfaceMode={interfaceMode}
+                  onFocusChange={setTerminalFocus}
+                  onLaunch={launchEmbedded}
+                  onClose={closeEmbeddedTerminal}
+                  onBroadcastPrompt={broadcastPromptToAgents}
+                  onResumeSession={resumeAgentSession}
+                  onRenameEmbeddedSession={renameEmbeddedSession}
+                  onRenameAgentSession={renameAgentSession}
+                  onRefreshAgentSessions={refreshAgentSessions}
+                  emptyMark={<AthenaMark />}
+                />
+              )}
+              {activeRoom === "settings" && (
+                <SettingsRoom
+                  workspace={workspaceDisplay}
+                  backend={backend}
+                  electronControl={electronControl}
+                  hermes={hermes}
+                  adapters={adapters}
+                  busy={busy}
+                  installingHermes={installingHermes}
+                  onInstallHermes={installHermes}
+                  interfaceMode={interfaceMode}
+                  uiTheme={uiTheme}
+                  terminalFocus={terminalFocus}
+                  performance={performanceDiagnostics}
+                  launchState={launchState}
+                  graphics={graphicsStatus}
+                  onSelectWorkspace={selectWorkspace}
+                  onRestartBackend={restartBackend}
+                  onRestartControl={restartElectronControl}
+                  onClearTerminalRestorePause={clearTerminalRestorePause}
+                  onRefreshDiagnostics={refreshPerformanceDiagnostics}
+                  onInterfaceModeChange={setInterfaceMode}
+                  onThemeChange={setUiTheme}
+                  onTerminalFocusChange={setTerminalFocus}
+                  onGraphicsPreferenceChange={updateGraphicsPreference}
+                />
+              )}
+            </div>
+          </section>
         </section>
-      </section>
       </main>
     </div>
   );
 }
 
 function AppTitleBar({
-  activeLabel,
-  workspace,
+  activeRoom,
   backendOnline,
   controlOnline,
-  shellFocus,
+  onNavigate,
 }: {
-  activeLabel: string;
-  workspace: string;
+  activeRoom: ActiveRoom;
   backendOnline: boolean;
   controlOnline: boolean;
-  shellFocus: boolean;
+  onNavigate: (room: ActiveRoom) => void;
 }) {
-  const detail = workspace ? workspace.split(/[\\/]/).filter(Boolean).at(-1) ?? workspace : "No workspace";
   return (
     <header className="appTitleBar">
       <div className="windowControls" aria-label="Window controls">
@@ -1368,14 +841,24 @@ function AppTitleBar({
         </button>
       </div>
       <div className="titleBrand">
-        <span className="titleMark" aria-hidden="true" />
+        <span className="titleMark" aria-hidden="true"><img src={athenaMarkUrl} alt="" /></span>
         <strong>ATHENA</strong>
       </div>
-      <div className="titleContext">
-        <strong>{activeLabel}</strong>
-        <span>{shellFocus ? "Shell focus" : detail}</span>
-      </div>
-      <div className="titleStatus">
+      <nav className="titleNav" aria-label="Rooms">
+        {roomRoutes.map((route) => (
+          <button
+            key={route.id}
+            type="button"
+            className={activeRoom === route.id ? "active" : ""}
+            aria-current={activeRoom === route.id ? "page" : undefined}
+            onClick={() => onNavigate(route.id)}
+          >
+            {route.icon}
+            <span>{route.label}</span>
+          </button>
+        ))}
+      </nav>
+      <div className="titleStatus" title={`Backend ${backendOnline ? "online" : "offline"} · Control ${controlOnline ? "online" : "offline"}`}>
         <span className={backendOnline && controlOnline ? "online" : ""} />
         {backendOnline ? (controlOnline ? "Ready" : "Control stale") : "Offline"}
       </div>

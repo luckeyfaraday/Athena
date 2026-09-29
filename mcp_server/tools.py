@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 try:
     from .client import ContextWorkspaceClient, ContextWorkspaceElectronClient, get_electron_control_status
@@ -21,7 +16,7 @@ if str(ROOT) not in sys.path:
 from backend.safety import SafetyError, resolve_project_dir
 
 
-TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+CONTEXT_MODES = ("none", "task", "curated")
 
 
 async def context_workspace_health() -> dict[str, Any]:
@@ -52,38 +47,6 @@ async def context_workspace_query_project_memory(project_dir: str, limit: int = 
     return await ContextWorkspaceClient().get("/memory/hermes/project", project_dir=project_dir, limit=limit)
 
 
-async def context_workspace_create_context_bundle(
-    project_dir: str,
-    agent: str,
-    mode: str = "immersive",
-    task: str = "",
-    context: str = "",
-) -> dict[str, Any]:
-    """Create an immutable opt-in Athena immersive context bundle.
-
-    mode must be immersive or immersive_curated. Ordinary agent launches do
-    not create or receive context bundles.
-    """
-    return await ContextWorkspaceClient().post(
-        "/context/bundles",
-        {
-            "project_dir": project_dir,
-            "agent": agent,
-            "mode": mode,
-            "task": task,
-            "context": context,
-        },
-    )
-
-
-async def context_workspace_get_context_bundle(project_dir: str, bundle_id: str) -> dict[str, Any]:
-    """Read one immutable Athena context bundle by workspace and bundle id."""
-    return await ContextWorkspaceClient().get(
-        f"/context/bundles/{bundle_id}",
-        project_dir=project_dir,
-    )
-
-
 async def context_workspace_ask_hermes(
     project_dir: str,
     question: str,
@@ -95,8 +58,8 @@ async def context_workspace_ask_hermes(
 
     Use this for request/response questions such as "ask Hermes ...". This is
     not visible terminal steering: it runs Hermes in one-shot mode and returns a
-    structured answer. Use context_workspace_inject_terminal_input only when the
-    user wants a live visible Hermes terminal or cross-agent handoff.
+    structured answer. Use context_workspace_send_message only when the user
+    wants to reach a live visible Hermes terminal.
     """
     return await ContextWorkspaceClient().post(
         "/hermes/ask",
@@ -148,7 +111,7 @@ async def context_workspace_summarize_agent_sessions(
     query: str = "",
     limit: int = 25,
 ) -> str:
-    """Return a compact text summary of native agent sessions for recall work."""
+    """Return a compact text summary of native agent sessions for a project."""
     payload = await context_workspace_list_agent_sessions(
         project_dir,
         provider=provider,
@@ -179,60 +142,42 @@ async def context_workspace_spawn_agent(
     project_dir: str,
     task: str,
     agent_type: str = "codex",
-    memory_query: str | None = None,
-    timeout_seconds: float | None = None,
-    visible_terminal: bool = True,
     context_mode: str = "task",
     context: str | None = None,
     open_workspace: bool = False,
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Spawn Codex/OpenCode/Claude/Athena Code as a visible Athena terminal by default.
+    """Spawn Codex/OpenCode/Claude/Athena Code/Grok/Hermes as a visible Athena terminal.
 
     This is the high-level tool Hermes should use when the user asks to start
     an agent. agent_type accepts codex, opencode, claude, athena/athena-code,
-    or hermes. It routes through Athena's Electron control server, so the
-    desktop app must be running. Visible spawns no longer receive Athena
-    recall/memory automatically. Use context_mode=\"immersive\" or
-    \"immersive_curated\" only when the user explicitly requests Athena's full
-    context mode. Use context_mode=\"task\" for a compact task-only prompt,
-    \"curated\" for only caller-selected background, or \"none\" for a clean
-    launch. Set open_workspace=true when the target project is not already open
-    in Athena. Set visible_terminal=false only for the legacy backend
-    run/artifact path. Set model ONLY when the user explicitly asks the agent to
-    run on a specific model; leave it unset to use the agent CLI's own default.
-    Pass the flag value the target CLI expects (e.g. \"opus\"/\"sonnet\" for
-    claude, a model id for codex, or \"provider/model\" for opencode and athena).
+    grok, or hermes. It routes through Athena's Electron control server, so the
+    desktop app must be running. Spawned agents do not receive Hermes memory
+    automatically. Use context_mode=\"task\" (default) for a compact task-only
+    prompt, \"curated\" to add only the background passed in context, or
+    \"none\" for a clean launch. Set open_workspace=true when the target
+    project is not already open in Athena. Set model ONLY when the user
+    explicitly asks the agent to run on a specific model; leave it unset to use
+    the agent CLI's own default. Pass the flag value the target CLI expects
+    (e.g. \"opus\"/\"sonnet\" for claude, a model id for codex, or
+    \"provider/model\" for opencode and athena).
     """
     normalized_agent = _terminal_kind_for_agent(agent_type)
-    if visible_terminal:
-        return {
-            "mode": "visible_terminal",
-            **await context_workspace_spawn_terminal(
-                project_dir=project_dir,
-                kind=normalized_agent,
-                count=1,
-                title=_title_for_task(normalized_agent, task),
-                session_label="New",
-                task=task,
-                context_mode=context_mode,
-                context=context,
-                open_workspace=open_workspace,
-                model=model,
-            ),
-        }
-
-    return await ContextWorkspaceClient().post(
-        "/agents/spawn",
-        {
-            "project_dir": project_dir,
-            "task": task,
-            "agent_type": agent_type,
-            "memory_query": memory_query,
-            "timeout_seconds": timeout_seconds,
-            "model": _validate_model(model),
-        },
-    )
+    return {
+        "mode": "visible_terminal",
+        **await context_workspace_spawn_terminal(
+            project_dir=project_dir,
+            kind=normalized_agent,
+            count=1,
+            title=_title_for_task(normalized_agent, task),
+            session_label="New",
+            task=task,
+            context_mode=context_mode,
+            context=context,
+            open_workspace=open_workspace,
+            model=model,
+        ),
+    }
 
 
 async def context_workspace_spawn_terminal(
@@ -251,9 +196,9 @@ async def context_workspace_spawn_terminal(
     """Low-level visible terminal spawner using Athena's Electron control server.
 
     kind accepts shell, hermes, codex, opencode, claude, athena, athena-code, or grok.
-    context_mode accepts: none, task, curated, immersive, immersive_curated.
-    Manual/clean launches should use none. Immersive modes are explicit opt-in.
-    Set open_workspace=true to add/select the target workspace before spawning.
+    context_mode accepts: none, task, or curated. Manual/clean launches should
+    use none. Set open_workspace=true to add/select the target workspace before
+    spawning.
     Set model ONLY when the user explicitly requests a specific model; otherwise
     leave it unset so the agent CLI picks its own default. The model flag is
     ignored when resuming a session.
@@ -269,7 +214,7 @@ async def context_workspace_spawn_terminal(
             "task": task,
             "resume_session_id": resume_session_id,
             "session_label": session_label,
-            "context_mode": context_mode,
+            "context_mode": _context_mode_or_none(context_mode),
             "context": context,
             "open_workspace": open_workspace,
             "model": _validate_model(model),
@@ -321,7 +266,7 @@ async def context_workspace_list_live_terminals(project_dir: str | None = None) 
     payload = await ContextWorkspaceElectronClient().get("/terminals")
     if not project_dir:
         return payload
-    project = str(_resolve_recall_project(project_dir))
+    project = str(_resolve_project(project_dir))
     terminals = payload.get("terminals") if isinstance(payload, dict) else []
     if not isinstance(terminals, list):
         return {"terminals": []}
@@ -423,40 +368,6 @@ async def context_workspace_list_messages(
     return await ContextWorkspaceElectronClient().get("/agent-messages", **params)
 
 
-async def context_workspace_list_runs() -> dict[str, Any]:
-    """List Context Workspace agent runs."""
-    return await ContextWorkspaceClient().get("/agents/runs")
-
-
-async def context_workspace_get_run(run_id: str) -> dict[str, Any]:
-    """Return a Context Workspace run and its artifact metadata."""
-    return await ContextWorkspaceClient().get(f"/agents/runs/{run_id}")
-
-
-async def context_workspace_cancel_run(run_id: str) -> dict[str, Any]:
-    """Request cancellation for a Context Workspace run."""
-    return await ContextWorkspaceClient().post(f"/agents/runs/{run_id}/cancel")
-
-
-async def context_workspace_read_artifact(
-    run_id: str,
-    artifact_name: str,
-    max_bytes: int = 65536,
-    tail: bool = True,
-) -> str:
-    """Read legacy backend run artifacts; OpenCode ses_* IDs fall back to session transcripts."""
-    try:
-        return await ContextWorkspaceClient().get(
-            f"/agents/runs/{run_id}/artifacts/{artifact_name}",
-            max_bytes=max_bytes,
-            tail=str(tail).lower(),
-        )
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code in {400, 404} and run_id.startswith("ses_"):
-            return await context_workspace_read_agent_session("opencode", run_id, max_bytes=max_bytes, tail=tail)
-        raise
-
-
 async def context_workspace_read_agent_session(
     provider: str,
     session_id: str,
@@ -471,110 +382,39 @@ async def context_workspace_read_agent_session(
     )
 
 
-async def context_workspace_wait_for_run(
-    run_id: str,
-    timeout_seconds: float = 600,
-    poll_interval: float = 2,
-) -> dict[str, Any]:
-    """Poll a Context Workspace run until it reaches a terminal status."""
-    deadline = asyncio.get_running_loop().time() + timeout_seconds
-    while True:
-        payload = await context_workspace_get_run(run_id)
-        status = payload.get("run", {}).get("status")
-        if status in TERMINAL_STATUSES:
-            return payload
-        if asyncio.get_running_loop().time() >= deadline:
-            return {"timed_out": True, **payload}
-        await asyncio.sleep(poll_interval)
-
-
-async def context_workspace_write_recall_cache(project_dir: str, markdown: str) -> dict[str, Any]:
-    """Write Hermes session recall into the project's local recall cache."""
-    project = _resolve_recall_project(project_dir)
-    cache_dir = _recall_cache_dir(project)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    recall_path = cache_dir / "session-recall.md"
-    metadata_path = cache_dir / "last-refresh.json"
-    text = markdown.strip() + "\n" if markdown.strip() else ""
-    recall_path.write_text(text, encoding="utf-8")
-    metadata = {
-        "refreshed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "source": "hermes-session-search",
-        "bytes": len(text.encode("utf-8")),
-    }
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
-
-    return {"written": True, "path": str(recall_path), **metadata}
-
-
-async def context_workspace_read_recall_cache(project_dir: str) -> dict[str, Any]:
-    """Read the project's Hermes session recall cache."""
-    recall_path = _recall_cache_dir(_resolve_recall_project(project_dir)) / "session-recall.md"
-    if not recall_path.exists():
-        return {"exists": False, "path": str(recall_path), "markdown": ""}
-    markdown = recall_path.read_text(encoding="utf-8")
-    return {
-        "exists": True,
-        "path": str(recall_path),
-        "bytes": len(markdown.encode("utf-8")),
-        "markdown": markdown,
-    }
-
-
-async def context_workspace_clear_recall_cache(project_dir: str) -> dict[str, Any]:
-    """Clear the project's Hermes session recall cache."""
-    cache_dir = _recall_cache_dir(_resolve_recall_project(project_dir))
-    removed: list[str] = []
-    for name in ("session-recall.md", "last-refresh.json", "control-state.json"):
-        path = cache_dir / name
-        if path.exists():
-            path.unlink()
-            removed.append(str(path))
-    return {"cleared": True, "removed": removed}
+# Single source of truth for the exposed tool surface: the stdio server in
+# server.py and register_tools() both read this tuple.
+TOOLS = (
+    context_workspace_health,
+    context_workspace_hermes_status,
+    context_workspace_query_memory,
+    context_workspace_query_project_memory,
+    context_workspace_ask_hermes,
+    context_workspace_store_memory,
+    context_workspace_delete_memory,
+    context_workspace_recent_memory,
+    context_workspace_list_agent_sessions,
+    context_workspace_summarize_agent_sessions,
+    context_workspace_read_agent_session,
+    context_workspace_open_workspace,
+    context_workspace_close_workspace,
+    context_workspace_spawn_agent,
+    context_workspace_spawn_terminal,
+    context_workspace_spawn_terminals_batch,
+    context_workspace_list_live_terminals,
+    context_workspace_kill_terminal,
+    context_workspace_inject_terminal_input,
+    context_workspace_send_message,
+    context_workspace_list_messages,
+)
 
 
 def register_tools(mcp: Any) -> None:
-    for tool in (
-        context_workspace_health,
-        context_workspace_hermes_status,
-        context_workspace_query_memory,
-        context_workspace_query_project_memory,
-        context_workspace_create_context_bundle,
-        context_workspace_get_context_bundle,
-        context_workspace_store_memory,
-        context_workspace_delete_memory,
-        context_workspace_recent_memory,
-        context_workspace_list_agent_sessions,
-        context_workspace_summarize_agent_sessions,
-        context_workspace_open_workspace,
-        context_workspace_spawn_agent,
-        context_workspace_spawn_terminal,
-        context_workspace_spawn_terminals_batch,
-        context_workspace_list_live_terminals,
-        context_workspace_kill_terminal,
-        context_workspace_close_workspace,
-        context_workspace_inject_terminal_input,
-        context_workspace_send_message,
-        context_workspace_list_messages,
-        context_workspace_list_runs,
-        context_workspace_get_run,
-        context_workspace_cancel_run,
-        context_workspace_read_artifact,
-        context_workspace_read_agent_session,
-        context_workspace_wait_for_run,
-        context_workspace_write_recall_cache,
-        context_workspace_read_recall_cache,
-        context_workspace_clear_recall_cache,
-    ):
+    for tool in TOOLS:
         mcp.tool()(tool)
 
 
-def _recall_cache_dir(project_dir: Path) -> Path:
-    return project_dir / ".context-workspace" / "hermes"
-
-
-def _resolve_recall_project(project_dir: str) -> Path:
+def _resolve_project(project_dir: str) -> Path:
     try:
         return resolve_project_dir(project_dir)
     except OSError as exc:
@@ -691,8 +531,8 @@ def _context_mode_or_none(value: Any) -> str | None:
     if mode is None:
         return None
     normalized = mode.lower()
-    if normalized not in {"none", "task", "curated", "immersive", "immersive_curated"}:
-        raise ValueError(f"Unsupported context_mode: {value}")
+    if normalized not in CONTEXT_MODES:
+        raise ValueError(f"Unsupported context_mode: {value}. Use one of: {', '.join(CONTEXT_MODES)}.")
     return normalized
 
 

@@ -7,7 +7,12 @@ import { fork } from "node:child_process";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 
-import { HermesSessionIndex } from "../dist-electron/hermes-session-index.js";
+import {
+  createHermesDirResolver,
+  HERMES_WSL_DIR_MISS_TTL_MS,
+  HERMES_WSL_DIR_TTL_MS,
+  HermesSessionIndex,
+} from "../dist-electron/hermes-session-index.js";
 
 const testsDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -218,6 +223,79 @@ test("overlapping list calls wait for one complete persisted-index load before r
   assert.deepEqual(secondResult[workspace].map((entry) => entry.id), ["overlap"]);
 });
 
+test("Hermes dir resolution probes WSL once and switches to a native directory as soon as it appears", async () => {
+  const home = "C:\\Users\\dev";
+  const native = path.join(home, ".hermes");
+  const wslDir = "\\\\wsl.localhost\\Ubuntu\\home\\dev\\.hermes";
+  let probes = 0;
+  let nativeExists = false;
+  let now = 1_000;
+  const resolve = createHermesDirResolver({
+    platform: "win32",
+    homeDir: () => home,
+    exists: (candidate) => candidate === wslDir || (nativeExists && candidate === native),
+    wslHermesPath: async () => {
+      probes += 1;
+      await new Promise((resolveProbe) => setTimeout(resolveProbe, 5));
+      return `${wslDir}\r\n`;
+    },
+    now: () => now,
+  });
+
+  assert.deepEqual(await Promise.all([resolve(), resolve()]), [wslDir, wslDir]);
+  assert.equal(probes, 1, "concurrent callers share one wsl.exe probe");
+  assert.equal(await resolve(), wslDir);
+  assert.equal(probes, 1, "the WSL answer is memoized");
+  now += HERMES_WSL_DIR_TTL_MS + 1;
+  assert.equal(await resolve(), wslDir);
+  assert.equal(probes, 2, "the memo expires");
+  nativeExists = true;
+  assert.equal(await resolve(), native);
+  assert.equal(probes, 2, "a native directory wins without probing WSL");
+});
+
+test("Hermes dir resolution re-checks a missing WSL Hermes after a few minutes", async () => {
+  let now = 0;
+  let probes = 0;
+  let failure = Object.assign(new Error("wslpath failed"), { code: 1 });
+  const resolve = createHermesDirResolver({
+    platform: "win32",
+    homeDir: () => "C:\\Users\\dev",
+    exists: () => false,
+    wslHermesPath: async () => {
+      probes += 1;
+      throw failure;
+    },
+    now: () => now,
+  });
+  assert.ok(HERMES_WSL_DIR_MISS_TTL_MS <= 5 * 60_000, "installing Hermes mid-session is noticed within minutes");
+  assert.equal(await resolve(), null);
+  now += HERMES_WSL_DIR_MISS_TTL_MS - 1;
+  assert.equal(await resolve(), null);
+  assert.equal(probes, 1, "a miss is memoized briefly");
+  now += 2;
+  assert.equal(await resolve(), null);
+  assert.equal(probes, 2, "a miss is re-probed after the short TTL");
+
+  failure = Object.assign(new Error("timed out"), { killed: true, signal: "SIGTERM" });
+  now += HERMES_WSL_DIR_MISS_TTL_MS + 1;
+  assert.equal(await resolve(), null);
+  assert.equal(probes, 3);
+  now += HERMES_WSL_DIR_MISS_TTL_MS + 1;
+  assert.equal(await resolve(), null);
+  assert.equal(probes, 4, "a timeout (WSL still booting) is retried after the short TTL too");
+
+  const posix = createHermesDirResolver({
+    platform: "linux",
+    homeDir: () => "/home/dev",
+    exists: () => false,
+    wslHermesPath: async () => {
+      throw new Error("must not probe WSL off Windows");
+    },
+  });
+  assert.equal(await posix(), null);
+});
+
 test("session-index host returns compact results over IPC and exits when idle", async (t) => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "athena-session-host-"));
   const sessions = path.join(home, ".hermes", "sessions");
@@ -227,7 +305,8 @@ test("session-index host returns compact results over IPC and exits when idle", 
   const child = fork(path.resolve(testsDir, "../dist-electron/session-index-host.js"), [], {
     execPath: process.execPath,
     execArgv: [],
-    env: { ...process.env, HOME: home, USERPROFILE: home, ELECTRON_RUN_AS_NODE: "1" },
+    // The production idle window is minutes long; shorten it for the test.
+    env: { ...process.env, HOME: home, USERPROFILE: home, ELECTRON_RUN_AS_NODE: "1", ATHENA_SESSION_INDEX_IDLE_MS: "200" },
     stdio: ["ignore", "ignore", "ignore", "ipc"],
   });
   t.after(async () => {
@@ -248,6 +327,64 @@ test("session-index host returns compact results over IPC and exits when idle", 
   assert.equal(response.ok, true);
   assert.deepEqual(response.sessions[workspace].map((entry) => entry.id), ["ipc"]);
   assert.equal(response.diagnostics.filesParsed, 1);
+  await once(child, "exit");
+  assert.equal(child.exitCode, 0);
+});
+
+test("session-index host stays alive between requests and reuses parsed files", async (t) => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "athena-session-host-warm-"));
+  const workspace = path.join(home, "work", "warm-project");
+  const hermesSessions = path.join(home, ".hermes", "sessions");
+  await fs.mkdir(hermesSessions, { recursive: true });
+  await writeSession(hermesSessions, "warm-hermes", session({ session_id: "warm-hermes", workspace }));
+  const claudeDir = path.join(home, ".claude", "projects", path.resolve(workspace).replace(/[^A-Za-z0-9]/g, "-"));
+  await fs.mkdir(claudeDir, { recursive: true });
+  await fs.writeFile(path.join(claudeDir, "warm-claude.jsonl"), [
+    JSON.stringify({ sessionId: "warm-claude", cwd: workspace, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "Warm title" } }),
+    "",
+  ].join("\n"));
+
+  const child = fork(path.resolve(testsDir, "../dist-electron/session-index-host.js"), [], {
+    execPath: process.execPath,
+    execArgv: [],
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      ATHENA_CODE_HOME: path.join(home, ".athena-code"),
+      ELECTRON_RUN_AS_NODE: "1",
+      ATHENA_SESSION_INDEX_IDLE_MS: "1500",
+    },
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+  });
+  t.after(async () => {
+    if (child.exitCode === null) child.kill();
+    await fs.rm(home, { recursive: true, force: true });
+  });
+  const request = (requestId) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("session-index host response timed out")), 10_000);
+    child.once("message", (message) => {
+      clearTimeout(timer);
+      resolve(message);
+    });
+    child.send({ type: "list-agent-sessions", requestId, workspaces: [workspace] });
+  });
+
+  const first = await request("agents-1");
+  assert.equal(first.ok, true);
+  assert.deepEqual(
+    first.sessions[workspace].map((entry) => `${entry.provider}:${entry.id}`).sort(),
+    ["claude:warm-claude", "hermes:warm-hermes"],
+  );
+  assert.equal(first.sessions[workspace].find((entry) => entry.provider === "claude").title, "Warm title");
+
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  const second = await request("agents-2");
+  assert.equal(child.exitCode, null, "the worker must stay alive between nearby requests");
+  assert.deepEqual(second.sessions[workspace], first.sessions[workspace]);
+  assert.equal(second.diagnostics.filesParsed, 0, "unchanged session files must not be re-read");
+  assert.ok(second.diagnostics.cacheHits >= 2);
+
   await once(child, "exit");
   assert.equal(child.exitCode, 0);
 });

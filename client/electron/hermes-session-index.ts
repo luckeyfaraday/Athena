@@ -450,21 +450,71 @@ async function readHermesManifest(filePath: string): Promise<Map<string, HermesM
   return manifest;
 }
 
-export async function resolveHermesDir(): Promise<string | null> {
-  const native = path.join(os.homedir(), ".hermes");
-  if (fs.existsSync(native)) return native;
-  if (process.platform !== "win32") return null;
-  try {
-    const { stdout } = await execFileAsync("wsl.exe", ["-e", "sh", "-lc", 'wslpath -w "$HOME/.hermes"'], {
-      encoding: "utf8",
-      timeout: 3000,
-      windowsHide: true,
+// A found WSL Hermes home is kept for a long time. "No Hermes" (missing
+// directory, no WSL, or a probe timeout while the VM boots) is re-checked after
+// a few minutes, so installing Hermes while Athena runs is noticed quickly.
+export const HERMES_WSL_DIR_TTL_MS = 30 * 60_000;
+export const HERMES_WSL_DIR_MISS_TTL_MS = 3 * 60_000;
+
+export type HermesDirResolverOptions = {
+  homeDir?: () => string;
+  platform?: NodeJS.Platform;
+  exists?: (candidate: string) => boolean;
+  /** Returns the Windows path of WSL's ~/.hermes; rejects on failure. */
+  wslHermesPath?: () => Promise<string>;
+  now?: () => number;
+};
+
+/**
+ * Resolve the Hermes home: native ~/.hermes first (checked on every call, so
+ * a newly created native directory wins immediately), then — on Windows only —
+ * WSL's ~/.hermes via `wsl.exe wslpath`. That probe can boot the WSL VM, so
+ * its answer is memoized and shared by concurrent callers.
+ */
+export function createHermesDirResolver(options: HermesDirResolverOptions = {}): () => Promise<string | null> {
+  const homeDir = options.homeDir ?? os.homedir;
+  const platform = options.platform ?? process.platform;
+  const exists = options.exists ?? fs.existsSync;
+  const wslHermesPath = options.wslHermesPath ?? defaultWslHermesPath;
+  const now = options.now ?? Date.now;
+  let memo: { value: string | null; expiresAt: number } | null = null;
+  let inFlight: Promise<string | null> | null = null;
+
+  return async () => {
+    const native = path.join(homeDir(), ".hermes");
+    if (exists(native)) return native;
+    if (platform !== "win32") return null;
+    if (memo && memo.expiresAt > now()) return memo.value;
+    inFlight ??= (async () => {
+      let value: string | null = null;
+      try {
+        const candidate = (await wslHermesPath()).trim().split(/\r?\n/)[0];
+        value = candidate && exists(candidate) ? candidate : null;
+      } catch {
+        value = null;
+      }
+      memo = { value, expiresAt: now() + (value ? HERMES_WSL_DIR_TTL_MS : HERMES_WSL_DIR_MISS_TTL_MS) };
+      return value;
+    })().finally(() => {
+      inFlight = null;
     });
-    const candidate = stdout.trim().split(/\r?\n/)[0];
-    return candidate && fs.existsSync(candidate) ? candidate : null;
-  } catch {
-    return null;
-  }
+    return inFlight;
+  };
+}
+
+async function defaultWslHermesPath(): Promise<string> {
+  const { stdout } = await execFileAsync("wsl.exe", ["-e", "sh", "-lc", 'wslpath -w "$HOME/.hermes"'], {
+    encoding: "utf8",
+    timeout: 3000,
+    windowsHide: true,
+  });
+  return stdout;
+}
+
+const defaultHermesDirResolver = createHermesDirResolver();
+
+export async function resolveHermesDir(): Promise<string | null> {
+  return defaultHermesDirResolver();
 }
 
 function uniqueWorkspaceQueries(workspaces: string[]): WorkspaceQuery[] {

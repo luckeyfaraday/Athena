@@ -1,5 +1,6 @@
-import { DragEvent, useEffect, useRef, useState } from "react";
+import { DragEvent, memo, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ILink, type ITheme } from "@xterm/xterm";
 import {
   desktop,
@@ -19,7 +20,44 @@ type Props = {
 type FitRequest = { refresh?: boolean; focus?: boolean };
 const EXIT_STREAM_RECOVERY_MS = 2_500;
 
-export function EmbeddedTerminal({ session, active = true }: Props) {
+let webglRendererAllowed: Promise<boolean> | null = null;
+
+// xterm's default DOM renderer re-lays out every changed row. When Chromium is
+// running with GPU acceleration, the WebGL renderer draws the grid on the GPU
+// instead, which is dramatically cheaper for busy agent TUIs. In crash-safe
+// (software) graphics mode WebGL is unavailable, so keep the DOM renderer.
+function allowWebglRenderer(): Promise<boolean> {
+  webglRendererAllowed ??= desktop.getGraphicsStatus()
+    .then((status) => status.mode === "accelerated")
+    .catch(() => {
+      // Don't pin a transient IPC failure for the whole session.
+      webglRendererAllowed = null;
+      return false;
+    });
+  return webglRendererAllowed;
+}
+
+// addon-webgl leaves its GL context for the garbage collector. Chromium caps
+// live contexts per page, so release them eagerly when a pane unmounts.
+function releaseWebglContexts(container: HTMLElement): void {
+  for (const canvas of Array.from(container.querySelectorAll("canvas"))) {
+    try {
+      const context = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
+      context?.getExtension("WEBGL_lose_context")?.loseContext();
+    } catch {
+      // Best effort; the context is still reclaimed on GC.
+    }
+  }
+}
+
+// Only the session id and active flag drive this component; skip re-rendering
+// every pane when the parent grid re-renders for unrelated state.
+export const EmbeddedTerminal = memo(
+  EmbeddedTerminalView,
+  (previous, next) => previous.session.id === next.session.id && previous.active === next.active,
+);
+
+function EmbeddedTerminalView({ session, active = true }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -61,6 +99,26 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
     terminalRef.current = terminal;
     fitRef.current = fit;
     let disposed = false;
+    let webgl: WebglAddon | null = null;
+    void allowWebglRenderer().then((allowed) => {
+      if (!allowed || disposed) return;
+      try {
+        const addon = new WebglAddon();
+        // Chromium caps live WebGL contexts per page; when one is reclaimed,
+        // fall back to the DOM renderer for this pane.
+        addon.onContextLoss(() => {
+          addon.dispose();
+          if (webgl === addon) webgl = null;
+          // DOM and WebGL renderers measure cells differently; refit.
+          if (!disposed) scheduleFit({ refresh: true });
+        });
+        terminal.loadAddon(addon);
+        webgl = addon;
+        scheduleFit({ refresh: true });
+      } catch {
+        // WebGL2 unavailable (e.g. blocklisted GPU); the DOM renderer stays active.
+      }
+    });
     let writeInFlight = false;
     let attachResolved = false;
     let streamEpoch: string | null = null;
@@ -294,6 +352,9 @@ export function EmbeddedTerminal({ session, active = true }: Props) {
       removeExit();
       dataDisposable.dispose();
       linkDisposable.dispose();
+      // Disposing the terminal also disposes loaded addons, including WebGL.
+      if (webgl) releaseWebglContexts(container);
+      webgl = null;
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;

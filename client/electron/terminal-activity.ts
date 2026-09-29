@@ -18,13 +18,15 @@ export function recordTerminalInputActivity(terminalId: string, at = Date.now())
   });
 }
 
+/** Hot path (every PTY batch): mutates the existing record in place. */
 export function recordTerminalOutputActivity(terminalId: string, at = Date.now()): void {
   const current = activity.get(terminalId);
-  activity.set(terminalId, {
-    lastInputAt: current?.lastInputAt ?? null,
-    lastOutputAt: at,
-    outputAfterInput: current?.lastInputAt != null ? true : current?.outputAfterInput ?? false,
-  });
+  if (!current) {
+    activity.set(terminalId, { lastInputAt: null, lastOutputAt: at, outputAfterInput: false });
+    return;
+  }
+  current.lastOutputAt = at;
+  if (current.lastInputAt != null) current.outputAfterInput = true;
 }
 
 export function isTerminalActive(terminalId: string, at = Date.now()): boolean {

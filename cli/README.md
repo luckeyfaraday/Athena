@@ -14,7 +14,7 @@ discovery, or WSL handling — the CLI reuses all of it.
 
 The Electron app currently *is* the product — the backend can't really be used
 without it. This CLI decouples the engine from the desktop shell so Athena's
-core (memory, recall, sessions, headless runs, ask-hermes) is usable over SSH,
+core (memory, sessions, ask-hermes) is usable over SSH,
 in CI, from cron, from scripts, and from other Athena-related projects.
 
 ## Running
@@ -67,14 +67,8 @@ Otherwise the CLI auto-discovers a backend already started by Athena via
 | `memory store <text>` | Append a memory entry |
 | `memory delete <text>` | Delete an exact entry |
 | `ask <question>` | One-shot Hermes Q&A (`--context`, `--context-file`) |
-| `recall show` | Print the project recall cache |
-| `recall status` | Recall freshness / metadata |
-| `recall write [md]` | Write recall (arg, `--file`, or stdin) |
 | `sessions list` | Native Codex/Claude/OpenCode/Hermes sessions |
 | `sessions transcript <provider> <id>` | Read a native transcript |
-| `run start <task>` | Start a headless agent run (`--wait`, `--follow`) |
-| `run list` / `run get <id>` / `run cancel <id>` | Manage runs |
-| `run logs <id> [--follow]` | Read/stream run artifacts live |
 | `snapshot` | One-shot overview of everything (`--json`) |
 | `tui` | Interactive command room (SSH-friendly) |
 | `install-cli` | Install an `athena` shim on PATH (run from anywhere) |
@@ -96,10 +90,9 @@ Athena's Electron PTY layer. It browses the backend and, when you act, it
 | Key | Action |
 |---|---|
 | `↑`/`↓` or `j`/`k` | Move selection |
-| `Tab` / `1` / `2` | Switch Sessions / Runs |
-| `Enter` / `→` | Projects: **open** · Sessions: **resume** here · Runs: **follow** logs |
+| `Enter` / `→` | Projects: **open** · Sessions: **resume** here |
 | `←` / `Esc` | Back out of a project (Esc quits at top level) |
-| `n` | **Launch** a new agent (interactive in-terminal, or headless run) |
+| `n` | **Launch** a new agent interactively in this terminal |
 | `r` | Refresh · `/` filter · `q` quit |
 
 **The Sessions tab is grouped by project.** It lists every workspace that has
@@ -110,8 +103,7 @@ you have sessions scattered across dozens of repos.
 
 Resume uses each session's backend-provided `resume_command` (`codex resume …`,
 `claude --resume …`, etc.), now anchored to the session's *own* workspace.
-`n` launches/spawns into the project you're currently viewing. Headless launches
-go through `/agents/spawn` (codex adapter) and appear in the Runs tab.
+`n` launches an agent into the project you're currently viewing.
 
 > Cross-project listing uses the backend `GET /agents/sessions/all` endpoint
 > added with this change. The running Athena desktop app must be on this build
@@ -123,16 +115,6 @@ The same data is available non-interactively:
 ./cli/athena sessions list --all          # grouped by project
 ./cli/athena sessions list --all --json   # structured
 ```
-
-### The "see every single thing" workflow
-
-```bash
-./cli/athena run start "add a test for the parser" --agent codex --follow
-```
-
-`--follow` streams the run's `stdout` artifact live until the run reaches a
-terminal state, then exits non-zero on failure. `run logs <id> --follow` does the
-same for an already-started run.
 
 ## Design notes
 

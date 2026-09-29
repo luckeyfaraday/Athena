@@ -11,13 +11,10 @@ import argparse
 import json
 import os
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
 from . import __version__
-
-TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 
 # --------------------------------------------------------------------------- #
@@ -34,43 +31,6 @@ def _emit(value: Any, as_json: bool) -> None:
 
 def _kv(label: str, value: Any) -> str:
     return f"  {label:<14} {value}"
-
-
-def _print_runs_table(runs: list[dict[str, Any]]) -> None:
-    if not runs:
-        print("No runs.")
-        return
-    print(f"{'RUN ID':<26} {'AGENT':<12} {'STATUS':<10} TASK")
-    for run in runs:
-        run_id = str(run.get("run_id", ""))[:25]
-        agent = str(run.get("agent_id") or run.get("agent_type", ""))[:11]
-        status = str(run.get("status", ""))[:9]
-        task = " ".join(str(run.get("task", "")).split())[:60]
-        print(f"{run_id:<26} {agent:<12} {status:<10} {task}")
-
-
-def _print_run_detail(payload: dict[str, Any]) -> None:
-    run = payload.get("run", {})
-    print(f"Run {run.get('run_id')}")
-    for label, key in (
-        ("agent", "agent_id"),
-        ("type", "agent_type"),
-        ("status", "status"),
-        ("task", "task"),
-        ("project", "project_dir"),
-        ("created", "created_at"),
-        ("updated", "updated_at"),
-        ("exit_code", "exit_code"),
-        ("error", "error"),
-    ):
-        if run.get(key) is not None:
-            print(_kv(label, run[key]))
-    artifacts = payload.get("artifacts") or {}
-    present = [a for a in artifacts.values() if a.get("exists")]
-    if present:
-        print("  artifacts:")
-        for art in present:
-            print(f"    - {art['name']} ({art['size_bytes']} bytes)")
 
 
 # --------------------------------------------------------------------------- #
@@ -118,9 +78,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     health = _safe(lambda: backend.get("/health"))
     hermes = _safe(lambda: backend.get("/hermes/status")).get("hermes", {})
     recent = _safe(lambda: backend.get("/memory/recent", limit=5)).get("entries", [])
-    recall = _safe(lambda: backend.get("/hermes/recall/status", project_dir=project)).get("recall", {})
     sessions = _safe(lambda: backend.get("/agents/sessions", project_dir=project, limit=200))
-    runs = _safe(lambda: backend.get("/agents/runs")).get("runs", [])
 
     from client import get_electron_control_status  # noqa: PLC0415 - reuse MCP discovery
 
@@ -133,10 +91,8 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
                 "health": health,
                 "electron_control": electron,
                 "hermes": hermes,
-                "recall": recall,
                 "recent_memory": recent,
                 "sessions": sessions.get("sessions", []),
-                "runs": runs,
             },
             True,
         )
@@ -152,16 +108,6 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     if hermes:
         print(f"Hermes      {'installed' if hermes.get('installed') else 'not installed'}"
               f"  {hermes.get('version', '')}")
-
-    if recall:
-        age = recall.get("age_seconds")
-        age_str = f"{age / 3600:.1f}h ago" if isinstance(age, (int, float)) else "never"
-        print(f"Recall      {recall.get('status', '?')}  ({recall.get('bytes', 0)} bytes, refreshed {age_str})")
-
-    print(f"\nRuns        {len(runs)} total{_count_by(runs, 'status')}")
-    for run in runs[:5]:
-        print(f"  {str(run.get('status','')):<10} {str(run.get('run_id',''))[:22]}  "
-              f"{' '.join(str(run.get('task','')).split())[:48]}")
 
     print(f"\nSessions    {len(session_list)} in project{_count_by(session_list, 'provider')}")
     for s in session_list[:5]:
@@ -229,34 +175,6 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_recall_show(args: argparse.Namespace) -> int:
-    project = _project_dir(args)
-    recall_path = Path(project) / ".context-workspace" / "hermes" / "session-recall.md"
-    if not recall_path.exists():
-        _emit({"exists": False, "path": str(recall_path)} if args.json else f"No recall cache: {recall_path}", args.json)
-        return 0
-    _emit(recall_path.read_text(encoding="utf-8"), args.json)
-    return 0
-
-
-def cmd_recall_status(args: argparse.Namespace) -> int:
-    _emit(_backend(args).get("/hermes/recall/status", project_dir=_project_dir(args)), args.json)
-    return 0
-
-
-def cmd_recall_write(args: argparse.Namespace) -> int:
-    markdown = _read_input_source(args.markdown, args.file, allow_stdin=True)
-    if not markdown:
-        print("error: provide recall markdown via argument, --file, or stdin", file=sys.stderr)
-        return 2
-    payload = _backend(args).post(
-        "/hermes/recall/write",
-        {"project_dir": _project_dir(args), "markdown": markdown, "source": args.source},
-    )
-    _emit(payload, args.json)
-    return 0
-
-
 def cmd_sessions_list(args: argparse.Namespace) -> int:
     backend = _backend(args)
     if args.all:
@@ -316,67 +234,6 @@ def _session_group_key(session: dict[str, Any]) -> str:
     return session.get("workspace") or session.get("provider") or "(unknown)"
 
 
-def cmd_run_start(args: argparse.Namespace) -> int:
-    backend = _backend(args)
-    payload = backend.post(
-        "/agents/spawn",
-        {
-            "agent_type": args.agent,
-            "project_dir": _project_dir(args),
-            "task": args.task,
-            "timeout_seconds": args.timeout,
-        },
-    )
-    run_id = payload.get("run", {}).get("run_id")
-    if args.json and not (args.wait or args.follow):
-        _emit(payload, True)
-        return 0
-    print(f"started run {run_id} ({args.agent})", file=sys.stderr)
-    if args.follow:
-        return _follow_run(backend, run_id, args.artifact, args.json)
-    if args.wait:
-        final = _wait_for_run(backend, run_id, args.timeout or 600)
-        _emit(final, args.json) if args.json else _print_run_detail(final)
-        return 0 if final.get("run", {}).get("status") == "succeeded" else 1
-    return 0
-
-
-def cmd_run_list(args: argparse.Namespace) -> int:
-    payload = _backend(args).get("/agents/runs")
-    if args.json:
-        _emit(payload, True)
-    else:
-        _print_runs_table(payload.get("runs", []))
-    return 0
-
-
-def cmd_run_get(args: argparse.Namespace) -> int:
-    payload = _backend(args).get(f"/agents/runs/{args.run_id}")
-    if args.json:
-        _emit(payload, True)
-    else:
-        _print_run_detail(payload)
-    return 0
-
-
-def cmd_run_cancel(args: argparse.Namespace) -> int:
-    _emit(_backend(args).post(f"/agents/runs/{args.run_id}/cancel"), args.json)
-    return 0
-
-
-def cmd_run_logs(args: argparse.Namespace) -> int:
-    backend = _backend(args)
-    if args.follow:
-        return _follow_run(backend, args.run_id, args.artifact, args.json)
-    text = backend.get(
-        f"/agents/runs/{args.run_id}/artifacts/{args.artifact}",
-        max_bytes=args.max_bytes,
-        tail=str(not args.head).lower(),
-    )
-    _emit(text, args.json)
-    return 0
-
-
 def cmd_tui(args: argparse.Namespace) -> int:
     try:
         from .tui import run_tui
@@ -410,51 +267,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Run polling / live follow — the "see every single thing" experience
-# --------------------------------------------------------------------------- #
-def _wait_for_run(backend: Backend, run_id: str, timeout: float, poll: float = 2.0) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
-    while True:
-        payload = backend.get(f"/agents/runs/{run_id}")
-        if payload.get("run", {}).get("status") in TERMINAL_STATUSES:
-            return payload
-        if time.monotonic() >= deadline:
-            return {"timed_out": True, **payload}
-        time.sleep(poll)
-
-
-def _follow_run(backend: Backend, run_id: str, artifact: str, as_json: bool, poll: float = 1.5) -> int:
-    """Stream a run's artifact live until the run reaches a terminal state."""
-    printed = 0
-    while True:
-        try:
-            text = backend.get(
-                f"/agents/runs/{run_id}/artifacts/{artifact}",
-                max_bytes=1048576,
-                tail="false",
-            )
-        except Exception:  # noqa: BLE001 - artifact may not exist yet
-            text = ""
-        if isinstance(text, str) and len(text) > printed:
-            sys.stdout.write(text[printed:])
-            sys.stdout.flush()
-            printed = len(text)
-        status = backend.get(f"/agents/runs/{run_id}").get("run", {}).get("status")
-        if status in TERMINAL_STATUSES:
-            print(f"\n--- run {run_id} {status} ---", file=sys.stderr)
-            return 0 if status == "succeeded" else 1
-        time.sleep(poll)
-
-
-def _read_input_source(inline: str | None, file_path: str | None, allow_stdin: bool = False) -> str | None:
+def _read_input_source(inline: str | None, file_path: str | None) -> str | None:
     if inline:
         return inline
     if file_path:
         return Path(file_path).read_text(encoding="utf-8")
-    if allow_stdin and not sys.stdin.isatty():
-        data = sys.stdin.read()
-        return data or None
     return None
 
 
@@ -463,7 +280,7 @@ def _read_input_source(inline: str | None, file_path: str | None, allow_stdin: b
 # --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     # Shared flags live on a parent parser so they are accepted both before the
-    # subcommand (`athena --json run list`) and after it (`athena run list --json`).
+    # subcommand (`athena --json sessions list`) and after it (`athena sessions list --json`).
     # SUPPRESS defaults so a value given before the subcommand is not clobbered
     # by the leaf subparser's default. Missing values are normalized in main().
     common = argparse.ArgumentParser(add_help=False)
@@ -528,16 +345,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=120)
     p.set_defaults(func=cmd_ask)
 
-    # recall
-    rec = sub.add_parser("recall", help="Project-local Hermes recall.").add_subparsers(dest="sub", required=True)
-    leaf(rec, "show", help="Print the recall cache.").set_defaults(func=cmd_recall_show)
-    leaf(rec, "status", help="Recall freshness/metadata.").set_defaults(func=cmd_recall_status)
-    p = leaf(rec, "write", help="Write recall markdown (arg, --file, or stdin).")
-    p.add_argument("markdown", nargs="?", default=None)
-    p.add_argument("--file", default=None)
-    p.add_argument("--source", default="athena-cli")
-    p.set_defaults(func=cmd_recall_write)
-
     # sessions
     ses = sub.add_parser("sessions", help="Native agent sessions.").add_subparsers(dest="sub", required=True)
     p = leaf(ses, "list", help="List native sessions for the project.")
@@ -552,31 +359,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-bytes", type=int, default=65536)
     p.add_argument("--head", action="store_true", help="Read from the start instead of the tail.")
     p.set_defaults(func=cmd_sessions_transcript)
-
-    # run
-    run = sub.add_parser("run", help="Headless agent runs.").add_subparsers(dest="sub", required=True)
-    p = leaf(run, "start", help="Start a headless agent run.")
-    p.add_argument("task")
-    p.add_argument("--agent", default="codex")
-    p.add_argument("--timeout", type=float, default=None)
-    p.add_argument("--wait", action="store_true", help="Block until the run finishes.")
-    p.add_argument("--follow", action="store_true", help="Stream artifact output live.")
-    p.add_argument("--artifact", default="stdout", help="Artifact to follow (stdout/stderr/result).")
-    p.set_defaults(func=cmd_run_start)
-    leaf(run, "list", help="List runs.").set_defaults(func=cmd_run_list)
-    p = leaf(run, "get", help="Show a run's detail.")
-    p.add_argument("run_id")
-    p.set_defaults(func=cmd_run_get)
-    p = leaf(run, "cancel", help="Cancel a run.")
-    p.add_argument("run_id")
-    p.set_defaults(func=cmd_run_cancel)
-    p = leaf(run, "logs", help="Read or follow run artifacts.")
-    p.add_argument("run_id")
-    p.add_argument("--artifact", default="stdout")
-    p.add_argument("--follow", action="store_true")
-    p.add_argument("--max-bytes", type=int, default=65536)
-    p.add_argument("--head", action="store_true")
-    p.set_defaults(func=cmd_run_logs)
 
     # serve
     p = leaf(sub, "serve", help="Launch the backend headlessly (no Electron).")

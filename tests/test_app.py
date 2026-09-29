@@ -1,63 +1,28 @@
 from __future__ import annotations
 
-import json
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import backend.app as app_module
-from backend.adapters.base import AdapterCommand
+import backend.runtime as runtime_module
 from backend.app import create_app
-from backend.context_artifacts import RunArtifacts
 from backend.hermes import HermesAskResult, HermesInstallResult, HermesStatus
 from backend.memory import HermesMemoryStore
-from backend.memory_admission import (
-    DEFAULT_LAUNCH_RESERVATION_BYTES,
-    DEFAULT_MINIMUM_HEADROOM_BYTES,
-    LaunchMemoryAdmission,
-)
-from backend.runs import Run, RunRegistry, RunStatus
-from backend.runtime import RuntimeLimits
-
-
-class FakeAdapter:
-    agent_type = "codex"
-
-    def __init__(self, fixture: Path, *, sleep: float = 0) -> None:
-        self.fixture = fixture
-        self.executable = sys.executable
-        self.sleep = sleep
-
-    def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
-        argv = [
-            sys.executable,
-            str(self.fixture),
-            "--output-last-message",
-            str(artifacts.result),
-        ]
-        if self.sleep:
-            argv.extend(["--sleep", str(self.sleep)])
-        return AdapterCommand(
-            argv=argv,
-            cwd=run.project_dir,
-            stdin=f"run={run.run_id}\ncontext={artifacts.context}\n",
-        )
-
-    def summarize_result(self, run: Run, artifacts: RunArtifacts) -> str:
-        return artifacts.result.read_text(encoding="utf-8").strip()
 
 
 class FakeHermesManager:
     def __init__(self, home: Path) -> None:
         self.hermes_home = home
         self.installed = False
+        self.status_calls: list[bool] = []
 
-    def status(self) -> HermesStatus:
+    def status(self, *, refresh: bool = False) -> HermesStatus:
+        self.status_calls.append(refresh)
         return HermesStatus(
             installed=self.installed,
             command_path="C:/fake/hermes" if self.installed else None,
@@ -125,71 +90,6 @@ def test_health_endpoint(tmp_path: Path) -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_create_and_read_immersive_context_bundle(tmp_path: Path) -> None:
-    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
-    memory.append(f"Project path: {tmp_path}. Preserve explicit context boundaries.")
-    (tmp_path / "AGENTS.md").write_text("Run focused tests.\n", encoding="utf-8")
-    client = _client(tmp_path, memory=memory)
-
-    created = client.post(
-        "/context/bundles",
-        json={
-            "project_dir": str(tmp_path),
-            "mode": "immersive",
-            "agent": "Codex",
-            "task": "Scaffold immersive context.",
-        },
-    )
-
-    assert created.status_code == 200
-    bundle = created.json()["bundle"]
-    assert bundle["mode"] == "immersive"
-    assert Path(bundle["context_path"]).is_file()
-    fetched = client.get(
-        f"/context/bundles/{bundle['bundle_id']}",
-        params={"project_dir": str(tmp_path)},
-    )
-    assert fetched.status_code == 200
-    assert fetched.json()["bundle"]["bundle_id"] == bundle["bundle_id"]
-
-
-def test_context_bundle_endpoint_rejects_non_immersive_mode(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.post(
-        "/context/bundles",
-        json={
-            "project_dir": str(tmp_path),
-            "mode": "task",
-            "agent": "Codex",
-        },
-    )
-
-    assert response.status_code == 422
-
-
-def test_context_turn_endpoint_records_clean_exchange(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.post(
-        "/context/turns",
-        json={
-            "project_dir": str(tmp_path),
-            "session_id": "runtime-session",
-            "agent": "Athena Codex",
-            "mode": "clean",
-            "user_message": "Do not inject context.",
-            "assistant_message": "Clean turn completed.",
-        },
-    )
-
-    assert response.status_code == 200
-    turn = response.json()["turn"]
-    assert turn["session_id"] == "runtime-session"
-    turns_path = tmp_path / ".context-workspace" / "context" / "turns.jsonl"
-    assert "Clean turn completed." in turns_path.read_text(encoding="utf-8")
-
-
 def test_hermes_status_endpoint(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -199,6 +99,25 @@ def test_hermes_status_endpoint(tmp_path: Path) -> None:
     hermes = response.json()["hermes"]
     assert hermes["installed"] is False
     assert hermes["install_supported"] is True
+
+
+def test_create_app_does_not_probe_hermes_at_startup(tmp_path: Path) -> None:
+    hermes = FakeHermesManager(tmp_path / ".hermes")
+
+    create_app(hermes=hermes)
+
+    # status() may spawn `hermes --version`; startup must only read the home dir.
+    assert hermes.status_calls == []
+
+
+def test_hermes_status_endpoint_forwards_refresh(tmp_path: Path) -> None:
+    hermes = FakeHermesManager(tmp_path / ".hermes")
+    client = TestClient(create_app(memory=HermesMemoryStore(memory_path=tmp_path / "MEMORY.md"), hermes=hermes))
+
+    client.get("/hermes/status")
+    client.get("/hermes/status", params={"refresh": "true"})
+
+    assert hermes.status_calls == [False, True]
 
 
 def test_hermes_install_requires_confirmation(tmp_path: Path) -> None:
@@ -234,7 +153,7 @@ def test_hermes_ask_endpoint_returns_direct_answer(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "answer: What changed? | context: Caller-provided context:\n\nUse the current workspace.",
+        "answer": "answer: What changed? | context: Use the current workspace.",
         "project_dir": str(tmp_path),
         "source": "hermes-oneshot",
         "returncode": 0,
@@ -242,27 +161,22 @@ def test_hermes_ask_endpoint_returns_direct_answer(tmp_path: Path) -> None:
     }
 
 
-def test_hermes_ask_endpoint_returns_recall_cache_without_oneshot(tmp_path: Path) -> None:
+def test_hermes_ask_endpoint_does_not_create_project_state(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
     client = _client(tmp_path)
-    recall_dir = tmp_path / ".context-workspace" / "hermes"
-    recall_dir.mkdir(parents=True)
-    (recall_dir / "session-recall.md").write_text("# Athena Recall\n\nUseful project context.\n", encoding="utf-8")
-    (recall_dir / "last-refresh.json").write_text('{"refreshed_at":"2026-05-20T00:00:00Z"}\n', encoding="utf-8")
+    client.post("/hermes/install", json={"confirm": True})
 
     response = client.post(
         "/hermes/ask",
-        json={
-            "project_dir": str(tmp_path),
-            "question": "Use session recall to get project context.",
-        },
+        json={"project_dir": str(project), "question": "Use session recall to get project context."},
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["source"] == "athena-recall-cache"
-    assert payload["returncode"] == 0
-    assert "# Athena Recall" in payload["answer"]
-    assert "Useful project context." in payload["answer"]
+    # Every question goes to Hermes; there is no project-local shortcut cache.
+    assert response.json()["source"] == "hermes-oneshot"
+    assert response.json()["answer"] == "answer: Use session recall to get project context."
+    assert list(project.iterdir()) == []
 
 
 def test_hermes_ask_endpoint_forwards_explicit_session_id(tmp_path: Path) -> None:
@@ -294,223 +208,45 @@ def test_hermes_ask_endpoint_reports_unavailable_hermes(tmp_path: Path) -> None:
     assert "not installed" in response.json()["detail"]
 
 
-def test_hermes_recall_status_reports_missing_cache(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
-
-    assert response.status_code == 200
-    recall = response.json()["recall"]
-    assert recall["status"] == "missing"
-    assert recall["exists"] is False
-    assert recall["stale"] is True
-    assert recall["bytes"] == 0
-    assert recall["refreshed_at"] is None
-    assert recall["refresh_configured"] is False
-
-
-def test_hermes_recall_status_reports_configured_refresh_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", "python scripts/hermes-refresh-recall.py")
-    client = _client(tmp_path)
-
-    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
-
-    assert response.status_code == 200
-    assert response.json()["recall"]["refresh_configured"] is True
-
-
-def test_hermes_recall_status_reports_fresh_cache(tmp_path: Path) -> None:
-    recall_dir = tmp_path / ".context-workspace" / "hermes"
-    recall_dir.mkdir(parents=True)
-    recall_text = "Fresh recall.\n"
-    refreshed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    (recall_dir / "session-recall.md").write_text(recall_text, encoding="utf-8")
-    (recall_dir / "last-refresh.json").write_text(
-        json.dumps(
-            {
-                "refreshed_at": refreshed_at,
-                "source": "hermes-session-search",
-                "bytes": len(recall_text.encode("utf-8")),
-            }
-        ),
-        encoding="utf-8",
-    )
-    client = _client(tmp_path)
-
-    response = client.get("/hermes/recall/status", params={"project_dir": str(tmp_path)})
-
-    assert response.status_code == 200
-    recall = response.json()["recall"]
-    assert recall["status"] == "fresh"
-    assert recall["exists"] is True
-    assert recall["stale"] is False
-    assert recall["bytes"] == (recall_dir / "session-recall.md").stat().st_size
-    assert recall["source"] == "hermes-session-search"
-    assert recall["refresh_configured"] is False
-
-
-def test_hermes_recall_refresh_requires_configured_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", raising=False)
-    client = _client(tmp_path)
-
-    response = client.post("/hermes/recall/refresh", json={"project_dir": str(tmp_path)})
-
-    assert response.status_code == 409
-    assert "CONTEXT_WORKSPACE_HERMES_REFRESH_CMD" in response.json()["detail"]
-
-
-def test_hermes_recall_refresh_runs_configured_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    script = tmp_path / "refresh_recall.py"
-    script.write_text(
-        "\n".join(
-            [
-                "import json",
-                "import os",
-                "from datetime import UTC, datetime",
-                "from pathlib import Path",
-                "project = Path(os.environ['CONTEXT_WORKSPACE_PROJECT_DIR'])",
-                "task = os.environ.get('CONTEXT_WORKSPACE_TASK_HINT', '')",
-                "cache = project / '.context-workspace' / 'hermes'",
-                "cache.mkdir(parents=True, exist_ok=True)",
-                "text = f'## Recall\\n\\n- refreshed for {task}\\n'",
-                "(cache / 'session-recall.md').write_text(text, encoding='utf-8')",
-                "(cache / 'last-refresh.json').write_text(json.dumps({",
-                "    'refreshed_at': datetime.now(UTC).isoformat().replace('+00:00', 'Z'),",
-                "    'source': 'test-refresh-command',",
-                "    'bytes': len(text.encode('utf-8')),",
-                "}), encoding='utf-8')",
-                "print('refreshed')",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("CONTEXT_WORKSPACE_HERMES_REFRESH_CMD", f'"{sys.executable}" "{script}"')
-    client = _client(tmp_path)
-
-    response = client.post(
-        "/hermes/recall/refresh",
-        json={"project_dir": str(tmp_path), "task_hint": "manual launch"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["refresh"]["returncode"] == 0
-    assert "refreshed" in payload["refresh"]["stdout"]
-    assert payload["recall"]["status"] == "fresh"
-    assert payload["recall"]["source"] == "test-refresh-command"
-    assert payload["recall"]["refresh_configured"] is True
-    assert "manual launch" in (tmp_path / ".context-workspace" / "hermes" / "session-recall.md").read_text(encoding="utf-8")
-
-
-def test_hermes_recall_write_writes_cache_and_metadata(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.post(
-        "/hermes/recall/write",
-        json={
-            "project_dir": str(tmp_path),
-            "markdown": "# Athena Session Handoff\n\n- Continue from selected sessions.",
-            "source": "test-handoff",
-            "source_count": 2,
-            "source_titles": ["Codex Builder", "OpenCode Reviewer"],
-            "schema_version": 2,
-            "handoff_id": "handoff-test-123",
-            "confidence": "medium",
-            "source_workspaces": [str(tmp_path), str(tmp_path / "other")],
-            "source_sessions": [
-                {
-                    "key": "codex:test",
-                    "kind": "native",
-                    "provider": "codex",
-                    "title": "Codex Builder",
-                    "workspace": str(tmp_path),
-                    "id": "test",
-                    "status": "historical",
-                    "usable": True,
-                    "evidence_score": 8,
-                    "ignored": "not persisted",
-                }
-            ],
-        },
-    )
-
-    assert response.status_code == 200
-    recall_path = tmp_path / ".context-workspace" / "hermes" / "session-recall.md"
-    metadata_path = tmp_path / ".context-workspace" / "hermes" / "last-refresh.json"
-    recall = response.json()["recall"]
-    assert recall["status"] == "fresh"
-    assert recall["source"] == "test-handoff"
-    assert recall["source_count"] == 2
-    assert recall["source_titles"] == ["Codex Builder", "OpenCode Reviewer"]
-    assert recall["schema_version"] == 2
-    assert recall["handoff_id"] == "handoff-test-123"
-    assert recall["confidence"] == "medium"
-    assert recall["source_workspaces"] == [str(tmp_path), str(tmp_path / "other")]
-    assert recall["source_sessions"][0]["provider"] == "codex"
-    assert recall_path.read_text(encoding="utf-8").endswith("\n")
-    assert "Continue from selected sessions" in recall_path.read_text(encoding="utf-8")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata["source"] == "test-handoff"
-    assert metadata["bytes"] == recall_path.stat().st_size
-    assert metadata["source_count"] == 2
-    assert metadata["schema_version"] == 2
-    assert metadata["handoff_id"] == "handoff-test-123"
-    assert metadata["confidence"] == "medium"
-    assert metadata["source_sessions"][0]["key"] == "codex:test"
-    assert "ignored" not in metadata["source_sessions"][0]
-    assert not list(metadata_path.parent.glob(".*.tmp"))
-
-
-def test_workspace_snapshot_reports_non_git_workspace(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.get("/workspace/snapshot", params={"project_dir": str(tmp_path)})
-
-    assert response.status_code == 200
-    snapshot = response.json()
-    assert snapshot["project_dir"] == str(tmp_path)
-    assert snapshot["git"]["available"] is False
-    assert snapshot["git"]["dirty_count"] == 0
-
-
-def test_workspace_snapshot_rejects_missing_directory(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.get("/workspace/snapshot", params={"project_dir": str(tmp_path / "missing")})
-
-    assert response.status_code == 400
-
-
-def test_hermes_recall_mark_used_updates_metadata(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    client.post(
-        "/hermes/recall/write",
-        json={
-            "project_dir": str(tmp_path),
-            "markdown": "# Recall\n\nReady.",
-            "source": "test-handoff",
-        },
-    )
-
-    response = client.post("/hermes/recall/mark-used", json={"project_dir": str(tmp_path), "agent": "codex"})
-
-    assert response.status_code == 200
-    recall = response.json()["recall"]
-    assert recall["last_launch_agent"] == "codex"
-    assert recall["used_for_launch_at"]
-
-
-def test_agent_adapters_endpoint_reports_configured_adapters(tmp_path: Path) -> None:
+def test_agent_adapters_endpoint_reports_installed_clis(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
     response = client.get("/agents/adapters")
 
     assert response.status_code == 200
     adapters = response.json()["adapters"]
-    assert adapters["codex"]["configured"] is True
+    assert set(adapters) == {"codex", "opencode", "claude", "grok"}
     assert adapters["codex"]["executable"] == sys.executable
-    assert adapters["opencode"]["configured"] is False
-    assert adapters["claude"]["configured"] is False
+    assert adapters["codex"]["installed"] is True
+    assert adapters["opencode"]["executable"] == "opencode"
+
+
+def test_agent_adapters_endpoint_caches_path_lookups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lookups: list[str] = []
+
+    def fake_which(executable: str) -> str | None:
+        lookups.append(executable)
+        return f"/usr/bin/{executable}" if executable == "codex" else None
+
+    monkeypatch.setattr(runtime_module.shutil, "which", fake_which)
+    client = TestClient(
+        create_app(
+            memory=HermesMemoryStore(memory_path=tmp_path / "MEMORY.md"),
+            hermes=FakeHermesManager(tmp_path / ".hermes"),
+        )
+    )
+
+    first = client.get("/agents/adapters")
+    second = client.get("/agents/adapters")
+
+    assert first.json() == second.json()
+    assert first.json()["adapters"]["codex"]["installed"] is True
+    assert sorted(lookups) == ["claude", "codex", "grok", "opencode"]
+
+    refreshed = client.get("/agents/adapters", params={"refresh": "true"})
+
+    assert refreshed.status_code == 200
+    assert len(lookups) == 8
 
 
 def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -655,59 +391,6 @@ def test_all_agent_sessions_cache_is_bounded(tmp_path: Path, monkeypatch: pytest
     assert len(client.app.state.all_sessions_cache) <= app_module.ALL_SESSIONS_CACHE_MAX_ENTRIES
 
 
-def test_spawn_marks_run_failed_when_agent_binary_is_missing(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-
-    class MissingBinaryAdapter(FakeAdapter):
-        def build_command(self, run: Run, artifacts: RunArtifacts) -> AdapterCommand:
-            return AdapterCommand(
-                argv=[str(tmp_path / "does-not-exist-binary")],
-                cwd=run.project_dir,
-                stdin="",
-            )
-
-    fixture = Path(__file__).parent / "fixtures" / "fake_agent.py"
-    client = _client(tmp_path, adapter=MissingBinaryAdapter(fixture))
-
-    spawned = client.post(
-        "/agents/spawn",
-        json={"agent_type": "codex", "project_dir": str(project), "task": "do work"},
-    )
-    assert spawned.status_code == 202
-    run_id = spawned.json()["run"]["run_id"]
-
-    fetched = client.get(f"/agents/runs/{run_id}")
-    assert fetched.status_code == 200
-    run_payload = fetched.json()["run"]
-    assert run_payload["status"] == RunStatus.FAILED.value
-    assert "Failed to start" in (run_payload["error"] or "")
-
-
-def test_execute_and_record_backstop_fails_run_on_unexpected_error(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    registry = RunRegistry()
-    run = registry.create_run(agent_type="codex", project_dir=project, task="t")
-    memory = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
-
-    class ExplodingExecutor:
-        def __init__(self, registry: RunRegistry) -> None:
-            self.registry = registry
-
-        def execute(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-            raise RuntimeError("adapter blew up")
-
-    with pytest.raises(RuntimeError, match="adapter blew up"):
-        app_module._execute_and_record(
-            ExplodingExecutor(registry), memory, run, adapter=None, memory_excerpt="", timeout_seconds=None,
-        )
-
-    failed = registry.get(run.run_id)
-    assert failed.status == RunStatus.FAILED
-    assert failed.error == "adapter blew up"
-
-
 def test_memory_endpoints_read_and_write_hermes_memory(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
@@ -754,7 +437,7 @@ def test_project_memory_endpoint_filters_by_project_dir(tmp_path: Path) -> None:
     assert missing.text == ""
 
 
-def test_memory_store_with_project_dir_scopes_entry_for_project_recall(tmp_path: Path) -> None:
+def test_memory_store_with_project_dir_scopes_entry_for_project(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
     stored = client.post(
@@ -783,259 +466,15 @@ def test_memory_endpoints_report_unavailable_memory_clearly(tmp_path: Path) -> N
         assert "Hermes memory is unavailable" in response.json()["detail"]
 
 
-def test_spawn_endpoint_executes_fake_agent_and_records_memory(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Run fake agent.",
-        },
-    )
-
-    assert response.status_code == 202
-    run = response.json()["run"]
-    assert run["agent_id"] == "codex-1"
-
-    detail = client.get(f"/agents/runs/{run['run_id']}")
-    assert detail.status_code == 200
-    detail_body = detail.json()
-    assert detail_body["run"]["status"] == RunStatus.SUCCEEDED.value
-    assert detail_body["artifacts"]["context"]["exists"] is True
-    assert detail_body["artifacts"]["stdout"]["exists"] is True
-    assert detail_body["artifacts"]["stderr"]["exists"] is True
-    assert detail_body["artifacts"]["result"]["exists"] is True
-    assert detail_body["artifacts"]["result"]["size_bytes"] > 0
-    assert detail_body["artifacts"]["stdout"]["name"] == "stdout"
-    assert detail_body["artifacts"]["stdout"]["url"] == f"/agents/runs/{run['run_id']}/artifacts/stdout"
-    assert "path" not in detail_body["artifacts"]["stdout"]
-
-    stdout = client.get(f"/agents/runs/{run['run_id']}/artifacts/stdout")
-    assert stdout.status_code == 200
-    assert stdout.text.replace("\r\n", "\n") == "fake stdout\n"
-
-    bounded_stdout = client.get(
-        f"/agents/runs/{run['run_id']}/artifacts/stdout",
-        params={"max_bytes": 4},
-    )
-    assert bounded_stdout.status_code == 200
-    assert bounded_stdout.text.replace("\r\n", "\n").endswith("t\n")
-
-    context = client.get(
-        f"/agents/runs/{run['run_id']}/artifacts/context",
-        params={"tail": False, "max_bytes": 32},
-    )
-    assert context.status_code == 200
-    assert context.text.startswith("# Context Workspace")
-
-    unknown = client.get(f"/agents/runs/{run['run_id']}/artifacts/nope")
-    assert unknown.status_code == 404
-
-    memory_text = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
-    assert "[codex-1] Task: Run fake agent. | Status: pending" in memory_text
-    assert "fake final message" in memory_text
-
-
-def test_spawn_context_does_not_include_matching_memory_excerpt(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    client.post("/memory/store", json={"text": "TEST_MEMORY_SENTINEL_456 belongs in the prompt."})
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Use project memory.",
-            "memory_query": "TEST_MEMORY_SENTINEL_456",
-        },
-    )
-
-    assert response.status_code == 202
-    run_id = response.json()["run"]["run_id"]
-    context = client.get(
-        f"/agents/runs/{run_id}/artifacts/context",
-        params={"tail": False},
-    )
-    assert context.status_code == 200
-    assert "TEST_MEMORY_SENTINEL_456 belongs in the prompt." not in context.text
-    assert "explicit immersive launch" in context.text
-
-
-def test_spawn_context_ignores_memory_query_without_immersive_mode(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "No matching memory.",
-            "memory_query": "missing-memory-sentinel",
-        },
-    )
-
-    assert response.status_code == 202
-    run_id = response.json()["run"]["run_id"]
-    context = client.get(
-        f"/agents/runs/{run_id}/artifacts/context",
-        params={"tail": False},
-    )
-    assert context.status_code == 200
-    assert "missing-memory-sentinel" not in context.text
-
-
-def test_spawn_context_does_not_query_unavailable_memory(tmp_path: Path) -> None:
-    client = _client(tmp_path, memory=FailingMemoryStore())
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Continue without writable Hermes memory.",
-        },
-    )
-
-    assert response.status_code == 202
-    run_id = response.json()["run"]["run_id"]
-    context = client.get(
-        f"/agents/runs/{run_id}/artifacts/context",
-        params={"tail": False},
-    )
-    assert context.status_code == 200
-    assert "Hermes memory lookup failed." not in context.text
-    assert "explicit immersive launch" in context.text
-
-
-def test_list_runs_endpoint_returns_spawned_runs(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Run fake agent.",
-        },
-    )
-
-    runs = client.get("/agents/runs")
-
-    assert response.status_code == 202
-    assert runs.status_code == 200
-    assert [run["run_id"] for run in runs.json()["runs"]] == [response.json()["run"]["run_id"]]
-
-
-def test_spawn_rejects_when_global_limit_is_reached(tmp_path: Path) -> None:
-    registry = RunRegistry()
-    registry.create_run(agent_type="codex", project_dir=tmp_path, task="Already pending")
-    client = _client(
-        tmp_path,
-        registry=registry,
-        limits=RuntimeLimits(max_global=1, max_per_project=10, max_per_agent_type={"codex": 10}),
-    )
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Run fake agent.",
-        },
-    )
-
-    assert response.status_code == 429
-    assert "Global concurrency limit" in response.json()["detail"]
-
-
-def test_spawn_rejects_low_physical_memory_before_creating_run(tmp_path: Path) -> None:
-    registry = RunRegistry()
-    memory_admission = LaunchMemoryAdmission(
-        probe=lambda: DEFAULT_MINIMUM_HEADROOM_BYTES + DEFAULT_LAUNCH_RESERVATION_BYTES - 1,
-    )
-    client = _client(
-        tmp_path,
-        registry=registry,
-        memory_admission=memory_admission,
-    )
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Must not allocate a run.",
-        },
-    )
-
-    assert response.status_code == 429
-    assert "physical-memory admission" in response.json()["detail"]
-    assert "Swap is not counted" in response.json()["detail"]
-    assert registry.list_runs() == []
-
-
-def test_spawn_uses_default_timeout_from_runtime_limits(tmp_path: Path) -> None:
-    client = _client(
-        tmp_path,
-        adapter=FakeAdapter(Path(__file__).parent / "fixtures" / "fake_agent.py", sleep=0.2),
-        limits=RuntimeLimits(default_timeout_seconds=0.01),
-        execute_inline=True,
-    )
-
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Run fake agent.",
-        },
-    )
-
-    assert response.status_code == 202
-    detail = client.get(f"/agents/runs/{response.json()['run']['run_id']}")
-    assert detail.json()["run"]["status"] == RunStatus.FAILED.value
-
-
-def test_cancel_run_marks_active_run_cancelled(tmp_path: Path) -> None:
-    client = _client(tmp_path, adapter=FakeAdapter(Path(__file__).parent / "fixtures" / "fake_agent.py", sleep=1), execute_inline=False)
-    response = client.post(
-        "/agents/spawn",
-        json={
-            "agent_type": "codex",
-            "project_dir": str(tmp_path),
-            "task": "Run slow fake agent.",
-        },
-    )
-    run_id = response.json()["run"]["run_id"]
-
-    cancelled = client.post(f"/agents/runs/{run_id}/cancel")
-
-    assert cancelled.status_code == 200
-    assert cancelled.json()["cancelled"] is True
-    assert cancelled.json()["run"]["status"] == RunStatus.CANCELLED.value
-
-
 def _client(
     tmp_path: Path,
     *,
-    adapter: FakeAdapter | None = None,
-    registry: RunRegistry | None = None,
-    limits: RuntimeLimits | None = None,
     memory: object | None = None,
-    memory_admission: LaunchMemoryAdmission | None = None,
-    execute_inline: bool = True,
 ) -> TestClient:
     memory = memory or HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
-    registry = registry or RunRegistry()
-    fixture = Path(__file__).parent / "fixtures" / "fake_agent.py"
     app = create_app(
         memory=memory,
         hermes=FakeHermesManager(tmp_path / ".hermes"),
-        registry=registry,
-        adapters={"codex": adapter or FakeAdapter(fixture)},
-        limits=limits,
-        memory_admission=memory_admission,
-        execute_inline=execute_inline,
+        agent_executables={"codex": sys.executable},
     )
     return TestClient(app)

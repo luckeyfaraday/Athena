@@ -18,22 +18,25 @@ export type TerminalLaunch = {
   args: string[];
 };
 
-export type TerminalLauncher = {
-  shell(cwd: string): TerminalLaunch;
-  agent(kind: string, cwd: string, promptPath: string): TerminalLaunch;
-  nativeTerminal(cwd: string, scriptPath: string): TerminalLaunch | null;
-  commandExists(command: string): boolean;
-};
-
 export function defaultShell(): TerminalLaunch {
   if (isWindows) return { command: preferredWindowsPowerShell(), args: ["-NoLogo"] };
   return { command: "bash", args: ["-l"] };
 }
 
+let cachedWindowsPowerShell: "pwsh.exe" | "powershell.exe" | null = null;
+
+/**
+ * PowerShell 7 when installed, else Windows PowerShell. The PATH probe spawns
+ * `where.exe` synchronously (~100ms), and every agent launch/restore asks, so
+ * the default probe is memoized for the process lifetime. Installing pwsh
+ * while Athena is running takes effect on the next app start.
+ */
 export function preferredWindowsPowerShell(
-  exists: (command: string) => boolean = commandExists,
+  exists?: (command: string) => boolean,
 ): "pwsh.exe" | "powershell.exe" {
-  return exists("pwsh.exe") ? "pwsh.exe" : "powershell.exe";
+  if (exists) return exists("pwsh.exe") ? "pwsh.exe" : "powershell.exe";
+  cachedWindowsPowerShell ??= commandExists("pwsh.exe") ? "pwsh.exe" : "powershell.exe";
+  return cachedWindowsPowerShell;
 }
 
 export function defaultPythonExecutable(): string {
@@ -53,14 +56,6 @@ export function tempWorkspaceDirectory(): string {
   const directory = path.join(os.tmpdir(), "context-workspace");
   fs.mkdirSync(directory, { recursive: true });
   return directory;
-}
-
-export function scriptExtension(): ".ps1" | ".sh" {
-  return scriptExtensionForPlatform(process.platform);
-}
-
-export function scriptExtensionForPlatform(platform: NodeJS.Platform): ".ps1" | ".sh" {
-  return platform === "win32" ? ".ps1" : ".sh";
 }
 
 export function getDefaultWorkspace(appRoot?: string): WorkspacePath {
@@ -152,61 +147,6 @@ export function normalizeComparablePath(value: string): string {
   return normalized;
 }
 
-export function nativeTerminalLaunch(cwd: string, scriptPath: string): TerminalLaunch | null {
-  if (isWindows) {
-    if (!commandExists("wt.exe")) return null;
-    return { command: "wt.exe", args: ["-d", cwd, "powershell.exe", "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", scriptPath] };
-  }
-
-  if (isMac) {
-    const script = [
-      'tell application "Terminal"',
-      "activate",
-      `do script "${escapeAppleScript(`bash ${quoteShell(scriptPath)}`)}"`,
-      "end tell",
-    ].join("\n");
-    return { command: "osascript", args: ["-e", script] };
-  }
-
-  const command = `bash ${quoteShell(scriptPath)}`;
-  const terminalFromEnv = process.env.TERMINAL?.trim();
-  const candidates: TerminalLaunch[] = [
-    ...(terminalFromEnv ? [{ command: terminalFromEnv, args: ["-e", "bash", "-lc", command] }] : []),
-    { command: "gnome-terminal", args: ["--working-directory", cwd, "--", "bash", "-lc", command] },
-    { command: "konsole", args: ["--workdir", cwd, "-e", "bash", "-lc", command] },
-    { command: "xfce4-terminal", args: ["--working-directory", cwd, "--command", `bash -lc '${command}'`] },
-    { command: "alacritty", args: ["--working-directory", cwd, "-e", "bash", "-lc", command] },
-    { command: "kitty", args: ["--directory", cwd, "bash", "-lc", command] },
-    { command: "x-terminal-emulator", args: ["-e", "bash", "-lc", command] },
-  ];
-
-  return candidates.find((candidate) => commandExists(candidate.command)) ?? null;
-}
-
-export function windowsTerminalGridLaunch(cwd: string, scriptPaths: string[]): TerminalLaunch | null {
-  if (!isWindows || scriptPaths.length === 0 || !commandExists("wt.exe")) return null;
-  return { command: "wt.exe", args: windowsTerminalGridArgs(cwd, scriptPaths) };
-}
-
-export function windowsTerminalGridArgs(cwd: string, scriptPaths: string[]): string[] {
-  if (scriptPaths.length === 0) return [];
-
-  const shellArgs = (scriptPath: string) => [
-    "powershell.exe",
-    "-NoLogo",
-    "-NoExit",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    scriptPath,
-  ];
-  const args = ["-d", cwd, ...shellArgs(scriptPaths[0])];
-  for (const scriptPath of scriptPaths.slice(1)) {
-    args.push(";", "split-pane", "-d", cwd, ...shellArgs(scriptPath));
-  }
-  return args;
-}
-
 export function resolveOpenCodeBaselineBinary(): string | null {
   if (!isWindows) return null;
 
@@ -226,8 +166,4 @@ export function quoteShell(value: string): string {
 
 export function quotePowerShell(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
-}
-
-export function escapeAppleScript(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/'/g, "'\\''");
 }

@@ -3,14 +3,14 @@
 </p>
 
 <p align="center">
-  <strong>Local command room for AI coding agents, session recall, and project handoffs.</strong>
+  <strong>Local command room for AI coding agents.</strong>
 </p>
 
 <p align="center">
   <a href="https://github.com/luckeyfaraday/Athena">
     <img alt="GitHub repo" src="https://img.shields.io/badge/GitHub-Athena-0f1c16?logo=github" />
   </a>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.7-d9c48a" />
+  <img alt="Version" src="https://img.shields.io/badge/version-0.2.0-d9c48a" />
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-2e5a46" />
   <img alt="Frontend" src="https://img.shields.io/badge/frontend-Electron%20%2B%20React-68c4ff?logo=electron" />
   <img alt="Backend" src="https://img.shields.io/badge/backend-FastAPI-009688?logo=fastapi" />
@@ -31,9 +31,9 @@
 
 # Athena
 
-Athena is a local desktop workspace for orchestrating AI coding agents with shared project context. It gives developers one Electron app for launching Codex, OpenCode, Claude Code, Athena Code, Hermes, and shell sessions; inspecting live terminal output and native session history; generating project handoffs; and keeping short-lived recall context available to the next agent.
+Athena is a local desktop workspace for running AI coding agents side by side. It gives developers one Electron app for launching Codex, OpenCode, Claude Code, Athena Code, Grok, Hermes, and shell sessions in embedded terminals, resuming native session history, and letting Hermes drive the workspace over MCP.
 
-In search terms: Athena is an **AI coding agent workspace**, **multi-agent desktop app**, **embedded terminal control room**, **Hermes MCP bridge**, and **session recall manager** for local software development.
+In search terms: Athena is an **AI coding agent workspace**, **multi-agent desktop app**, **embedded terminal control room**, and **Hermes MCP bridge** for local software development.
 
 <p align="center">
   <img src="athenafocusmode.png" alt="Athena Command Room showing live agent panes in focus mode" />
@@ -45,27 +45,24 @@ https://github.com/user-attachments/assets/70724e3c-f2c4-4e16-8dee-ab00e47a3485
 
 ## Product Widgets
 
-| Command Room | Session Recall | Agent Coverage | Desktop Runtime |
-|---|---|---|---|
-| Embedded PTY panes, shell focus, terminal/chat modes | Hermes recall cache, audit metadata, bounded handoffs | Codex, OpenCode, Claude Code, Athena Code, Hermes, shell | Electron app with local FastAPI backend |
-| ![Command Room](https://img.shields.io/badge/Command%20Room-embedded%20PTYs-2e5a46) | ![Recall](https://img.shields.io/badge/Recall-project%20local-d9c48a) | ![Agents](https://img.shields.io/badge/Agents-Codex%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Athena%20Code%20%7C%20Hermes-68c4ff) | ![Desktop](https://img.shields.io/badge/Desktop-AppImage%20ready-0f1c16) |
+| Command Room | Agent Coverage | Desktop Runtime |
+|---|---|---|
+| Embedded PTY panes, shell focus, terminal/chat modes, native session history | Codex, OpenCode, Claude Code, Athena Code, Grok, Hermes, shell | Electron app with local FastAPI backend |
+| ![Command Room](https://img.shields.io/badge/Command%20Room-embedded%20PTYs-2e5a46) | ![Agents](https://img.shields.io/badge/Agents-Codex%20%7C%20OpenCode%20%7C%20Claude%20%7C%20Athena%20Code%20%7C%20Hermes-68c4ff) | ![Desktop](https://img.shields.io/badge/Desktop-AppImage%20ready-0f1c16) |
 
 ## LLM Summary
 
-Athena is an Electron + React desktop application with a FastAPI backend for managing local AI coding agent sessions. It supports embedded PTY terminals through `node-pty` and `xterm.js`, native session discovery for Codex, OpenCode, Claude Code, Athena Code, and Hermes, project-local recall caches, session handoff generation, recall audit metadata, and an MCP server that lets Hermes control the running desktop workspace.
+Athena is an Electron + React desktop application with a FastAPI backend for running local AI coding agents side by side. It embeds PTY terminals through `node-pty` and `xterm.js`, discovers native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions on disk so they can be resumed, and ships an MCP server that lets Hermes drive the running desktop workspace.
 
 ## What Athena Solves
 
-AI coding tools often run as isolated terminals, each with its own context window and history. Athena turns those separate agent sessions into one local command room:
+AI coding tools often run as isolated terminals, each in its own window. Athena puts them in one local command room:
 
-- Start shell, Hermes, Codex, OpenCode, Claude, and Athena Code sessions from one UI.
+- Start shell, Hermes, Codex, OpenCode, Claude, Athena Code, and Grok sessions from one UI, singly or as a four-pane grid.
 - Resume native agent sessions already stored on disk.
-- Inspect live terminal buffers, native transcripts, and provider metadata.
-- Generate bounded handoffs from useful session evidence.
-- Save handoffs into project-local recall for the next fresh agent.
-- Let Hermes use MCP tools to inspect sessions, write recall, and spawn visible Athena terminals.
-
-Athena is not only a terminal emulator, memory store, or MCP server. It is a local orchestration surface for repeated, session-first AI development work.
+- Broadcast one prompt to every ready agent pane.
+- Keep one tab per project workspace, with attention badges when a background workspace needs you.
+- Let Hermes use MCP tools to inspect sessions, message panes, and spawn visible Athena terminals.
 
 ## Quick Facts
 
@@ -73,59 +70,47 @@ Athena is not only a terminal emulator, memory store, or MCP server. It is a loc
 |---|---|
 | App type | Local desktop app for AI coding agent orchestration |
 | Frontend | Electron, React, Vite, TypeScript |
-| Terminal stack | `node-pty` + `xterm.js` embedded PTYs |
+| Terminal stack | `node-pty` + `xterm.js` (WebGL renderer when GPU acceleration is available) |
 | Backend | FastAPI Python service launched by Electron |
-| Agent support | Codex, OpenCode, Claude Code, Athena Code, Hermes, shell |
-| Context system | Hermes memory, project-local recall, session handoffs |
+| Agent support | Codex, OpenCode, Claude Code, Athena Code, Grok, Hermes, shell |
 | MCP support | `mcp_server/` exposes Athena tools to Hermes |
-| Primary workflow | Launch or resume agents, inspect sessions, create handoffs, start fresh with recall |
+| Primary workflow | Launch or resume agents in the Command Room, tune the app in Settings |
 
 ## Core Features
 
-### AI Agent Session Management
+### Command Room
 
-- Launch embedded shell, Hermes, Codex, OpenCode, Claude, and Athena Code panes.
-- Launch Codex/OpenCode/Claude/Athena Code grids for parallel work.
-- Resume native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions.
-- Track running embedded PTYs and historical native sessions in the Command Room.
-- Group session history by provider.
-- Inspect live buffers, native transcripts, prompt paths, model metadata, branch metadata, and provider session IDs.
+- Launch embedded shell, Hermes, Codex, OpenCode, Claude, Athena Code, and Grok panes.
+- Launch four-pane grids for parallel work; drag panes to reorder, resize, minimize, or maximize them.
+- Shell Focus hides the surrounding chrome so terminals fill the window (Esc exits).
+- The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, grouped by provider, with Resume, Rename, and Focus actions.
+- Chat view renders agent output as chat bubbles instead of a raw terminal.
 
-### Shared Project Context And Recall
+### Settings
 
-- Refresh Hermes recall before agent launch when recall is missing or stale.
-- Write project-local recall to `.context-workspace/hermes/session-recall.md`.
-- Generate bounded Athena Session Handoffs from selected sessions.
-- Filter terminal UI/control noise out of handoff evidence.
-- Save handoffs to recall and launch a fresh Codex, OpenCode, Claude, or Athena Code agent from that handoff.
-- Track recall audit metadata: source, source count, source titles, byte size, refresh time, and whether recall was used by a launch.
+- Graphics mode (auto, safe, accelerated), backend and Electron control status, and terminal restore.
+- Interface mode (terminal or chat), theme, and Shell Focus defaults.
+- Hermes status and install, the MCP bridge connect helper, and detected agent CLIs.
+- Performance diagnostics for terminal throughput, event-loop lag, and agent processes.
 
 ### Hermes MCP Integration
 
-- Expose Athena health, memory, recall, native sessions, transcripts, and terminal spawning through MCP.
+- Expose Athena health, Hermes memory, native sessions, transcripts, and terminal spawning through MCP.
 - Let Hermes spawn visible Athena terminals through Electron control.
 - Let Hermes read native Codex/OpenCode/Claude/Athena Code/Hermes session summaries.
-- Keep Hermes as the owner of long-term memory and higher-level recall decisions.
-
-### Local Desktop Workflow
-
-- Workspace tabs isolate active projects.
-- Electron starts and monitors the FastAPI backend.
-- Settings shows backend, Hermes, adapter, and recall status, installs Hermes, and shows the MCP bridge connect helper.
-- Memory Room can inspect project memory and delete exact Hermes memory entries.
-- Review Room focuses on deciding which session output is worth keeping.
+- Keep Hermes as the owner of long-term memory.
 
 ## Repository Layout
 
 ```text
-backend/                 FastAPI backend, memory, native sessions, recall, legacy run registry
+backend/                 FastAPI backend: Hermes status/ask, memory, native sessions, adapter detection
 backend/adapters/        Agent adapter implementations
 client/                  Electron + React desktop client
 client/electron/         Electron main-process services and IPC handlers
 client/src/              React UI and browser-side API wrappers
 docs/                    Public implementation and verification notes
 mcp_server/              MCP bridge so Hermes can control Athena
-scripts/                 Local verification and recall helpers
+scripts/                 Build and verification helpers
 tests/                   Backend, MCP, native session, and adapter tests
 ```
 
@@ -244,10 +229,7 @@ Useful endpoints:
 ```text
 GET  /health
 GET  /hermes/status
-GET  /hermes/recall/status
-POST /hermes/recall/refresh
-POST /hermes/recall/write
-POST /hermes/recall/mark-used
+POST /hermes/ask
 GET  /memory/hermes?q=<query>
 GET  /memory/recent?limit=10
 POST /memory/store
@@ -255,11 +237,6 @@ POST /memory/delete
 GET  /agents/adapters
 GET  /agents/sessions
 GET  /agents/sessions/{provider}/{session_id}/transcript
-POST /agents/spawn
-GET  /agents/runs
-GET  /agents/runs/{run_id}
-POST /agents/runs/{run_id}/cancel
-GET  /agents/runs/{run_id}/artifacts/{artifact_name}
 ```
 
 ## Testing
@@ -297,38 +274,14 @@ For the first public release gate, see
 
 ## How Agent Sessions Work
 
-Athena's primary workflow is embedded, interactive agent sessions. The Electron main process launches terminal panes for shell, Hermes, Codex, OpenCode, Claude, and Athena Code. The React UI renders those panes with `xterm.js`.
+Athena's primary workflow is embedded, interactive agent sessions. The Electron main process launches terminal panes for shell, Hermes, Codex, OpenCode, Claude, Athena Code, and Grok. The React UI renders those panes with `xterm.js`.
 
-By default, fresh agent panes start without Athena project context. Athena only
-creates and attaches memory, recall, and project-instruction bundles when an
-explicit immersive context mode is selected. It then:
+Fresh agent panes start clean. Athena only writes a short launch prompt (routing
+tips for asking Hermes and messaging other panes, plus an optional task) when a
+task or curated context is supplied, for example by Hermes through MCP. Athena
+does not write any files into your project directory.
 
-1. Creates an immutable workspace-scoped context bundle.
-2. Writes a compact bootstrap prompt that points at the bundle.
-3. Starts the selected CLI in an embedded PTY.
-4. Tracks the pane as a live session and captures a bounded terminal buffer for review.
-
-Athena also discovers native provider sessions already on disk, so previous Codex, OpenCode, Claude Code, Athena Code, and Hermes work can be inspected or resumed from the Sessions tab.
-
-## Session Handoffs
-
-Athena Session Handoffs are bounded markdown summaries generated from selected sessions in Review Room. They are designed to help a new agent start fresh without losing useful project context.
-
-The handoff flow:
-
-1. Select one or more useful live or native sessions.
-2. Athena extracts usable evidence and filters terminal UI noise.
-3. Review the generated handoff preview.
-4. Save the handoff to project-local recall.
-5. Start a fresh Codex, OpenCode, Claude, or Athena Code session with that recall attached.
-
-Handoffs do not blindly merge full transcripts. Metadata-only sessions and terminal buffers with no usable task evidence are rejected or clearly marked.
-
-## Legacy Backend Runs
-
-The backend still includes an older one-shot run registry and Codex adapter. This path receives an agent spawn request, creates a run record, writes bounded artifacts under `.context-workspace/runs/<run-id>/`, executes the CLI process, and exposes status/artifact endpoints.
-
-That backend-run flow is maintained for compatibility and tests. Athena's current product direction is session-first embedded terminals plus native session discovery. Generated context artifacts are cache/output files. Hermes memory and project-local recall remain the durable shared context.
+Athena also discovers native provider sessions already on disk, so previous Codex, OpenCode, Claude Code, Athena Code, and Hermes work can be resumed from the Sessions tab. Discovery runs off the main thread, only for the active workspace, and only while the Sessions tab is open.
 
 ## Embedded Terminals
 
@@ -355,8 +308,8 @@ The `New` menu can launch:
 - Claude
 - Claude Grid
 
-Agent panes receive a generated Athena prompt path only for task, curated, or
-explicit immersive launches. Clean launches receive no prompt path.
+Agent panes receive a generated Athena prompt path only for task or curated
+launches. Clean launches receive no prompt path.
 
 ## Hermes Memory
 
@@ -404,7 +357,7 @@ instead of shelling out to the `hermes` binary directly:
 
 Both paths reach the local Athena backend, which runs Hermes once with the
 project as context and returns the answer. Routing through the backend keeps
-logging, project scoping, and recall consistent across agents.
+logging and project scoping consistent across agents.
 
 ## Connecting Hermes
 
@@ -432,7 +385,7 @@ can.
 
 The coding-agent skills above and the Hermes bridge are complementary: the
 skills let Codex/Claude/OpenCode *ask* Hermes through Athena, while the bridge
-lets Hermes *drive* Athena (spawn terminals, read sessions, write recall).
+lets Hermes *drive* Athena (spawn terminals, read sessions, message panes).
 
 ## Hermes MCP Bridge
 
@@ -494,7 +447,7 @@ env:
   NO_PROXY: "127.0.0.1,localhost"
 ```
 
-The bridge exposes tools for health checks, Hermes memory reads/writes through the backend, native agent session discovery, visible embedded terminal spawning, legacy agent run management, artifact reads, transcript reads, and project-local recall cache management.
+The bridge exposes tools for health checks, asking Hermes, Hermes memory reads/writes through the backend, native agent session discovery and transcript reads, visible embedded terminal spawning and input, and agent-to-agent messages between panes.
 
 Visible terminal tools require the Electron app itself, not only the FastAPI backend. Electron writes control discovery state to:
 
@@ -517,59 +470,45 @@ token, loopback-only `Host` enforcement, and rejection of cross-origin requests
 together prevent other local processes and malicious web pages from driving the
 control server (process spawning, terminal input injection, buffer reads).
 
-When Electron starts the backend, it configures a default recall refresh command:
-
-```text
-python scripts/hermes-refresh-recall.py
-```
-
-You can override it with `CONTEXT_WORKSPACE_HERMES_REFRESH_CMD`. The default script writes a short project-local recall cache and uses native Codex/OpenCode/Claude/Athena Code session discovery as fallback context, which keeps recall refresh working even when Hermes cannot reach the backend loopback URL.
-
 If the same projects live under different usernames on different machines (for
 example `C:\Users\you\...` on Windows and `/home/you/...` on Linux), set
 `CONTEXT_WORKSPACE_HOME_ALIASES` to the extra usernames (comma-separated, e.g.
 `you,work-user`) so project-scoped memory matching recognizes both home paths.
 
-Recommended recall workflow:
-
-1. Hermes runs its own `session_search`.
-2. Hermes calls `context_workspace_summarize_agent_sessions` when it needs native Codex/OpenCode/Athena Code/Claude session history for the selected workspace.
-3. Hermes summarizes the relevant prior-session context.
-4. Hermes calls `context_workspace_write_recall_cache(project_dir, markdown)`.
-5. Future Athena agent launches include that cache in the generated prompt context.
-
-Useful MCP tools for this workflow:
+Useful MCP tools:
 
 ```text
+context_workspace_ask_hermes(project_dir, question, context?)
 context_workspace_list_agent_sessions(project_dir, provider?, query?, limit?)
 context_workspace_summarize_agent_sessions(project_dir, provider?, query?, limit?)
+context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
 context_workspace_open_workspace(project_dir, select?)
-context_workspace_spawn_agent(project_dir, task, agent_type?, visible_terminal?, open_workspace?)
+context_workspace_spawn_agent(project_dir, task, agent_type?, context_mode?, context?, open_workspace?, model?)
 context_workspace_spawn_terminal(project_dir, kind?, count?, title?, resume_session_id?, session_label?, open_workspace?)
+context_workspace_list_live_terminals(project_dir?)
+context_workspace_inject_terminal_input(target, text, ...)
+context_workspace_send_message(to, text, project_dir?, from_terminal_id?, ...)
+context_workspace_list_messages(...)
 context_workspace_kill_terminal(target)
 context_workspace_close_workspace(project_dir)
-context_workspace_read_agent_session(provider, session_id, max_bytes?, tail?)
-context_workspace_write_recall_cache(project_dir, markdown)
-context_workspace_read_recall_cache(project_dir)
-context_workspace_clear_recall_cache(project_dir)
 ```
+
+`context_mode` is one of `none` (clean launch), `task` (compact task prompt), or `curated` (task plus caller-selected background passed in `context`).
 
 Use `context_workspace_spawn_agent` for user-requested Codex, OpenCode, Athena Code, or Claude work. Pass `agent_type="athena-code"` or `agent_type="athena"` for Athena Code. It opens a visible Command Room PTY by default through Electron control, so Athena must be running. Set `open_workspace=true` when Hermes should add/select a project folder in Athena before spawning. Use `context_workspace_spawn_terminal` for lower-level terminal control such as shells, grids, Hermes panes, or explicit resumes; its `kind` accepts `athena-code` as an alias for the live `athena` terminal kind.
 
 Use `context_workspace_kill_terminal` to stop one live Athena PTY by terminal id or provider session id. Use `context_workspace_close_workspace` to close a workspace tab and stop its live embedded terminals.
 
-Do not use the FastAPI backend `POST /agents/spawn` route for OpenCode or Claude visible terminals. That backend route is the legacy run/artifact path. If visible spawning fails with an Electron control error, check `~/.context-workspace/electron-control.json` and restart the Athena desktop app.
+If visible spawning fails with an Electron control error, check `~/.context-workspace/electron-control.json` and restart the Athena desktop app.
 
-Athena owns these app-side tools. Hermes still owns its own config, `session_search`, long-term memory writes, and the decision about when to refresh or clear recall.
+Athena owns these app-side tools. Hermes still owns its own config, `session_search`, and long-term memory writes.
 
 ## Use Cases
 
 - Run several AI coding agents against one local project.
 - Resume prior Codex, OpenCode, Claude Code, Athena Code, or Hermes work.
-- Review what an agent did before deciding what context to keep.
-- Start a new agent with a curated handoff instead of a full noisy transcript.
+- Send the same prompt to a grid of agents and compare their output.
 - Let Hermes control visible Athena terminals through MCP.
-- Keep project-local recall separate across workspaces.
 
 ## Athena Code
 
@@ -578,7 +517,7 @@ Athena Code is a standalone opencode fork in the
 repository and installs its own `athena-code` CLI. Athena treats it exactly like Codex,
 OpenCode, and Claude Code: the Command Room launches it from the **New** menu
 as a regular embedded PTY, it must be on `PATH`, and it participates in the
-same clean/task/curated/immersive context modes as every other agent.
+same clean/task/curated context modes as every other agent.
 
 Install Athena Code:
 
@@ -592,9 +531,7 @@ curl -fsSL https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scri
 irm https://raw.githubusercontent.com/luckeyfaraday/athena-code/main/scripts/install.ps1 | iex
 ```
 
-Every agent launch starts **Clean** unless an explicit context mode is
-selected. Immersive launches create a fresh immutable project-scoped context
-bundle and hand the agent a bootstrap prompt that points at the bundle file.
+Every agent launch starts **Clean** unless a task or curated context is supplied.
 
 ## Troubleshooting
 
@@ -677,7 +614,7 @@ Electron asks the OS for a free backend port. Vite uses `127.0.0.1:5173` during 
 
 ## Notes For Contributors
 
-- Keep generated run artifacts inside `.context-workspace/runs/<run-id>/`.
+- Never write Athena state into the user's project directory; app state lives in `~/.context-workspace/`.
 - Do not overwrite user-owned `AGENTS.md`, `CLAUDE.md`, or tool configuration files without explicit opt-in.
 - Keep Hermes memory as the durable source of shared context.
 - Prefer adapter-specific behavior over assuming every agent CLI handles instructions the same way.

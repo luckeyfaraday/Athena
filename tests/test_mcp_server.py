@@ -15,7 +15,6 @@ import server
 import tools
 import client as mcp_client
 from config import Settings
-from backend.safety import SafetyError
 
 
 def test_tool_schema_resolves_future_annotations() -> None:
@@ -24,16 +23,43 @@ def test_tool_schema_resolves_future_annotations() -> None:
     assert schema["properties"]["project_dir"] == {"type": "string"}
     assert schema["properties"]["task"] == {"type": "string"}
     assert schema["properties"]["agent_type"] == {"type": "string"}
-    assert schema["properties"]["timeout_seconds"] == {
-        "anyOf": [{"type": "number"}, {"type": "null"}]
-    }
-    assert schema["properties"]["visible_terminal"] == {"type": "boolean"}
     assert schema["properties"]["context_mode"] == {"type": "string"}
     assert schema["properties"]["context"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}]
     }
     assert schema["properties"]["open_workspace"] == {"type": "boolean"}
+    assert schema["properties"]["model"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}]
+    }
+    # The legacy backend run path and its knobs are gone; spawns are always visible.
+    for removed in ("visible_terminal", "memory_query", "timeout_seconds"):
+        assert removed not in schema["properties"]
     assert schema["required"] == ["project_dir", "task"]
+
+
+def test_stdio_server_exposes_the_shared_tool_list() -> None:
+    assert list(server.TOOL_FUNCTIONS) == [tool.__name__ for tool in tools.TOOLS]
+    for name in (
+        "context_workspace_ask_hermes",
+        "context_workspace_send_message",
+        "context_workspace_list_messages",
+        "context_workspace_read_agent_session",
+    ):
+        assert name in server.TOOL_FUNCTIONS
+    for removed in (
+        "context_workspace_create_context_bundle",
+        "context_workspace_get_context_bundle",
+        "context_workspace_list_runs",
+        "context_workspace_get_run",
+        "context_workspace_cancel_run",
+        "context_workspace_read_artifact",
+        "context_workspace_wait_for_run",
+        "context_workspace_write_recall_cache",
+        "context_workspace_read_recall_cache",
+        "context_workspace_clear_recall_cache",
+    ):
+        assert removed not in server.TOOL_FUNCTIONS
+        assert not hasattr(tools, removed)
 
 
 def test_agent_session_tool_schema_includes_filters() -> None:
@@ -61,15 +87,6 @@ def test_ask_hermes_tool_schema_requires_project_and_question() -> None:
     }
     assert schema["properties"]["timeout_seconds"] == {"type": "number"}
     assert schema["required"] == ["project_dir", "question"]
-
-
-def test_context_bundle_tool_schemas() -> None:
-    create_schema = server._tool_schema(tools.context_workspace_create_context_bundle)["inputSchema"]
-    read_schema = server._tool_schema(tools.context_workspace_get_context_bundle)["inputSchema"]
-
-    assert create_schema["required"] == ["project_dir", "agent"]
-    assert create_schema["properties"]["mode"] == {"type": "string"}
-    assert read_schema["required"] == ["project_dir", "bundle_id"]
 
 
 def test_spawn_terminal_tool_schema_defaults_to_visible_terminal() -> None:
@@ -389,25 +406,55 @@ def test_spawn_terminals_batch_defaults_context_from_spec(monkeypatch: pytest.Mo
     assert [call["context_mode"] for call in calls] == ["task", "curated", None]
 
 
-def test_spawn_terminals_batch_accepts_immersive_context_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    calls: list[dict[str, object]] = []
-
-    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:
-        calls.append(kwargs)
-        return {"sessions": [{"id": "terminal-1"}]}
+@pytest.mark.parametrize("mode", ["immersive", "immersive_curated", "bogus"])
+def test_spawn_terminals_batch_rejects_unsupported_context_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    async def fake_spawn_terminal(**kwargs: object) -> dict[str, object]:  # pragma: no cover
+        raise AssertionError("spawn must not be attempted for an unsupported context mode")
 
     monkeypatch.setattr(tools, "context_workspace_spawn_terminal", fake_spawn_terminal)
 
-    asyncio.run(
-        tools.context_workspace_spawn_terminals_batch(
-            str(tmp_path),
-            [
-                {"kind": "codex", "task": "Continue from recall", "context_mode": "immersive"},
-            ],
+    with pytest.raises(ValueError, match="Unsupported context_mode"):
+        asyncio.run(
+            tools.context_workspace_spawn_terminals_batch(
+                str(tmp_path),
+                [{"kind": "codex", "task": "Fix build", "context_mode": mode}],
+            )
         )
-    )
 
-    assert calls[0]["context_mode"] == "immersive"
+
+@pytest.mark.parametrize("mode", ["immersive", "immersive_curated"])
+def test_spawn_agent_rejects_immersive_context_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:  # pragma: no cover
+            raise AssertionError("electron client must not be called for an unsupported context mode")
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    with pytest.raises(ValueError, match="Unsupported context_mode"):
+        asyncio.run(tools.context_workspace_spawn_agent(str(tmp_path), "Fix build", context_mode=mode))
+
+
+def test_spawn_terminal_normalizes_context_mode_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class FakeElectronClient:
+        async def post(self, path: str, json_body: dict[str, object]) -> dict[str, object]:
+            calls.append((path, json_body))
+            return {"sessions": [{"id": "terminal-1"}]}
+
+    monkeypatch.setattr(tools, "ContextWorkspaceElectronClient", FakeElectronClient)
+
+    asyncio.run(tools.context_workspace_spawn_terminal(str(tmp_path), kind="codex", context_mode=" Curated "))
+
+    assert calls[0][1]["context_mode"] == "curated"
 
 
 def test_spawn_agent_forwards_explicit_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -528,44 +575,3 @@ def test_delete_memory_tool_schema_requires_text() -> None:
 
     assert schema["properties"]["text"] == {"type": "string"}
     assert schema["required"] == ["text"]
-
-
-def test_recall_cache_round_trip_uses_valid_project_dir(tmp_path: Path) -> None:
-    result = asyncio.run(
-        tools.context_workspace_write_recall_cache(
-            str(tmp_path),
-            "Recovered Hermes session context.",
-        )
-    )
-
-    recall_path = tmp_path / ".context-workspace" / "hermes" / "session-recall.md"
-    metadata_path = tmp_path / ".context-workspace" / "hermes" / "last-refresh.json"
-    assert result["written"] is True
-    assert result["path"] == str(recall_path)
-    assert recall_path.read_text(encoding="utf-8") == "Recovered Hermes session context.\n"
-    assert metadata_path.exists()
-
-    payload = asyncio.run(tools.context_workspace_read_recall_cache(str(tmp_path)))
-    assert payload["exists"] is True
-    assert payload["markdown"] == "Recovered Hermes session context.\n"
-
-
-def test_recall_cache_rejects_unsafe_project_dir() -> None:
-    with pytest.raises(SafetyError):
-        asyncio.run(tools.context_workspace_write_recall_cache(str(Path.home()), "unsafe"))
-
-
-def test_clear_recall_cache_removes_only_owned_files(tmp_path: Path) -> None:
-    cache_dir = tmp_path / ".context-workspace" / "hermes"
-    cache_dir.mkdir(parents=True)
-    for name in ("session-recall.md", "last-refresh.json", "control-state.json", "keep.txt"):
-        (cache_dir / name).write_text(name, encoding="utf-8")
-
-    result = asyncio.run(tools.context_workspace_clear_recall_cache(str(tmp_path)))
-
-    assert sorted(Path(path).name for path in result["removed"]) == [
-        "control-state.json",
-        "last-refresh.json",
-        "session-recall.md",
-    ]
-    assert (cache_dir / "keep.txt").exists()

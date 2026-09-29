@@ -44,8 +44,31 @@ export type AgentMessageInput = {
 };
 
 const MAX_AGENT_MESSAGES = 500;
+/**
+ * The store is rewritten whole, and a single routed message updates it two or
+ * three times in quick succession (queued -> injecting -> written). Coalesce
+ * those into one compact, atomic background write; `flushAgentMessages` makes
+ * the latest state durable synchronously at shutdown.
+ */
+const PERSIST_DEBOUNCE_MS = 250;
+/**
+ * Windows reports EPERM/EACCES/EBUSY while Defender or the indexer briefly
+ * holds the destination. Retry the rename with short backoff; the destination
+ * is never deleted, so a failure can only leave the previous complete store.
+ */
+const RENAME_RETRY_DELAYS_MS = [50, 100, 200];
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const PERSIST_RETRY_MIN_MS = 1_000;
+const PERSIST_RETRY_MAX_MS = 60_000;
 let messageCache: AgentMessage[] | null = null;
 let writtenMessageTerminals = new Set<string>();
+let cacheGeneration = 0;
+let persistedGeneration = 0;
+let persistTimer: NodeJS.Timeout | null = null;
+let persistInFlight = false;
+let persistRetryDelayMs = 0;
+/** Complete snapshots kept after a failed rename; removed once a later write lands. */
+const retainedTemporaryFiles = new Set<string>();
 
 export function agentMessageStorePath(): string {
   return path.join(os.homedir(), ".context-workspace", "agent-messages.json");
@@ -175,9 +198,157 @@ function readAgentMessages(): AgentMessage[] {
 function writeAgentMessages(messages: AgentMessage[]): void {
   messageCache = [...messages];
   writtenMessageTerminals = writtenTargets(messageCache);
+  cacheGeneration += 1;
+  schedulePersist();
+}
+
+/**
+ * Synchronously write any pending message-store changes. Call on app quit so
+ * the debounced background write cannot be lost.
+ */
+export function flushAgentMessages(): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  if (!messageCache || cacheGeneration === persistedGeneration) return;
+  const generation = cacheGeneration;
   const filePath = agentMessageStorePath();
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(messages, null, 2), { encoding: "utf8", mode: 0o600 });
+  const temporary = temporaryStorePath(filePath, generation, "flush");
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(temporary, JSON.stringify(messageCache), { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    removeQuietly(temporary);
+    console.warn("Failed to flush agent messages:", error);
+    return;
+  }
+  const error = renameWithRetrySync(temporary, filePath);
+  if (error) {
+    // Keep the complete snapshot; the previous store is untouched.
+    retainedTemporaryFiles.add(temporary);
+    console.warn("Failed to flush agent messages:", error);
+    return;
+  }
+  markPersisted(generation, temporary);
+}
+
+function schedulePersist(delayMs = PERSIST_DEBOUNCE_MS): void {
+  // An in-flight write reschedules itself on completion if newer changes exist.
+  if (persistTimer || persistInFlight) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    void persistAgentMessages();
+  }, delayMs);
+  persistTimer.unref?.();
+}
+
+async function persistAgentMessages(): Promise<void> {
+  if (persistInFlight || !messageCache || cacheGeneration === persistedGeneration) return;
+  const generation = cacheGeneration;
+  const content = JSON.stringify(messageCache);
+  const filePath = agentMessageStorePath();
+  const temporary = temporaryStorePath(filePath, generation, "async");
+  const superseded = () => generation <= persistedGeneration;
+  persistInFlight = true;
+  let failure: unknown = null;
+  try {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    // A partial temporary file (e.g. a full disk) is not a usable snapshot.
+    removeQuietly(temporary);
+    failure = error;
+  }
+  if (!failure) {
+    // Renames run on the main thread so they are ordered against
+    // flushAgentMessages; a newer synchronous flush must never be replaced by
+    // this older snapshot.
+    const error = await renameWithRetry(temporary, filePath, superseded);
+    if (superseded()) {
+      // A newer snapshot landed first (the rename was skipped).
+      removeQuietly(temporary);
+    } else if (error) {
+      retainedTemporaryFiles.add(temporary);
+      failure = error;
+    } else {
+      markPersisted(generation, temporary);
+    }
+  }
+  persistInFlight = false;
+  if (failure) {
+    // Keep state in memory and retry with backoff instead of spinning on a
+    // persistent failure; the shutdown flush also retries.
+    persistRetryDelayMs = Math.min(Math.max(persistRetryDelayMs * 2, PERSIST_RETRY_MIN_MS), PERSIST_RETRY_MAX_MS);
+    console.warn("Failed to persist agent messages:", failure);
+    if (cacheGeneration !== persistedGeneration) schedulePersist(persistRetryDelayMs);
+  } else if (cacheGeneration !== persistedGeneration) {
+    schedulePersist();
+  }
+}
+
+function markPersisted(generation: number, renamedTemporary: string): void {
+  persistedGeneration = Math.max(persistedGeneration, generation);
+  persistRetryDelayMs = 0;
+  retainedTemporaryFiles.delete(renamedTemporary);
+  for (const retained of retainedTemporaryFiles) removeQuietly(retained);
+  retainedTemporaryFiles.clear();
+}
+
+// The shutdown flush and the background writer never share a temporary file,
+// even for the same generation.
+function temporaryStorePath(filePath: string, generation: number, writer: "async" | "flush"): string {
+  return `${filePath}.${process.pid}.${generation}.${writer}.tmp`;
+}
+
+function isRetryableRenameError(error: unknown): boolean {
+  return RETRYABLE_RENAME_CODES.has((error as NodeJS.ErrnoException | null)?.code ?? "");
+}
+
+/** Rename with short synchronous backoff (shutdown path). Returns the final error, if any. */
+function renameWithRetrySync(temporary: string, filePath: string): unknown {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(temporary, filePath);
+      return null;
+    } catch (error) {
+      if (!isRetryableRenameError(error) || attempt >= RENAME_RETRY_DELAYS_MS.length) return error;
+      sleepSync(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+/**
+ * Rename with short asynchronous backoff. Each attempt runs synchronously on
+ * the main thread and is skipped once a newer snapshot has been persisted.
+ */
+async function renameWithRetry(temporary: string, filePath: string, superseded: () => boolean): Promise<unknown> {
+  for (let attempt = 0; ; attempt += 1) {
+    if (superseded()) return null;
+    try {
+      fs.renameSync(temporary, filePath);
+      return null;
+    } catch (error) {
+      if (!isRetryableRenameError(error) || attempt >= RENAME_RETRY_DELAYS_MS.length) return error;
+      await new Promise((resolve) => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // Blocking waits are unavailable in this context; retry immediately.
+  }
+}
+
+function removeQuietly(filePath: string): void {
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Best effort cleanup of a temporary file.
+  }
 }
 
 function writtenTargets(messages: AgentMessage[]): Set<string> {

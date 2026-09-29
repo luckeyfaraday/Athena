@@ -1,5 +1,9 @@
+import os
 from pathlib import Path
 
+import pytest
+
+from backend import memory as memory_module
 from backend.memory import HermesMemoryStore, parse_memory_entries, sanitize_memory_text
 
 
@@ -148,3 +152,62 @@ def test_project_context_matches_configured_home_alias(
     context = store.format_project_context("C:/Users/fred/projects/demo")
 
     assert "staging database" in context
+
+
+def _count_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    reads: list[Path] = []
+    real_read_text = memory_module._read_text
+
+    def counting_read_text(path: Path) -> str:
+        reads.append(path)
+        return real_read_text(path)
+
+    monkeypatch.setattr(memory_module, "_read_text", counting_read_text)
+    return reads
+
+
+def test_memory_reads_reuse_parsed_entries_until_file_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    memory_path = tmp_path / "MEMORY.md"
+    memory_path.write_text("\u00a7\nContext Workspace project: C:/Users/you/context-workspace shell.\n", encoding="utf-8")
+    store = HermesMemoryStore(memory_path=memory_path)
+    reads = _count_reads(monkeypatch)
+
+    store.recent()
+    store.format_project_context("C:/Users/you/context-workspace")
+    store.search("shell")
+
+    assert len(reads) == 1
+
+    # An external writer (Hermes itself) changes the file on disk.
+    memory_path.write_text(
+        "\u00a7\nContext Workspace project: C:/Users/you/context-workspace shell.\n\u00a7\nNew external entry.\n",
+        encoding="utf-8",
+    )
+    stat = memory_path.stat()
+    os.utime(memory_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+    assert [entry.text for entry in store.recent()][-1] == "New external entry."
+    assert len(reads) == 2
+
+
+def test_memory_writes_invalidate_parsed_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = HermesMemoryStore(memory_path=tmp_path / "MEMORY.md")
+    store.append("First entry.")
+    assert [entry.text for entry in store.recent()] == ["First entry."]
+
+    store.append("Second entry.")
+    assert [entry.text for entry in store.recent()] == ["First entry.", "Second entry."]
+
+    store.remove_exact("First entry.")
+    assert [entry.text for entry in store.recent()] == ["Second entry."]
+
+
+def test_memory_cache_handles_missing_file(tmp_path: Path) -> None:
+    memory_path = tmp_path / "MEMORY.md"
+    store = HermesMemoryStore(memory_path=memory_path)
+    store.append("Transient entry.")
+    assert store.recent()
+
+    memory_path.unlink()
+
+    assert store.recent() == []

@@ -2,14 +2,23 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { HermesIndexDiagnostics, HermesIndexedSession, SessionIndexRequest, SessionIndexResponse } from "./session-index-protocol.js";
+import type {
+  AgentSession,
+  HermesIndexDiagnostics,
+  HermesIndexedSession,
+  SessionIndexRequest,
+  SessionIndexRequestKind,
+  SessionIndexResponse,
+} from "./session-index-protocol.js";
 
 type WaitingCall = {
+  kind: SessionIndexRequestKind;
   workspace: string;
-  resolve: (sessions: HermesIndexedSession[]) => void;
+  resolve: (sessions: unknown[] | null) => void;
 };
 
 type PendingRequest = {
+  kind: SessionIndexRequestKind;
   calls: WaitingCall[];
   child: ChildProcess;
   timer: TimerHandle;
@@ -33,7 +42,16 @@ const __dirname = path.dirname(__filename);
 const REQUEST_TIMEOUT_MS = 45_000;
 const RESTART_BACKOFF_MS = 5_000;
 const MAX_RESTART_BACKOFF_MS = 30_000;
+const REQUEST_KINDS: readonly SessionIndexRequestKind[] = ["list-hermes", "list-agent-sessions"];
 
+/**
+ * Main-process side of the session-index worker.
+ *
+ * All native session discovery (JSONL parsing, sqlite reads, Hermes JSON) runs
+ * in a long-lived Electron-as-Node child so the main thread only forwards a
+ * request and receives compact results. Calls queued in the same tick are
+ * coalesced into one request per kind.
+ */
 export class SessionIndexClient {
   private readonly spawnChild: () => ChildProcess;
   private readonly now: () => number;
@@ -45,7 +63,7 @@ export class SessionIndexClient {
   private queued: WaitingCall[] = [];
   private flushTimer: TimerHandle | null = null;
   private pending = new Map<string, PendingRequest>();
-  private lastKnown = new Map<string, HermesIndexedSession[]>();
+  private lastKnown = new Map<string, unknown[]>();
   private nextRequestId = 1;
   private restartAfter = 0;
   private diagnostics: HermesIndexDiagnostics | null = null;
@@ -65,16 +83,30 @@ export class SessionIndexClient {
   }
 
   listHermes(workspace: string): Promise<HermesIndexedSession[]> {
-    return new Promise((resolve) => {
-      this.queued.push({ workspace, resolve });
-      if (this.flushTimer) return;
-      this.flushTimer = this.schedule(() => this.flush(), 0);
-      this.flushTimer.unref?.();
-    });
+    return this.enqueue("list-hermes", workspace).then((sessions) => (sessions ?? []) as HermesIndexedSession[]);
+  }
+
+  /**
+   * Historical sessions from every native provider (Codex, OpenCode, Athena
+   * Code, Claude, Hermes, Grok), scanned in the index child. Resolves null
+   * only when the child cannot answer and no earlier result is known, so the
+   * caller decides how to degrade.
+   */
+  listAgentSessions(workspace: string): Promise<AgentSession[] | null> {
+    return this.enqueue("list-agent-sessions", workspace) as Promise<AgentSession[] | null>;
   }
 
   getDiagnostics(): HermesIndexDiagnostics | null {
     return this.diagnostics ? { ...this.diagnostics } : null;
+  }
+
+  private enqueue(kind: SessionIndexRequestKind, workspace: string): Promise<unknown[] | null> {
+    return new Promise((resolve) => {
+      this.queued.push({ kind, workspace, resolve });
+      if (this.flushTimer) return;
+      this.flushTimer = this.schedule(() => this.flush(), 0);
+      this.flushTimer.unref?.();
+    });
   }
 
   private flush(): void {
@@ -93,16 +125,29 @@ export class SessionIndexClient {
       this.resolveFromLastKnown(calls);
       return;
     }
+    for (const kind of REQUEST_KINDS) {
+      const kindCalls = calls.filter((call) => call.kind === kind);
+      if (kindCalls.length === 0) continue;
+      if (this.child !== child) {
+        // An earlier send in this flush already retired the worker.
+        this.resolveFromLastKnown(kindCalls);
+        continue;
+      }
+      this.sendRequest(child, kind, kindCalls);
+    }
+  }
+
+  private sendRequest(child: ChildProcess, kind: SessionIndexRequestKind, calls: WaitingCall[]): void {
     const requestId = String(this.nextRequestId++);
     const workspaces = Array.from(new Set(calls.map((call) => call.workspace)));
-    const request: SessionIndexRequest = { type: "list-hermes", requestId, workspaces };
+    const request: SessionIndexRequest = { type: kind, requestId, workspaces };
     const timer = this.schedule(() => {
       const pending = this.pending.get(requestId);
       if (!pending || pending.child !== child) return;
       this.retireChild(child);
     }, this.requestTimeoutMs);
     timer.unref?.();
-    this.pending.set(requestId, { calls, child, timer });
+    this.pending.set(requestId, { kind, calls, child, timer });
     try {
       if (!child.send) throw new Error("Session index child has no IPC channel");
       child.send(request, (error) => {
@@ -120,7 +165,7 @@ export class SessionIndexClient {
     if (this.child && this.child.connected && !this.child.killed) return this.child;
     const child = this.spawnChild();
     this.child = child;
-    child.on("message", (message) => this.handleMessage(child, message as SessionIndexResponse));
+    child.on("message", (message) => this.handleMessage(child, message as SessionIndexResponse<unknown>));
     child.on("exit", (code, signal) => this.handleExit(child, code === 0 && signal === null));
     child.on("error", () => this.retireChild(child));
     if (child.pid) {
@@ -135,7 +180,7 @@ export class SessionIndexClient {
     return child;
   }
 
-  private handleMessage(child: ChildProcess, message: SessionIndexResponse): void {
+  private handleMessage(child: ChildProcess, message: SessionIndexResponse<unknown>): void {
     if (!message || message.type !== "response") return;
     const pending = this.pending.get(message.requestId);
     if (!pending || pending.child !== child) return;
@@ -147,8 +192,8 @@ export class SessionIndexClient {
     }
     this.diagnostics = { ...message.diagnostics };
     for (const call of pending.calls) {
-      const sessions = message.sessions[call.workspace] ?? [];
-      this.lastKnown.set(call.workspace, sessions);
+      const sessions = message.sessions?.[call.workspace] ?? [];
+      this.lastKnown.set(lastKnownKey(call), sessions);
       call.resolve(sessions);
     }
   }
@@ -196,8 +241,12 @@ export class SessionIndexClient {
   }
 
   private resolveFromLastKnown(calls: WaitingCall[]): void {
-    for (const call of calls) call.resolve(this.lastKnown.get(call.workspace) ?? []);
+    for (const call of calls) call.resolve(this.lastKnown.get(lastKnownKey(call)) ?? null);
   }
+}
+
+function lastKnownKey(call: WaitingCall): string {
+  return `${call.kind}\u0000${call.workspace}`;
 }
 
 function positiveDuration(value: number | undefined, fallback: number, maximum: number): number {

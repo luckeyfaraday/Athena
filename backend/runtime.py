@@ -1,59 +1,69 @@
-"""Runtime policy helpers for agent orchestration."""
+"""Agent CLI detection for the desktop Settings page."""
 
 from __future__ import annotations
 
+import os
 import shutil
-from dataclasses import dataclass, field
-from pathlib import Path
+import threading
+import time
+from collections.abc import Mapping
 
-from .adapters.base import AgentAdapter
-from .runs import RunRegistry
-
-
-@dataclass(frozen=True)
-class RuntimeLimits:
-    max_global: int = 4
-    max_per_project: int = 2
-    max_per_agent_type: dict[str, int] = field(default_factory=lambda: {"codex": 2, "grok": 2})
-    default_timeout_seconds: float | None = 600
-
-
-@dataclass(frozen=True)
-class LimitDecision:
-    allowed: bool
-    reason: str | None = None
+# Agent CLIs Athena launches in visible terminals, keyed by agent type.
+DEFAULT_AGENT_EXECUTABLES: dict[str, str] = {
+    "codex": "codex",
+    "opencode": "opencode",
+    "claude": "claude",
+    "grok": "grok",
+}
+# Each lookup walks PATH (x PATHEXT on Windows), so results are reused for a few
+# minutes. Callers pass refresh=True after installing a CLI.
+ADAPTER_STATUS_TTL_SECONDS = 300.0
 
 
-def check_runtime_limits(
-    registry: RunRegistry,
-    limits: RuntimeLimits,
-    *,
-    project_dir: str | Path,
-    agent_type: str,
-) -> LimitDecision:
-    if registry.active_count() >= limits.max_global:
-        return LimitDecision(False, f"Global concurrency limit reached: {limits.max_global}")
-    if registry.active_count(project_dir=project_dir) >= limits.max_per_project:
-        return LimitDecision(False, f"Project concurrency limit reached: {limits.max_per_project}")
-
-    agent_limit = limits.max_per_agent_type.get(agent_type.strip().lower())
-    if agent_limit is not None and registry.active_count(agent_type=agent_type) >= agent_limit:
-        return LimitDecision(False, f"Agent-type concurrency limit reached for {agent_type}: {agent_limit}")
-
-    return LimitDecision(True)
-
-
-def adapter_statuses(adapters: dict[str, AgentAdapter]) -> dict[str, dict[str, object]]:
-    statuses = {}
-    for agent_type in ("codex", "opencode", "claude", "grok"):
-        adapter = adapters.get(agent_type)
-        executable = getattr(adapter, "executable", agent_type) if adapter is not None else agent_type
-        command_path = shutil.which(str(executable))
+def adapter_statuses(executables: Mapping[str, str] | None = None) -> dict[str, dict[str, object]]:
+    """Report whether each supported agent CLI is installed on PATH."""
+    resolved = {**DEFAULT_AGENT_EXECUTABLES, **(executables or {})}
+    statuses: dict[str, dict[str, object]] = {}
+    for agent_type, executable in resolved.items():
+        command_path = shutil.which(executable)
         statuses[agent_type] = {
             "agent_type": agent_type,
-            "configured": adapter is not None,
-            "executable": str(executable),
+            "configured": True,
+            "executable": executable,
             "installed": command_path is not None,
             "command_path": command_path,
         }
     return statuses
+
+
+class AdapterStatusCache:
+    """Serve adapter_statuses() from a short-lived cache keyed on PATH/PATHEXT."""
+
+    def __init__(
+        self,
+        executables: Mapping[str, str] | None = None,
+        *,
+        ttl_seconds: float = ADAPTER_STATUS_TTL_SECONDS,
+    ) -> None:
+        self._executables = dict(executables or {})
+        self._ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
+        # (environment key, computed_at, statuses)
+        self._cached: tuple[tuple[str, str], float, dict[str, dict[str, object]]] | None = None
+
+    def get(self, *, refresh: bool = False) -> dict[str, dict[str, object]]:
+        with self._lock:
+            key = (os.environ.get("PATH", ""), os.environ.get("PATHEXT", ""))
+            cached = self._cached
+            if (
+                not refresh
+                and cached is not None
+                and cached[0] == key
+                and time.monotonic() - cached[1] < self._ttl_seconds
+            ):
+                statuses = cached[2]
+            else:
+                statuses = adapter_statuses(self._executables)
+                self._cached = (key, time.monotonic(), statuses)
+        # Hand out copies so a caller mutating its result cannot poison the cache.
+        return {agent_type: dict(status) for agent_type, status in statuses.items()}

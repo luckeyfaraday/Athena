@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, FolderPlus, XCircle } from "lucide-react";
+import { FolderOpen, FolderPlus, Pencil, XCircle } from "lucide-react";
 import type { EmbeddedTerminalSession, WorkspacePath } from "../electron";
 import type { WorkspaceAttention } from "../workspace-attention";
 import { sameWorkspacePath, workspaceDisplayName, workspaceKey } from "../workspace-utils";
@@ -14,6 +14,7 @@ export function WorkspaceTabs({
   onClose,
   onAdd,
   onCreate,
+  onRename,
   onOpenInFiles,
 }: {
   workspaces: WorkspacePath[];
@@ -25,6 +26,7 @@ export function WorkspaceTabs({
   onClose: (workspace: WorkspacePath) => void;
   onAdd: () => Promise<void>;
   onCreate?: () => Promise<void>;
+  onRename?: (workspace: WorkspacePath) => void;
   onOpenInFiles: (workspace: WorkspacePath) => void;
 }) {
   const [menu, setMenu] = useState<{ workspace: WorkspacePath; x: number; y: number } | null>(null);
@@ -110,6 +112,18 @@ export function WorkspaceTabs({
           >
             <FolderOpen size={13} /> Open in Files
           </button>
+          {onRename && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onRename(menu.workspace);
+                setMenu(null);
+              }}
+            >
+              <Pencil size={13} /> Rename
+            </button>
+          )}
         </div>
       )}
       <div className="workspaceTabActions">

@@ -205,6 +205,19 @@ test("repairClaudeBinaryPowerShell only restores when the exe is missing but a b
   assert.match(snippet, /Claude Code is installed but not runnable/);
 });
 
+test("repairClaudeBinaryPowerShell only reruns the --version probe when the install changed", () => {
+  const snippet = repairClaudeBinaryPowerShell();
+  // The probe result is cached per resolved command and install write times.
+  assert.match(snippet, /\$claudeProbeParts = @\(\$resolvedAgent\.Path, .*LastWriteTimeUtc\.Ticks\)/);
+  assert.match(snippet, /claude-launch-probe\.txt/);
+  const cacheCheck = snippet.indexOf("-eq $claudeProbeKey");
+  const probe = snippet.indexOf("& $agentCommand --version");
+  const cacheWrite = snippet.indexOf("Set-Content -LiteralPath $claudeProbeCache");
+  assert.ok(cacheCheck > 0 && cacheCheck < probe, "cache is consulted before probing");
+  assert.ok(probe < cacheWrite, "only a successful probe is cached");
+  assert.match(snippet, /if \(\$claudeLaunchReady -and \$claudeProbeKey\)/);
+});
+
 test("agentConfig opencode collapses prompt whitespace and quotes the path", () => {
   const opencode = agentConfig("opencode");
   assert.equal(

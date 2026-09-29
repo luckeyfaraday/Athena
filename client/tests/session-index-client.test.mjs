@@ -186,6 +186,51 @@ test("an IPC send error retires the worker and resolves every request assigned t
   assert.deepEqual(await recovered, [fresh]);
 });
 
+function agentSession(id) {
+  return {
+    id,
+    provider: "claude",
+    title: id,
+    workspace: "/work/a",
+    branch: null,
+    model: null,
+    agent: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    status: "historical",
+    terminalId: null,
+    pid: null,
+    resumeCommand: null,
+    metadata: {},
+  };
+}
+
+test("agent-session and Hermes requests share one worker but keep separate last-known results", async () => {
+  const { client, clock, children } = fixture();
+  const hermes = client.listHermes("/work/a");
+  const agents = client.listAgentSessions("/work/a");
+  clock.advance(0);
+  assert.equal(children.length, 1);
+  assert.deepEqual(children[0].sent.map((message) => message.type), ["list-hermes", "list-agent-sessions"]);
+  const hermesSession = indexedSession("hermes-a");
+  const claudeSession = agentSession("claude-a");
+  children[0].respond(0, { "/work/a": [hermesSession] });
+  children[0].respond(1, { "/work/a": [claudeSession] });
+  assert.deepEqual(await hermes, [hermesSession]);
+  assert.deepEqual(await agents, [claudeSession]);
+
+  // The worker times out: known workspaces fall back to their own kind's
+  // last result, unknown ones report null so the caller can scan itself.
+  const pendingKnown = client.listAgentSessions("/work/a");
+  const pendingUnknown = client.listAgentSessions("/work/b");
+  const pendingHermesUnknown = client.listHermes("/work/b");
+  clock.advance(0);
+  clock.advance(100);
+  assert.deepEqual(await pendingKnown, [claudeSession]);
+  assert.equal(await pendingUnknown, null);
+  assert.deepEqual(await pendingHermesUnknown, [], "Hermes keeps its historical empty fallback");
+});
+
 test("a clean idle worker exit allows the next request to restart immediately", async () => {
   const { client, clock, children } = fixture({ restartBackoffMs: 10_000 });
   const first = client.listHermes("/work/idle");

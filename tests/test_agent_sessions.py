@@ -224,6 +224,40 @@ def test_lists_codex_sessions_from_jsonl_context(tmp_path: Path) -> None:
     assert "Close the JSONL session gap" in transcript
 
 
+def test_codex_transcript_keeps_message_roles(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    session_id = "codex-roles-1"
+    session_file = home / ".codex" / "sessions" / "2026" / "09" / "29" / f"rollout-{session_id}.jsonl"
+    session_file.parent.mkdir(parents=True)
+
+    def message(timestamp: str, role: str, text: str) -> str:
+        content_type = "output_text" if role == "assistant" else "input_text"
+        return json.dumps(
+            {
+                "timestamp": timestamp,
+                "type": "response_item",
+                "payload": {"type": "message", "role": role, "content": [{"type": content_type, "text": text}]},
+            }
+        )
+
+    session_file.write_text(
+        "\n".join(
+            [
+                message("2026-09-29T10:00:00Z", "developer", "<permissions instructions>"),
+                message("2026-09-29T10:00:01Z", "user", "Fix the flaky test"),
+                message("2026-09-29T10:00:02Z", "assistant", "Fixed it."),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    transcript = read_agent_session_transcript("codex", session_id, home_dir=home)
+
+    assert "### 2026-09-29T10:00:00Z response_item: developer\n\n<permissions instructions>" in transcript
+    assert "### 2026-09-29T10:00:01Z response_item: user\n\nFix the flaky test" in transcript
+    assert "### 2026-09-29T10:00:02Z response_item: assistant\n\nFixed it." in transcript
+
+
 def test_lists_opencode_and_filters_query(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "project"

@@ -927,6 +927,9 @@ function writeControlDiscovery(): void {
       // by the owning user even on shared machines.
       { encoding: "utf8", mode: 0o600 },
     );
+    // `mode` only applies when writeFileSync creates the file, so also tighten
+    // a file an older build left with looser permissions.
+    fs.chmodSync(filePath, 0o600);
     lastDiscoveryContent = content;
     lastDiscoveryMtimeMs = fileMtimeMs(filePath);
   } catch {

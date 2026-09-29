@@ -215,7 +215,7 @@ def test_agent_adapters_endpoint_reports_installed_clis(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     adapters = response.json()["adapters"]
-    assert set(adapters) == {"codex", "opencode", "claude", "grok"}
+    assert set(adapters) == {"codex", "opencode", "claude", "grok", "athena"}
     assert adapters["codex"]["executable"] == sys.executable
     assert adapters["codex"]["installed"] is True
     assert adapters["opencode"]["executable"] == "opencode"
@@ -241,12 +241,12 @@ def test_agent_adapters_endpoint_caches_path_lookups(tmp_path: Path, monkeypatch
 
     assert first.json() == second.json()
     assert first.json()["adapters"]["codex"]["installed"] is True
-    assert sorted(lookups) == ["claude", "codex", "grok", "opencode"]
+    assert sorted(lookups) == ["athena-code", "claude", "codex", "grok", "opencode"]
 
     refreshed = client.get("/agents/adapters", params={"refresh": "true"})
 
     assert refreshed.status_code == 200
-    assert len(lookups) == 8
+    assert len(lookups) == 10  # a refresh looks up all five again
 
 
 def test_agent_sessions_endpoint_returns_native_session_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -32,6 +32,7 @@ import {
 } from "./graphics-state.js";
 import { getPreferences } from "./preferences.js";
 import { shouldConfirmEmbeddedTerminalRestoreShutdown } from "./terminal-restore-policy.js";
+import { resolveNpmGlobalPrefix } from "./terminal-env.js";
 import type { IncomingMessage } from "node:http";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -306,6 +307,9 @@ if (singleInstanceLock) {
       app.dock.setIcon(appIcon);
     }
     beginAthenaLaunch({ restoreAttemptPending: hasPendingEmbeddedTerminalRestoreAttempts() });
+    // npm's real global prefix, so panes run the machine-wide agent installs (see terminal-env.ts). Until it answers,
+    // npm's documented default is used.
+    void resolveNpmGlobalPrefix();
     await runDiskPreflight();
     try {
       installManagedAgentSkills();

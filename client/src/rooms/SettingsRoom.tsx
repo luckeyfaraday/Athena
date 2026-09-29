@@ -1,7 +1,15 @@
 import { Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
 import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus } from "../api";
 import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, StatusPill } from "../components/status";
-import type { AthenaLaunchState, GraphicsPreference, GraphicsRuntimeStatus, PerformanceDiagnostics } from "../electron";
+import type {
+  AgentCliKind,
+  AgentCliReport,
+  AgentSetupAction,
+  AthenaLaunchState,
+  GraphicsPreference,
+  GraphicsRuntimeStatus,
+  PerformanceDiagnostics,
+} from "../electron";
 import type { UiTheme } from "../ui-preferences";
 
 const themeOptions: Array<{ id: UiTheme; label: string }> = [
@@ -45,6 +53,9 @@ export function SettingsRoom({
   onRestartControl,
   onClearTerminalRestorePause,
   onInstallHermes,
+  agentClis,
+  canRunSetup,
+  onAgentSetup,
   onRefreshDiagnostics,
   onInterfaceModeChange,
   onThemeChange,
@@ -69,6 +80,11 @@ export function SettingsRoom({
   onRestartControl: () => Promise<void>;
   onClearTerminalRestorePause: () => Promise<void>;
   onInstallHermes: () => Promise<void>;
+  // agent CLIs as the terminals find them (null until loaded, or in the browser preview)
+  agentClis: AgentCliReport | null;
+  // installs and updates run in a terminal of the open workspace
+  canRunSetup: boolean;
+  onAgentSetup: (kind: AgentCliKind, action: AgentSetupAction) => void;
   onRefreshDiagnostics: () => Promise<void>;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
@@ -83,6 +99,11 @@ export function SettingsRoom({
   const adapterSummary = adapterList.length
     ? adapterList.map((adapter) => `${adapter.agent_type}: ${adapter.installed ? adapter.command_path ?? adapter.executable : "missing"}`).join("\n")
     : "No adapter status loaded";
+  const installedAgents = agentClis ? agentClis.agents.filter((agent) => agent.installed).length : 0;
+  const agentPill = agentClis
+    ? { tone: installedAgents === agentClis.agents.length ? "ok" as const : "warn" as const, label: `${installedAgents} of ${agentClis.agents.length} installed` }
+    : adapterStatus;
+  const privateCopies = agentClis?.privateCopies ?? null;
 
   return (
     <section className="roomPanel settingsRoom">
@@ -260,12 +281,58 @@ export function SettingsRoom({
             </button>
           ) : null}
         </article>
-        <article className="settingsSection wide">
+        <article className="settingsSection wide agentCliSection">
           <div>
-            <strong>Agent adapters</strong>
-            <span>{adapterSummary}</span>
+            <strong>Coding agents</strong>
+            <span>
+              Athena runs the copy on your PATH, the same one your other terminals use, so updating an agent here or
+              anywhere else updates it everywhere. Installs and updates run in a terminal you can watch.
+            </span>
+            {agentClis ? (
+              <ul className="agentCliList">
+                {agentClis.agents.map((agent) => {
+                  const needsNode = agent.needsNpm && !agent.npmAvailable;
+                  const command = agent.installed ? agent.updateCommand : agent.installCommand;
+                  return (
+                    <li key={agent.kind}>
+                      <span className="agentCliName">{agent.label}</span>
+                      <span className={`agentCliPath${agent.installed ? "" : " missing"}`} title={agent.path ?? command}>
+                        {agent.installed ? agent.path : "Not installed"}
+                      </span>
+                      <button
+                        className="ghostButton"
+                        type="button"
+                        disabled={busy || !canRunSetup || needsNode}
+                        title={!canRunSetup ? "Open a workspace first: this runs in a terminal there" : needsNode ? "Needs npm: install Node.js LTS first" : command}
+                        onClick={() => onAgentSetup(agent.kind, agent.installed ? "update" : "install")}
+                      >
+                        {agent.installed ? <><RefreshCw size={14} /> Update</> : <><Download size={14} /> Install</>}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : <span>{adapterSummary}</span>}
+            {privateCopies ? (
+              <div className="agentCliNotice">
+                <span>
+                  Earlier versions of Athena installed their own copies of {privateCopies.labels.join(" and ")} in{" "}
+                  <code>{privateCopies.prefix}</code> and ran those instead of yours. Athena no longer uses them; remove
+                  them to save space and avoid confusion.
+                </span>
+                <button
+                  className="ghostButton"
+                  type="button"
+                  disabled={busy || !canRunSetup}
+                  title={privateCopies.command}
+                  onClick={() => onAgentSetup(privateCopies.kinds[0], "cleanup")}
+                >
+                  Remove old copies
+                </button>
+              </div>
+            ) : null}
           </div>
-          <StatusPill tone={adapterStatus.tone}>{adapterStatus.label}</StatusPill>
+          <StatusPill tone={agentPill.tone}>{agentPill.label}</StatusPill>
         </article>
         <article className="settingsSection wide">
           <div>

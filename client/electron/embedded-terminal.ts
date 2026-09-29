@@ -87,6 +87,7 @@ import {
   type TerminalStreamDelivery,
 } from "./terminal-output-stream.js";
 import { agentConfig, terminalLaunch } from "./terminal-launch.js";
+import { isAgentCliKind, resolveAgentSetupLaunch, type AgentCliKind, type AgentSetupAction } from "./agent-cli.js";
 import {
   defaultPythonExecutable,
   resolveOpenCodeBaselineBinary,
@@ -126,6 +127,9 @@ export type EmbeddedTerminalSpawnOptions = {
   contextText?: string;
   model?: string;
   controlSource?: string;
+  // A visible pane that installs, updates, or cleans up an agent CLI and exits with the command's status. The command
+  // comes from agent-cli.ts, never from the caller. Such panes are not restored on the next start.
+  setup?: { agent: AgentCliKind; action: AgentSetupAction };
 };
 
 export type SendAgentMessageRequest = {
@@ -758,7 +762,8 @@ export async function spawnEmbeddedTerminal(
     throw new Error(`Workspace does not exist: ${cwd}`);
   }
 
-  const kind = options.kind ?? "shell";
+  const setup = normalizeSetupRequest(options.setup);
+  const kind = setup ? "shell" : options.kind ?? "shell";
   const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
   const backendUrl = getBackendState().baseUrl;
@@ -781,12 +786,13 @@ export async function spawnEmbeddedTerminal(
   const assignedSessionId = kind === "claude" && !options.resumeSessionId && !options.providerSessionId
     ? randomUUID()
     : null;
-  const launch = terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpWiring.launch, assignedSessionId, options.model);
+  const setupLaunch = setup ? await resolveAgentSetupLaunch(setup.agent, setup.action, cwd) : null;
+  const launch = setupLaunch ?? terminalLaunch(kind, cwd, promptPath, options.resumeSessionId, mcpWiring.launch, assignedSessionId, options.model);
   const sessionLabel = options.sessionLabel ?? defaultSessionLabel(kind, options.resumeSessionId ?? assignedSessionId ?? undefined);
   const providerSessionId = isAgentKind(kind) ? options.providerSessionId ?? options.resumeSessionId ?? assignedSessionId : null;
   const restoreEntry: RestorableTerminal = {
     id,
-    title: options.title ?? defaultTitle(kind),
+    title: options.title ?? setupLaunch?.title ?? defaultTitle(kind),
     kind,
     workspace: cwd,
     sessionLabel,
@@ -845,7 +851,7 @@ export async function spawnEmbeddedTerminal(
 
     session.pid = pid;
     terminals.set(id, { session, restore: restoreEntry });
-    upsertRestoreEntry(restoreEntry);
+    if (!setup) upsertRestoreEntry(restoreEntry);
     recordSpawnSucceeded({
       terminalId: session.id,
       title: session.title,
@@ -1613,6 +1619,15 @@ function resolveMcpServerCommand(): McpServerCommand | null {
 // --mcp-config file, Codex's -c overrides), while `env` is merged into the spawn
 // environment (opencode/athena read OPENCODE_CONFIG_CONTENT). Each agent uses
 // exactly one of the two; the other stays empty.
+function normalizeSetupRequest(value: unknown): { agent: AgentCliKind; action: AgentSetupAction } | null {
+  if (value === undefined || value === null) return null;
+  const { agent, action } = (typeof value === "object" ? value : {}) as { agent?: unknown; action?: unknown };
+  if (!isAgentCliKind(agent) || (action !== "install" && action !== "update" && action !== "cleanup")) {
+    throw new Error("Unknown agent setup request.");
+  }
+  return { agent, action };
+}
+
 type AgentMcpWiring = { launch: AgentMcpLaunch | null; env: Record<string, string> };
 
 function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | null, controlUrl: string | null): AgentMcpWiring {

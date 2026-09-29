@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { defaultPythonExecutable } from "./platform.js";
+import { currentNpmGlobalPrefix, mergePathEntries, npmGlobalBinPath, pathKeyOf } from "./terminal-env.js";
 
 export type BackendState = {
   baseUrl: string | null;
@@ -59,6 +60,8 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       detached: process.platform !== "win32",
       env: {
         ...process.env,
+        // the backend reports installed agent CLIs; it looks them up on the same PATH the terminals get
+        ...backendPathEnv(),
         CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
         // Frozen runtimes already contain the backend package and dependencies.
         // Keep host modules from shadowing that tested bundle at runtime.
@@ -294,6 +297,16 @@ function pythonBackendLaunch(python: string, port: number): BackendLaunch {
     args: ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", String(port), "--no-access-log"],
     bundled: false,
   };
+}
+
+// PATH with npm's machine-wide global bin appended when it is missing, as the terminals get it (terminal-env.ts).
+function backendPathEnv(): Record<string, string> {
+  const key = pathKeyOf(process.env);
+  const prefix = currentNpmGlobalPrefix();
+  const current = process.env[key] ?? "";
+  if (!prefix) return { [key]: current };
+  const bin = npmGlobalBinPath(prefix);
+  return { [key]: fs.existsSync(bin) ? mergePathEntries(current, bin) : current };
 }
 
 function mergePythonPath(backendParent: string, existing: string | undefined): string {

@@ -1,64 +1,76 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { sanitizedTerminalEnv } from "../dist-electron/terminal-env.js";
+import { mergePathEntries, npmGlobalBinPath, sanitizedTerminalEnv } from "../dist-electron/terminal-env.js";
 
-function npmGlobalBinPath(prefix) {
-  return process.platform === "win32" ? prefix : path.join(prefix, "bin");
+function tempPrefix() {
+  const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "athena-npm-prefix-"));
+  fs.mkdirSync(npmGlobalBinPath(prefix), { recursive: true });
+  return prefix;
 }
 
-test("terminal env strips lowercase npm values that make nvm warn", () => {
-  const prefix = "/home/user/.npm-global";
+test("terminal env strips npm config that make nvm warn and point installs elsewhere", () => {
   const env = sanitizedTerminalEnv({
     PATH: "/bin",
-    npm_config_prefix: prefix,
-    NPM_CONFIG_PREFIX: prefix,
+    npm_config_prefix: "/somewhere",
+    NPM_CONFIG_PREFIX: "/somewhere",
     npm_config_globalconfig: "/home/user/.npmrc",
     NPM_CONFIG_GLOBALCONFIG: "/home/user/.npmrc",
-  });
+  }, null);
 
-  assert.equal(env.PATH, [npmGlobalBinPath(prefix), "/bin"].join(path.delimiter));
+  assert.equal(env.PATH, "/bin");
   assert.equal("npm_config_prefix" in env, false);
   assert.equal("NPM_CONFIG_PREFIX" in env, false);
-  assert.equal(env.CONTEXT_WORKSPACE_NPM_PREFIX, prefix);
   assert.equal("npm_config_globalconfig" in env, false);
   assert.equal("NPM_CONFIG_GLOBALCONFIG" in env, false);
 });
 
-test("terminal env preserves npm prefix under an nvm-safe name and prepends bin path", () => {
-  const env = sanitizedTerminalEnv({
-    PATH: "/bin",
-  });
+test("terminal env never invents a private npm prefix", () => {
+  const env = sanitizedTerminalEnv({ PATH: "/bin" }, null);
 
-  const prefix = path.join(os.homedir(), ".npm-global");
-  assert.equal("NPM_CONFIG_PREFIX" in env, false);
-  assert.equal(env.CONTEXT_WORKSPACE_NPM_PREFIX, prefix);
-  assert.equal(env.PATH?.split(path.delimiter).at(0), npmGlobalBinPath(prefix));
+  assert.equal(env.PATH, "/bin");
+  assert.equal("CONTEXT_WORKSPACE_NPM_PREFIX" in env, false);
+  assert.equal(env.PATH.includes(".npm-global"), false);
 });
 
-test("terminal env does not duplicate npm global bin path in PATH", () => {
-  const prefix = path.join(os.homedir(), ".npm-global");
-  const binPath = npmGlobalBinPath(prefix);
-  const env = sanitizedTerminalEnv({
-    PATH: [binPath, "/bin"].join(path.delimiter),
-  });
+test("terminal env appends npm's machine-wide bin, last, when PATH lacks it", () => {
+  const prefix = tempPrefix();
+  const env = sanitizedTerminalEnv({ PATH: "/bin" }, prefix);
 
-  assert.equal(env.PATH, [binPath, "/bin"].join(path.delimiter));
+  assert.equal(env.PATH, ["/bin", npmGlobalBinPath(prefix)].join(path.delimiter));
+});
+
+test("terminal env keeps the user's PATH order when npm's bin is already there", () => {
+  const prefix = tempPrefix();
+  const bin = npmGlobalBinPath(prefix);
+  const env = sanitizedTerminalEnv({ PATH: [bin, "/bin"].join(path.delimiter) }, prefix);
+
+  assert.equal(env.PATH, [bin, "/bin"].join(path.delimiter));
+});
+
+test("terminal env skips an npm prefix whose bin folder does not exist", () => {
+  const env = sanitizedTerminalEnv({ PATH: "/bin" }, path.join(os.tmpdir(), "athena-no-such-prefix"));
+
+  assert.equal(env.PATH, "/bin");
 });
 
 test("terminal env preserves Windows-style Path key", () => {
-  const prefix = "C:\\Users\\you\\.npm-global";
   const env = sanitizedTerminalEnv({
     Path: "C:\\Windows\\System32",
-    NPM_CONFIG_PREFIX: prefix,
-  });
+    NPM_CONFIG_PREFIX: "C:\\Users\\you\\.npm-global",
+  }, null);
 
   assert.equal("NPM_CONFIG_PREFIX" in env, false);
-  assert.equal(env.CONTEXT_WORKSPACE_NPM_PREFIX, prefix);
-  assert.equal(env.Path, [npmGlobalBinPath(prefix), "C:\\Windows\\System32"].join(path.delimiter));
+  assert.equal(env.Path, "C:\\Windows\\System32");
   assert.equal("PATH" in env, false);
+});
+
+test("mergePathEntries adds only the entries PATH lacks, in order", () => {
+  assert.equal(mergePathEntries("/a;/b", "/b;/c;;/a;/d", ";"), "/a;/b;/c;/d");
+  assert.equal(mergePathEntries("", "/x", ";"), "/x");
 });
 
 test("terminal env removes an inherited Python virtual environment", () => {

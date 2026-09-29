@@ -39,10 +39,11 @@ test("launchCommand cd's into the workspace and execs a login shell for plain sh
 
 test("launchCommand for an agent guards on command availability before launching", () => {
   const command = launchCommand("codex", "/home/dev/project", "/tmp/prompt.md");
-  assert.match(command, /NPM_CONFIG_PREFIX/);
-  assert.match(command, /unset npm_config_prefix NPM_CONFIG_PREFIX npm_config_globalconfig NPM_CONFIG_GLOBALCONFIG/);
-  assert.doesNotMatch(command, /unset NPM_CONFIG_PREFIX; exec bash -l/);
+  // Codex runs from npm's machine-wide install: no private prefix of Athena's own (see terminal-env.ts)
+  assert.doesNotMatch(command, /NPM_CONFIG_PREFIX|\.npm-global/);
   assert.match(command, /command -v 'codex'/);
+  // a missing CLI says how to install it
+  assert.match(command, /npm install -g @openai\/codex@latest/);
   assert.match(command, /codex -c shell_environment_policy.inherit=all --cd '\/home\/dev\/project' -- "\$\(cat '\/tmp\/prompt.md'\)"/);
 });
 
@@ -84,8 +85,7 @@ test("launchResumeCommand wires the provider resume invocation with quoted ids",
   const command = launchResumeCommand("claude", "/home/dev/project", "sess-123");
   assert.match(command, /claude .*--resume 'sess-123'/);
   const codex = launchResumeCommand("codex", "/home/dev/project", "abc-1");
-  assert.match(codex, /NPM_CONFIG_PREFIX/);
-  assert.doesNotMatch(codex, /unset NPM_CONFIG_PREFIX; exec bash -l/);
+  assert.doesNotMatch(codex, /NPM_CONFIG_PREFIX|\.npm-global/);
   assert.match(codex, /codex -c shell_environment_policy.inherit=all resume --cd '\/home\/dev\/project' 'abc-1'/);
 });
 
@@ -265,8 +265,6 @@ test("missing Athena Code guidance links both platform installers", () => {
 test("PowerShell builders pass values through quotePowerShell, not raw interpolation", () => {
   const command = launchPowerShellCommand("codex", "C:\\Users\\dev\\proj", "C:\\tmp\\p.md", null);
   assert.match(command, /\$workspace = 'C:\\Users\\dev\\proj'/);
-  assert.match(command, /\$env:NPM_CONFIG_PREFIX/);
-  assert.doesNotMatch(command, /Remove-Item Env:NPM_CONFIG_PREFIX/);
   assert.match(command, /Set-Location -LiteralPath \$workspace/);
   // Codex prompt is splatted as an array element ($prompt), never string-built.
   assert.match(command, /@\('-c', 'shell_environment_policy.inherit=all'\) \+ \$mcpConfigArgs \+ \$modelArgs \+ @\('--cd', \$workspace, '--', \$prompt\)/);
@@ -308,10 +306,21 @@ test("PowerShell resume builder quotes the session id", () => {
   assert.match(command, /\$sessionId = 'sess''9'/);
 });
 
-test("PowerShell codex resume keeps the npm prefix available after Codex exits", () => {
-  const command = launchResumePowerShellCommand("codex", "C:\\ws", "abc123");
-  assert.match(command, /\$env:NPM_CONFIG_PREFIX/);
-  assert.doesNotMatch(command, /Remove-Item Env:NPM_CONFIG_PREFIX/);
+test("PowerShell codex panes use npm's machine-wide install, never a private prefix", () => {
+  // Setting NPM_CONFIG_PREFIX in Codex panes sent Codex's self-updates (npm install -g) to ~/.npm-global, so the
+  // copy Athena ran and the one every other terminal ran drifted apart.
+  for (const command of [
+    launchPowerShellCommand("codex", "C:\\ws", null, null),
+    launchResumePowerShellCommand("codex", "C:\\ws", "abc123"),
+  ]) {
+    assert.doesNotMatch(command, /NPM_CONFIG_PREFIX|\.npm-global/);
+  }
+});
+
+test("PowerShell missing-agent guidance gives the Windows install command for every agent", () => {
+  assert.match(launchPowerShellCommand("claude", "C:\\ws", null, null), /npm install -g @anthropic-ai\/claude-code@latest/);
+  assert.match(launchPowerShellCommand("opencode", "C:\\ws", null, null), /npm install -g opencode-ai@latest/);
+  assert.match(launchHermesPowerShellCommand("C:\\ws"), /hermes-agent\.nousresearch\.com\/install\.ps1/);
 });
 
 test("agentConfig args omit --model unless a model is explicitly requested", () => {

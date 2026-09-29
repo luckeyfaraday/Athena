@@ -55,6 +55,7 @@ export function CommandRoom({
   onRenameEmbeddedSession,
   onRenameAgentSession,
   onRefreshAgentSessions,
+  missingAgents,
   emptyMark,
 }: {
   workspace: string;
@@ -72,6 +73,8 @@ export function CommandRoom({
   onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onRenameAgentSession: (session: AgentSession) => void;
   onRefreshAgentSessions: (maxAgeMs?: number) => Promise<void>;
+  // agent CLIs not on PATH: marked in the launch menus (launching one offers to install it)
+  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
   emptyMark: ReactNode;
 }) {
   const [paneOrderByWorkspace, setPaneOrderByWorkspace] = useState<Record<string, string[]>>({});
@@ -440,6 +443,7 @@ export function CommandRoom({
             menuRef={newMenuRef}
             onOpenChange={setNewMenuOpen}
             onLaunch={onLaunch}
+            missingAgents={missingAgents}
           />
         </div>
       </div>
@@ -540,9 +544,11 @@ export function CommandRoom({
                       type="button"
                       className="ghostButton"
                       disabled={busy}
+                      title={missingAgents?.has(action.kind) ? `${action.label} is not installed: Athena will offer to install it` : undefined}
                       onClick={() => void onLaunch(action.kind, 1)}
                     >
                       {action.icon} {action.label}
+                      {missingAgents?.has(action.kind) ? <em className="launchMissing">not installed</em> : null}
                     </button>
                   ))}
                 </div>
@@ -699,12 +705,14 @@ function NewLaunchMenu({
   menuRef,
   onOpenChange,
   onLaunch,
+  missingAgents,
 }: {
   open: boolean;
   workspace: string;
   menuRef: RefObject<HTMLDivElement | null>;
   onOpenChange: (open: boolean) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
 }) {
   function launch(kind: EmbeddedTerminalKind, count: number) {
     onOpenChange(false);
@@ -730,7 +738,9 @@ function NewLaunchMenu({
               <span>{action.icon}</span>
               <span>
                 <strong>{action.label}</strong>
-                <small>{action.detail}</small>
+                {missingAgents?.has(action.kind)
+                  ? <small className="launchMissing">Not installed: Athena offers to install it</small>
+                  : <small>{action.detail}</small>}
               </span>
             </button>
           ))}

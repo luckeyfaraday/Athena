@@ -1602,3 +1602,171 @@ html[data-theme="mono-light"] .appTitleBar .titleMark img {
 .emptyLaunchRow .ghostButton svg {
   flex: 0 0 auto;
 }
+
+/* Coding agents: install prompt, launch-menu marks and the Settings rows (electron/agent-cli.ts) */
+.dialogBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(3, 10, 8, .62);
+}
+.dialogPanel {
+  position: relative;
+  width: min(520px, 100%);
+  padding: 18px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #071d17;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255,255,255,.04);
+  color: var(--text);
+}
+.dialogPanel strong {
+  font-size: 14px;
+  padding-right: 28px;
+}
+.dialogPanel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.dialogPanel code,
+.agentCliNotice code {
+  color: var(--text);
+  font-size: 11px;
+}
+.dialogPanel pre {
+  margin: 0;
+  padding: 9px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--terminal);
+  color: var(--text);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dialogLabel {
+  color: var(--muted);
+  font-size: 11px;
+}
+.dialogPanel .dialogWarning {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--orange-soft);
+  color: var(--orange);
+}
+.dialogClose {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+.dialogClose:hover {
+  background: #10281f;
+  color: var(--text);
+}
+.dialogActions {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.dialogActions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  font-size: 11px;
+}
+.linkButton:hover {
+  text-decoration: underline;
+}
+.launchMissing {
+  color: var(--orange) !important;
+}
+.emptyLaunchRow .launchMissing {
+  margin-left: 6px;
+  font-size: 10px;
+  font-style: normal;
+}
+.agentCliList {
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  list-style: none;
+}
+.agentCliList li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  border-top: 1px solid var(--line);
+}
+.settingsSection .agentCliList span {
+  margin-top: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.settingsSection .agentCliName {
+  color: var(--text);
+  font-size: 11px;
+}
+.settingsSection .agentCliPath.missing {
+  color: var(--orange);
+}
+.settingsSection .agentCliList .ghostButton,
+.settingsSection .agentCliNotice .ghostButton {
+  grid-column: auto;
+}
+.agentCliNotice {
+  margin-top: 10px;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-radius: 6px;
+  background: var(--orange-soft);
+}
+.settingsSection .agentCliNotice span {
+  margin-top: 0;
+  color: var(--text);
+}
+@media (max-width: 560px) {
+  .agentCliList li,
+  .agentCliNotice {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .agentCliList .agentCliPath {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}

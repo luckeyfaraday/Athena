@@ -14,6 +14,7 @@ DEFAULT_AGENT_EXECUTABLES: dict[str, str] = {
     "opencode": "opencode",
     "claude": "claude",
     "grok": "grok",
+    "athena": "athena-code",
 }
 # Each lookup walks PATH (x PATHEXT on Windows), so results are reused for a few
 # minutes. Callers pass refresh=True after installing a CLI.

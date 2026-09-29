@@ -24,7 +24,6 @@ import json
 import os
 import queue
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -33,6 +32,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from ..hermes import _terminate_process_tree
 from .base import (
     AccountIdentity,
     ProbeResult,
@@ -162,6 +162,7 @@ class CodexUsageAdapter:
             credential_state=state,
             credential_fingerprint=content_fingerprint(raw),
             expires_at=fresh_until,
+            unreadable=raw is not None and not auth,
         )
 
     @staticmethod
@@ -432,36 +433,13 @@ class AppServerSession:
         except OSError:
             pass
         if process.poll() is None:
-            _signal_tree(process, force=False)
+            # On Windows codex is usually an npm .cmd shim (cmd.exe -> node ->
+            # codex.exe), so only a tree kill reaches the real process.
+            _terminate_process_tree(process)
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                _signal_tree(process, force=True)
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-
-
-def _signal_tree(process: subprocess.Popen[str], *, force: bool) -> None:
-    """Stop the app-server and everything it started.
-
-    On Windows ``codex`` usually resolves to an npm ``codex.cmd`` shim, so the
-    child is cmd.exe -> node -> codex.exe; only a tree kill reaches codex.exe.
-    """
-    try:
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        else:
-            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
-    except (OSError, subprocess.SubprocessError):
-        pass
+                pass
 
 
 def _text(value: Any) -> str | None:

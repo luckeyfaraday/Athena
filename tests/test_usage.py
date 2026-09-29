@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import sys
 import textwrap
@@ -75,6 +76,16 @@ def test_claude_payload_never_turns_unknown_into_zero() -> None:
         "limits": [{"kind": "weekly_scoped", "percent": True, "scope": {"model": {"display_name": "Fable"}}}],
     }
     assert parse_usage_payload(payload) == []
+
+
+def test_claude_payload_does_not_repeat_a_flat_model_bucket() -> None:
+    windows = parse_usage_payload(
+        {
+            "seven_day_opus": {"utilization": 30.0},
+            "limits": [{"kind": "weekly_scoped", "percent": 30, "scope": {"model": {"display_name": "Opus 4.1"}}}],
+        }
+    )
+    assert [(window.id, window.label) for window in windows] == [("weekly:opus", "Weekly · Opus")]
 
 
 def test_claude_payload_falls_back_to_limits_array_and_clamps() -> None:
@@ -245,6 +256,40 @@ def test_claude_probe_refuses_a_token_that_belongs_to_another_account(tmp_path: 
     assert http.urls() == [PROFILE_URL]  # B's windows are never even fetched
 
 
+def test_claude_metadata_without_an_organization_still_verifies(tmp_path: Path) -> None:
+    adapter, home, http = claude_home(tmp_path)
+    (tmp_path / "home" / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "acct-a", "emailAddress": "a@example.com"}}), encoding="utf-8"
+    )
+
+    identity = adapter.read_identity(home)
+    result = adapter.probe(home, identity)
+
+    assert identity.stable_id == "-:acct-a"
+    assert result.ok
+    assert http.urls() == [PROFILE_URL, USAGE_URL]
+
+
+def test_claude_marks_half_written_files_unreadable_and_parses_metadata_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import backend.usage.claude as claude_module
+
+    adapter, home, _ = claude_home(tmp_path)
+    reads: list[str] = []
+    real_read = claude_module.read_bytes
+    monkeypatch.setattr(claude_module, "read_bytes", lambda path: reads.append(path.name) or real_read(path))
+
+    assert adapter.read_identity(home).unreadable is False
+    adapter.read_identity(home)
+    assert reads.count(".claude.json") == 1  # unchanged metadata is not re-parsed
+
+    (tmp_path / "home" / ".claude.json").write_text('{"oauthAccount": {"accountUu', encoding="utf-8")
+    assert adapter.read_identity(home).unreadable is True
+    (tmp_path / "home" / ".credentials.json").write_text("", encoding="utf-8")
+    write_claude_home(tmp_path / "home", account_uuid="acct-a", email="a@example.com", expires_at_ms=future_ms())
+    (tmp_path / "home" / ".credentials.json").write_text('{"claudeAiOa', encoding="utf-8")
+    assert adapter.read_identity(home).unreadable is True
+
+
 def test_claude_requests_never_follow_redirects_with_the_token() -> None:
     import http.server
     import threading as _threading
@@ -301,6 +346,7 @@ def test_claude_probe_skips_the_network_for_an_expired_token(tmp_path: Path) -> 
         (FakeHttp(body={"five_hour": None}), "unavailable", None),
         (FakeHttp(error=TimeoutError("slow")), "timeout", None),
         (FakeHttp(error=OSError("no route")), "network", None),
+        (FakeHttp(error=http.client.IncompleteRead(b"{")), "network", None),
     ],
 )
 def test_claude_probe_classifies_failures(tmp_path: Path, http: FakeHttp, kind: str, retry_after: float | None) -> None:
@@ -611,6 +657,7 @@ class FakeAdapter:
         self.probes: list[str] = []
         self.gate: threading.Event | None = None
         self.during_probe = None
+        self.unreadable: set[str] = set()
 
     def add(self, label: str, account: str | None) -> None:
         self.homes[label] = account
@@ -619,6 +666,8 @@ class FakeAdapter:
         return [ProviderHome(self.provider, Path(f"/homes/{label}"), label, "default" if label == "default" else "accounts-dir") for label in self.homes]
 
     def read_identity(self, home: ProviderHome) -> AccountIdentity:
+        if home.label in self.unreadable:
+            return AccountIdentity(provider=self.provider, stable_id=None, unreadable=True)
         account = self.homes.get(home.label)
         return AccountIdentity(
             provider=self.provider,
@@ -777,6 +826,40 @@ def test_probe_result_is_discarded_when_the_account_changes_mid_probe() -> None:
     assert all(window["used_percent"] != 55.0 for window in record["windows"])
 
 
+def test_a_discarded_probe_holds_the_home_instead_of_reprobing_every_poll() -> None:
+    adapter, clock = FakeAdapter(), FakeClock()
+    adapter.add("default", "acct-a")
+
+    def flip() -> None:
+        adapter.homes["default"] = "acct-b" if adapter.homes["default"] == "acct-a" else "acct-a"
+
+    adapter.during_probe = flip
+    service = make_service(adapter, clock)
+    for _ in range(5):
+        clock.advance(3)
+        settle_after_schedule(service)
+    assert adapter.probes == ["default"]
+
+    clock.advance(60)
+    settle_after_schedule(service)
+    assert adapter.probes == ["default", "default"]
+
+
+def test_a_credential_file_caught_mid_rewrite_keeps_the_account() -> None:
+    adapter, clock = FakeAdapter(), FakeClock()
+    adapter.add("default", "acct-a")
+    service = make_service(adapter, clock)
+    key = only(settle_after_schedule(service))["key"]
+
+    adapter.unreadable.add("default")
+    record = only(settle_after_schedule(service))
+
+    assert record["key"] == key
+    assert record["status"] == "ok"
+    assert record["windows"][0]["used_percent"] == 10.0
+    assert adapter.probes == ["default"]
+
+
 def test_failed_refresh_keeps_last_windows_marked_stale() -> None:
     adapter, clock = FakeAdapter(), FakeClock()
     adapter.add("default", "acct-a")
@@ -897,9 +980,10 @@ def test_auth_failure_waits_for_the_cli_to_rewrite_credentials() -> None:
     assert record["status"] == "expired"
     assert "Sign in to default." in record["message"]
 
-    clock.advance(600)
-    settle_after_schedule(service)
+    clock.advance(7200)  # no time-based retry of a rejected login
+    record = only(settle_after_schedule(service))
     assert adapter.probes == ["default"]
+    assert record["next_refresh_at"] is None
 
     adapter.fingerprints["default"] = "fp-2"  # the CLI refreshed its login
     adapter.results.pop("acct-a")

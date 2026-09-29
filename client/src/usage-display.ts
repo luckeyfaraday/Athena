@@ -61,8 +61,22 @@ export function headlineWindow(account: UsageAccount, now = Date.now()): UsageWi
   return open.reduce((best, window) => {
     if (window.used_percent !== best.used_percent) return window.used_percent > best.used_percent ? window : best;
     // Ties go to the window that resets sooner.
-    return (window.window_minutes ?? Infinity) < (best.window_minutes ?? Infinity) ? window : best;
+    return resetTime(window) < resetTime(best) ? window : best;
   });
+}
+
+function resetTime(window: UsageWindow): number {
+  const time = window.resets_at ? Date.parse(window.resets_at) : NaN;
+  return Number.isFinite(time) ? time : Infinity;
+}
+
+/** Up to two bars for a chip, always including the window its percentage comes from. */
+export function chipWindows(account: UsageAccount, now = Date.now()): UsageWindow[] {
+  const open = openWindows(account, now);
+  const headline = headlineWindow(account, now);
+  const bars = open.slice(0, 2);
+  if (headline && !bars.includes(headline)) bars[bars.length - 1] = headline;
+  return bars;
 }
 
 /** Windows still in effect. A window past its reset describes a period that is over. */
@@ -140,9 +154,8 @@ export function isLive(account: UsageAccount): boolean {
  * organizations, profile labels cannot).
  */
 export function compactAccountLabel(account: UsageAccount, accounts: UsageAccount[]): string {
-  const siblings = accounts.filter((other) => other.provider === account.provider);
-  if (siblings.length <= 1) return account.provider_name;
-  return `${account.provider_name} · ${account.profiles[0]?.label ?? shortEmail(account.account.email) ?? "account"}`;
+  const profile = chipLabel(account, accounts);
+  return profile ? `${account.provider_name} · ${profile}` : account.provider_name;
 }
 
 /** Label beside a chip's provider mark: only needed when a provider has several accounts. */
@@ -189,6 +202,8 @@ export function markUnreachable(snapshot: UsageSnapshot, message: string): Usage
         stale: account.windows.length > 0,
         status: current ? (account.windows.length > 0 ? "stale" : "error") : account.status,
         message: current ? message : account.message,
+        // Nothing can promise a next check while the host is not answering.
+        next_refresh_at: null,
       };
     }),
   };
@@ -198,7 +213,7 @@ export function markUnreachable(snapshot: UsageSnapshot, message: string): Usage
  * What to render for the last snapshot received. The backend's own freshness
  * flags only hold at the moment it answered, so a snapshot that has not been
  * re-confirmed recently (the app slept, a poll hung, the backend went away) is
- * downgraded. Ages are measured on this device's clock only.
+ * downgraded. That age is measured on this device's clock only.
  */
 export function presentSnapshot(
   snapshot: UsageSnapshot | null,
@@ -210,4 +225,16 @@ export function presentSnapshot(
     return markUnreachable(snapshot, "Waiting for a fresh reading; these are the last values received.");
   }
   return snapshot;
+}
+
+/**
+ * Host clock minus this device's clock, estimated from a snapshot's
+ * generated_at. Reset times and "updated" ages come from the host, so they are
+ * compared against `now + offset`; freshness of the snapshot itself uses this
+ * device's clock alone.
+ */
+export function clockOffsetMs(snapshot: UsageSnapshot | null, receivedAt: number | null): number {
+  if (!snapshot || receivedAt === null) return 0;
+  const generated = Date.parse(snapshot.generated_at);
+  return Number.isFinite(generated) ? generated - receivedAt : 0;
 }

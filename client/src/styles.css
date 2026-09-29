@@ -1998,6 +1998,7 @@ strong.usageLevel-full { color: var(--red); }
   font-size: 10px;
   font-weight: 700;
 }
+.usageStatus strong { font-weight: inherit; }
 .usageStatus span { color: var(--muted); font-weight: 600; }
 .usageStatus i {
   width: 7px;

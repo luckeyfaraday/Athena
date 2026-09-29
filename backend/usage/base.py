@@ -53,6 +53,10 @@ class AccountIdentity:
     # an auth failure can wait for the CLI to fix the login instead of retrying.
     credential_fingerprint: str = ""
     expires_at: datetime | None = None
+    # A credential or metadata file existed but could not be parsed, as when the
+    # CLI is mid-rewrite. The service keeps the last good identity instead of
+    # treating the home as a different (or signed-out) account.
+    unreadable: bool = False
 
     def account_key(self, home: ProviderHome) -> str:
         # A home whose account cannot be identified is keyed by its path, so it

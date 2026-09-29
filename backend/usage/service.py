@@ -20,6 +20,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from .base import AccountIdentity, ProbeResult, ProviderHome, UsageAdapter, UsageWindow, iso
@@ -38,7 +39,6 @@ FAILURE_BACKOFF_BASE_SECONDS = 60.0
 FAILURE_BACKOFF_MAX_SECONDS = 1800.0
 RATE_LIMIT_DEFAULT_SECONDS = 300.0
 RATE_LIMIT_MAX_SECONDS = 3600.0
-AUTH_RETRY_SECONDS = 3600.0
 SOURCE_RANK = {"env": 0, "default": 1, "switcher": 2, "accounts-dir": 3, "config": 4}
 
 
@@ -91,6 +91,10 @@ class UsageService:
         self._entries: dict[str, _Entry] = {}
         self._inflight: dict[str, Future[None]] = {}
         self._discovered: tuple[float, list[_Account]] | None = None
+        # Last identity that parsed, per home, to ride out a file caught mid-rewrite.
+        self._last_identity: dict[tuple[str, Path], AccountIdentity] = {}
+        # Homes whose probe was discarded because their account changed mid-flight.
+        self._home_holds: dict[tuple[str, Path], float] = {}
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="athena-usage")
         self._closed = False
 
@@ -178,7 +182,7 @@ class UsageService:
                 continue
             for home in homes:
                 try:
-                    identity = adapter.read_identity(home)
+                    identity = self._stable_identity(adapter, home, adapter.read_identity(home))
                 except Exception:
                     continue
                 grouped.setdefault(identity.account_key(home), []).append((adapter, home, identity))
@@ -210,21 +214,28 @@ class UsageService:
         )
         return accounts
 
+    def _stable_identity(self, adapter: UsageAdapter, home: ProviderHome, identity: AccountIdentity) -> AccountIdentity:
+        slot = (adapter.provider, home.path)
+        with self._lock:
+            if identity.unreadable:
+                return self._last_identity.get(slot, identity)
+            self._last_identity[slot] = identity
+        return identity
+
     # ------------------------------------------------------------ scheduling
 
     def _due(self, account: _Account, now: float) -> bool:
         if account.identity.credential_state != "ok":
             return False
         with self._lock:
-            if account.key in self._inflight:
+            if account.key in self._inflight or self._held(account, now):
                 return False
             entry = self._entries.get(account.key)
             if entry is None:
                 return True
             if entry.blocked_fingerprint is not None:
-                if entry.blocked_fingerprint != account.identity.credential_fingerprint:
-                    return True  # the CLI signed in again or refreshed its token
-                return now >= entry.next_attempt_at
+                # A rejected login is only retried once the CLI rewrites it.
+                return entry.blocked_fingerprint != account.identity.credential_fingerprint
             if now < entry.next_attempt_at:
                 return False
             if entry.fetched_at is None or now - entry.fetched_at >= self._interval:
@@ -245,6 +256,8 @@ class UsageService:
             existing = self._inflight.get(account.key)
             if existing is not None:
                 return existing
+            if self._held(account, now):
+                return None
             entry = self._entries.get(account.key)
             if manual and entry is not None:
                 if entry.checked_at is not None and now - entry.checked_at < self._manual_min_interval:
@@ -264,7 +277,7 @@ class UsageService:
         # The home may have signed into another account while the probe ran;
         # then the answer could belong to either, so it is thrown away.
         try:
-            after = account.adapter.read_identity(account.home)
+            after = self._stable_identity(account.adapter, account.home, account.adapter.read_identity(account.home))
             account_changed = after.account_key(account.home) != account.key
         except Exception:
             account_changed = True
@@ -274,6 +287,9 @@ class UsageService:
             self._inflight.pop(account.key, None)
             if account_changed:
                 self._discovered = None
+                # Hold the home briefly so a login that keeps flipping cannot
+                # turn every poll into a probe.
+                self._home_holds[(account.adapter.provider, account.home.path)] = now + EARLY_REREAD_MIN_SECONDS
                 return
             if self._discovered is not None and account.key not in {item.key for item in self._discovered[1]}:
                 return  # the account was signed out everywhere while probing
@@ -300,7 +316,7 @@ class UsageService:
                 delay = min(max(result.retry_after_seconds or RATE_LIMIT_DEFAULT_SECONDS, 60.0), RATE_LIMIT_MAX_SECONDS)
             elif result.error_kind in ("auth", "expired"):
                 entry.blocked_fingerprint = account.identity.credential_fingerprint
-                delay = AUTH_RETRY_SECONDS
+                delay = 0.0
             else:
                 delay = min(FAILURE_BACKOFF_BASE_SECONDS * 2 ** (entry.failures - 1), FAILURE_BACKOFF_MAX_SECONDS)
             entry.next_attempt_at = now + delay
@@ -378,8 +394,11 @@ class UsageService:
         }
 
 
+    def _held(self, account: _Account, now: float) -> bool:
+        return self._home_holds.get((account.adapter.provider, account.home.path), 0.0) > now
+
     def _next_refresh(self, entry: _Entry | None, windows: list[UsageWindow], now: float) -> float | None:
-        if entry is None:
+        if entry is None or entry.blocked_fingerprint is not None:
             return None
         if entry.next_attempt_at > now:
             return entry.next_attempt_at

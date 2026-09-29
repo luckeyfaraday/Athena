@@ -19,6 +19,7 @@ That check runs once per credential-file version, not on every probe.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -84,6 +85,9 @@ class ClaudeUsageAdapter:
         # home path -> (credential fingerprint, account id the profile endpoint confirmed)
         self._verified: dict[Path, tuple[str, str]] = {}
         self._verified_lock = threading.Lock()
+        # ~/.claude.json grows with per-project history (often megabytes), so its
+        # oauthAccount is parsed once per file version: path -> ((mtime, size), account)
+        self._metadata_cache: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
 
     # ------------------------------------------------------------- discovery
 
@@ -142,8 +146,7 @@ class ClaudeUsageAdapter:
         metadata_path = self._metadata_path(home.path, home_dir)
         raw = read_bytes(credentials_path)
         login = _oauth_login(raw)
-        account = _read_json(metadata_path).get("oauthAccount") if metadata_path.is_file() else None
-        account = account if isinstance(account, dict) else {}
+        account, metadata_readable = self._oauth_account(metadata_path)
 
         account_uuid = _text(account.get("accountUuid"))
         organization_uuid = _text(account.get("organizationUuid"))
@@ -169,7 +172,25 @@ class ClaudeUsageAdapter:
             credential_state=state,
             credential_fingerprint=content_fingerprint(raw),
             expires_at=expires_at,
+            unreadable=(raw is not None and not json_object(raw)) or not metadata_readable,
         )
+
+    def _oauth_account(self, path: Path) -> tuple[dict[str, Any], bool]:
+        """The profile's oauthAccount, and whether an existing file could be parsed."""
+        try:
+            stat = path.stat()
+        except OSError:
+            return {}, True  # no metadata file: nothing to misread
+        version = (stat.st_mtime_ns, stat.st_size)
+        cached = self._metadata_cache.get(path)
+        if cached is not None and cached[0] == version:
+            return cached[1], True
+        data = json_object(read_bytes(path))
+        if not data:
+            return {}, False  # present but empty or mid-rewrite
+        account = data.get("oauthAccount") if isinstance(data.get("oauthAccount"), dict) else {}
+        self._metadata_cache[path] = (version, account)
+        return account, True
 
     def signed_out_hint(self, home: ProviderHome) -> str:
         if sys.platform == "darwin":
@@ -232,8 +253,11 @@ class ClaudeUsageAdapter:
         account_uuid = _text(account.get("uuid"))
         if not account_uuid:
             return ProbeResult.failure("protocol", "Anthropic's profile endpoint did not name the token's account.")
-        token_account = f"{_text(organization.get('uuid')) or '-'}:{account_uuid}"
-        if token_account != identity.stable_id:
+        expected_org, _, expected_account = identity.stable_id.partition(":")
+        # Metadata from some Claude Code versions has no organizationUuid ("-");
+        # then the account uuid alone has to match.
+        org_matches = expected_org == "-" or _text(organization.get("uuid")) == expected_org
+        if account_uuid != expected_account or not org_matches:
             return ProbeResult.failure(
                 "protocol",
                 "The saved token belongs to a different account than this profile's metadata "
@@ -254,7 +278,8 @@ class ClaudeUsageAdapter:
             status, response_headers, body = self._http_get(url, headers, REQUEST_TIMEOUT_SECONDS)
         except TimeoutError:
             return 0, {}, b"", ProbeResult.failure("timeout", f"Anthropic's {what} endpoint did not answer in time.")
-        except OSError:
+        except (OSError, http.client.HTTPException):
+            # HTTPException covers a connection dropped mid-response (IncompleteRead, BadStatusLine).
             return 0, {}, b"", ProbeResult.failure("network", f"Couldn't reach Anthropic's {what} endpoint.")
         if status in (401, 403):
             return status, response_headers, body, ProbeResult.failure("auth", "Anthropic rejected the saved Claude Code sign-in.")
@@ -298,7 +323,11 @@ def parse_usage_payload(payload: dict[str, Any]) -> list[UsageWindow]:
             if not name:
                 continue
             period, minutes = _scoped_period(kind, _text(entry.get("group")))
-            window_id = f"{'session' if minutes == 300 else 'weekly' if minutes == 10080 else kind or 'limit'}:{_slug(name)}"
+            prefix = "session" if minutes == 300 else "weekly" if minutes == 10080 else kind or "limit"
+            # "Opus 4.1" here is the same allowance as a flat seven_day_opus bucket.
+            if f"{prefix}:{_slug(name).split('-')[0]}" in windows:
+                continue
+            window_id = f"{prefix}:{_slug(name)}"
             label = f"{period} · {name}"
         elif kind in UNSCOPED_LIMIT_KINDS:
             # The flat bucket is authoritative when present; the array only

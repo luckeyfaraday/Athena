@@ -43,13 +43,16 @@ function account(overrides = {}) {
 
 test("headline window is the one closest to its cap", () => {
   assert.equal(headlineWindow(account(), NOW).id, "weekly");
-  const tie = account({
-    windows: [
-      { id: "weekly", label: "Weekly", used_percent: 40, resets_at: null, window_minutes: 10080 },
-      { id: "session", label: "Session", used_percent: 40, resets_at: null, window_minutes: 300 },
-    ],
-  });
-  assert.equal(headlineWindow(tie, NOW).id, "session");
+  const tie = (weeklyReset, sessionReset) =>
+    account({
+      windows: [
+        { id: "weekly", label: "Weekly", used_percent: 80, resets_at: weeklyReset, window_minutes: 10080 },
+        { id: "session", label: "Session", used_percent: 80, resets_at: sessionReset, window_minutes: 300 },
+      ],
+    });
+  // Ties go to whichever window resets sooner, whatever its length.
+  assert.equal(headlineWindow(tie("2026-10-02T17:00:00Z", "2026-09-29T14:00:00Z"), NOW).id, "session");
+  assert.equal(headlineWindow(tie("2026-09-29T12:10:00Z", "2026-09-29T16:50:00Z"), NOW).id, "weekly");
 });
 
 test("windows past their reset are never shown as current", () => {
@@ -150,4 +153,34 @@ test("a snapshot is live only while polls keep confirming it", async () => {
   const failed = presentSnapshot(snapshot, { ...options, pollFailed: true });
   assert.equal(failed.accounts[0].message, "Offline.");
   assert.equal(isLive(presentSnapshot(snapshot, { ...options, receivedAt: null }).accounts[0]), false);
+});
+
+test("chip bars always include the window the percentage comes from", async () => {
+  const { chipWindows } = await import(MODULE);
+  const fable = { id: "weekly:fable", label: "Weekly · Fable", used_percent: 100, resets_at: "2026-10-02T17:00:00Z", window_minutes: 10080 };
+  const bars = chipWindows(account({ windows: [...account().windows, fable] }), NOW);
+  assert.deepEqual(bars.map((window) => window.id), ["session", "weekly:fable"]);
+  assert.deepEqual(chipWindows(account(), NOW).map((window) => window.id), ["session", "weekly"]);
+  assert.deepEqual(chipWindows(account({ windows: [] }), NOW), []);
+});
+
+test("an unreachable host promises no next check", async () => {
+  const { markUnreachable } = await import(MODULE);
+  const snapshot = { accounts: [account(), account({ key: "c", status: "expired" })], generated_at: "", refresh_interval_seconds: 300 };
+  assert.deepEqual(markUnreachable(snapshot, "Offline.").accounts.map((item) => item.next_refresh_at), [null, null]);
+});
+
+test("host timestamps are read on the host's clock", async () => {
+  const { clockOffsetMs } = await import(MODULE);
+  const snapshot = { accounts: [], generated_at: "2026-09-29T12:00:00Z", refresh_interval_seconds: 300 };
+  // This device runs 3 minutes fast.
+  assert.equal(clockOffsetMs(snapshot, NOW + 180_000), -180_000);
+  assert.equal(clockOffsetMs(null, NOW), 0);
+  assert.equal(clockOffsetMs({ ...snapshot, generated_at: "garbage" }, NOW), 0);
+  const nearReset = account({
+    windows: [{ id: "session", label: "Session", used_percent: 98, resets_at: "2026-09-29T12:02:00Z", window_minutes: 300 }],
+  });
+  const deviceNow = NOW + 180_000;
+  assert.equal(openWindows(nearReset, deviceNow).length, 0); // naive device clock drops it
+  assert.equal(openWindows(nearReset, deviceNow + clockOffsetMs(snapshot, deviceNow)).length, 1);
 });

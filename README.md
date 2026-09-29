@@ -89,7 +89,7 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 ### Subscription Usage
 
 - Title-bar chips show how much of each Claude and Codex subscription window is used; click one for the plan, account, every quota window with its reset countdown, and a manual refresh.
-- Every signed-in CLI home is shown separately, so several accounts can be watched side by side. See [Subscription Usage](#subscription-usage).
+- Every signed-in account is shown separately, so several accounts can be watched side by side (config homes signed into the same account are merged). See [Subscription Usage](#subscription-usage).
 
 ### Settings
 

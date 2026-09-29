@@ -1,28 +1,54 @@
-import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import "./command-room.css";
+import {
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ChevronDown,
-  Code2,
+  ChevronUp,
+  Copy,
+  EyeOff,
+  FolderOpen,
+  History,
+  LayoutGrid,
   Maximize2,
+  MessageSquare,
   Minimize2,
   Pencil,
   Play,
+  Plus,
   RefreshCw,
+  Search,
   Send,
   TerminalSquare,
-  Trash2,
+  X,
 } from "lucide-react";
-import { AthenaIcon, ClaudeIcon, GrokIcon, HermesIcon, OpenAIIcon, OpenCodeIcon } from "../components/BrandIcons";
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
-import { EmbeddedChatTerminal } from "../components/EmbeddedChatTerminal";
+import { AgentGlyph } from "../components/AgentGlyph";
+import { EmbeddedChatTerminal } from "../components/LazyEmbeddedChatTerminal";
 import { EmbeddedTerminal } from "../components/EmbeddedTerminal";
+import { isMacPlatform, shortcutKeysFor, type ShortcutId } from "../shortcuts";
 import {
   agentSessionKey,
-  formatSessionTime,
+  formatAbsoluteTime,
+  formatRelativeTime,
+  matchesSessionQuery,
+  paneInstanceNumbers,
+  paneStatusLabel,
   providerLabel,
   readDeletedAgentSessions,
   type SessionProviderFilter,
-  sessionInstanceNumber,
+  terminalGridTitles,
   terminalPaneMeta,
+  workspaceFolderName,
   writeDeletedAgentSessions,
 } from "../session-utils";
 import { normalizeWorkspaceKey, sameWorkspacePath } from "../workspace-utils";
@@ -32,12 +58,80 @@ import {
   terminalFocusAfterCollapse,
 } from "../pane-layout";
 
+export type CommandRoomView = "terminals" | "sessions";
+type InterfaceMode = "terminal" | "chat";
+
 type PaneDragState = {
   id: string;
   deltaX: number;
   deltaY: number;
   targetId: string | null;
 };
+
+export type CommandRoomProps = {
+  workspace: string;
+  sessions: EmbeddedTerminalSession[];
+  agentSessions: AgentSession[];
+  busy: boolean;
+  focused: boolean;
+  layoutResetNonce: number;
+  interfaceMode: InterfaceMode;
+  // Terminals / Sessions, controlled by App (palette and shortcuts switch it too).
+  view: CommandRoomView;
+  onViewChange: (view: CommandRoomView) => void;
+  // When the nonce changes, show and focus that pane, then report it handled so
+  // App clears the request (a remount must not replay it).
+  revealPaneRequest: { id: string; nonce: number } | null;
+  onRevealPaneHandled?: () => void;
+  onFocusChange: (focused: boolean) => void;
+  onInterfaceModeChange: (mode: InterfaceMode) => void;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
+  onClose: (id: string) => Promise<void>;
+  onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
+  onResumeSession: (session: AgentSession) => Promise<void>;
+  onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
+  onRenameAgentSession: (session: AgentSession) => void;
+  onRefreshAgentSessions: (maxAgeMs?: number) => Promise<void>;
+  onToast: (message: string) => void;
+  onAddWorkspace?: () => void;
+  // agent CLIs not on PATH: marked in the launch menus (launching one offers to install it)
+  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
+  emptyMark: ReactNode;
+};
+
+type LaunchOption = { kind: EmbeddedTerminalKind; label: string; detail: string };
+
+const launchOptions: readonly LaunchOption[] = [
+  { kind: "shell", label: "Shell", detail: "A plain terminal in this workspace" },
+  { kind: "claude", label: "Claude Code", detail: "Anthropic's coding agent" },
+  { kind: "codex", label: "Codex", detail: "OpenAI's coding agent" },
+  { kind: "opencode", label: "OpenCode", detail: "Open-source coding agent" },
+  { kind: "athena", label: "Athena Code", detail: "The Athena Code CLI" },
+  { kind: "grok", label: "Grok", detail: "The Grok Build CLI" },
+  { kind: "hermes", label: "Hermes", detail: "Long-term memory; can drive Athena over MCP" },
+];
+
+const sessionProviders: readonly AgentSession["provider"][] = ["claude", "codex", "opencode", "athena", "grok", "hermes"];
+const gridSize = 4;
+const dragThresholdPx = 4;
+const closeConfirmMs = 2_500;
+
+function supportsGrid(kind: EmbeddedTerminalKind): boolean {
+  return terminalGridTitles(kind).length > 1;
+}
+
+function shortcutTitle(label: string, id: ShortcutId): string {
+  const keys = shortcutKeysFor(id);
+  return keys.length ? `${label} (${keys.join(isMacPlatform() ? "" : "+")})` : label;
+}
+
+function KeyHint({ id }: { id: ShortcutId }) {
+  return (
+    <span className="kbdGroup">
+      {shortcutKeysFor(id).map((key, index) => <kbd key={`${key}-${index}`} className="kbd">{key}</kbd>)}
+    </span>
+  );
+}
 
 export function CommandRoom({
   workspace,
@@ -47,7 +141,12 @@ export function CommandRoom({
   focused,
   layoutResetNonce,
   interfaceMode,
+  view,
+  onViewChange,
+  revealPaneRequest,
+  onRevealPaneHandled,
   onFocusChange,
+  onInterfaceModeChange,
   onLaunch,
   onClose,
   onBroadcastPrompt,
@@ -55,32 +154,18 @@ export function CommandRoom({
   onRenameEmbeddedSession,
   onRenameAgentSession,
   onRefreshAgentSessions,
+  onToast,
+  onAddWorkspace,
   missingAgents,
   emptyMark,
-}: {
-  workspace: string;
-  sessions: EmbeddedTerminalSession[];
-  agentSessions: AgentSession[];
-  busy: boolean;
-  focused: boolean;
-  layoutResetNonce: number;
-  interfaceMode: "terminal" | "chat";
-  onFocusChange: (focused: boolean) => void;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
-  onClose: (id: string) => Promise<void>;
-  onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
-  onResumeSession: (session: AgentSession) => Promise<void>;
-  onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
-  onRenameAgentSession: (session: AgentSession) => void;
-  onRefreshAgentSessions: (maxAgeMs?: number) => Promise<void>;
-  // agent CLIs not on PATH: marked in the launch menus (launching one offers to install it)
-  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
-  emptyMark: ReactNode;
-}) {
+}: CommandRoomProps) {
   const [paneOrderByWorkspace, setPaneOrderByWorkspace] = useState<Record<string, string[]>>({});
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
-  const [activeTab, setActiveTab] = useState<"terminals" | "sessions">("terminals");
+  // Falls back to local state when rendered without App (browser harness).
+  const [localView, setLocalView] = useState<CommandRoomView>("terminals");
+  const activeView: CommandRoomView = view ?? localView;
   const [activeSessionProvider, setActiveSessionProvider] = useState<SessionProviderFilter>("all");
+  const [sessionQuery, setSessionQuery] = useState("");
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
@@ -88,16 +173,23 @@ export function CommandRoom({
   const [paneHeightsByWorkspace, setPaneHeightsByWorkspace] = useState<Record<string, Record<string, number>>>({});
   const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [terminalViewIds, setTerminalViewIds] = useState<Set<string>>(new Set());
-  const dragStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const [armedCloseId, setArmedCloseId] = useState<string | null>(null);
+  const [refreshingSessions, setRefreshingSessions] = useState(false);
+  const armedCloseTimerRef = useRef(0);
   const dragTargetRef = useRef<string | null>(null);
   const paneSetSignatureByWorkspaceRef = useRef(new Map<string, string>());
-  const newMenuRef = useRef<HTMLDivElement | null>(null);
+  const lastRevealNonceRef = useRef<number | null>(null);
   const workspaceOrderKey = normalizeWorkspaceKey(workspace || "none");
   const sessionIds = sessions.map((session) => session.id);
   const sessionSignature = sessionIds.join("|");
   const paneOrder = paneOrderByWorkspace[workspaceOrderKey] ?? sessionIds;
   const activeTerminalPaneId = activeTerminalPaneByWorkspace[workspaceOrderKey] ?? null;
   const paneHeights = paneHeightsByWorkspace[workspaceOrderKey] ?? {};
+
+  const setActiveView = useCallback((next: CommandRoomView) => {
+    setLocalView(next);
+    onViewChange?.(next);
+  }, [onViewChange]);
 
   useEffect(() => {
     setPaneOrderByWorkspace((current) => {
@@ -116,59 +208,73 @@ export function CommandRoom({
   }, [layoutResetNonce, sessionSignature, workspaceOrderKey]);
 
   useEffect(() => {
-    const sessionIds = new Set(sessions.map((session) => session.id));
-    const visibleSessionIds = new Set(
+    const ids = new Set(sessions.map((session) => session.id));
+    const visibleIds = new Set(
       sessions
         .filter((session) => sameWorkspacePath(session.workspace, workspace))
         .map((session) => session.id),
     );
-    setCollapsedPaneIds((current) => new Set([...current].filter((id) => sessionIds.has(id))));
-    setMaximizedPaneId((current) => current && visibleSessionIds.has(current) ? current : null);
+    setCollapsedPaneIds((current) => {
+      const next = new Set([...current].filter((id) => ids.has(id)));
+      return next.size === current.size ? current : next;
+    });
+    setMaximizedPaneId((current) => current && visibleIds.has(current) ? current : null);
   }, [sessions, workspace]);
 
-  const orderedSessions = paneOrder
-    .map((id) => sessions.find((session) => session.id === id))
-    .filter((session): session is EmbeddedTerminalSession => Boolean(session));
-  const visibleSessions = orderedSessions.filter((session) => sameWorkspacePath(session.workspace, workspace));
+  const sessionById = useMemo(() => new Map(sessions.map((session) => [session.id, session])), [sessions]);
+  const instanceNumbers = useMemo(() => paneInstanceNumbers(sessions), [sessions]);
+  const visibleSessions = useMemo(
+    () => paneOrder
+      .map((id) => sessionById.get(id))
+      .filter((session): session is EmbeddedTerminalSession => Boolean(session && sameWorkspacePath(session.workspace, workspace))),
+    [paneOrder, sessionById, workspace],
+  );
   const visibleSessionKey = visibleSessions.map((session) => session.id).join("|");
   const activeMaximizedPaneId = maximizedPaneId && visibleSessions.some((session) => session.id === maximizedPaneId)
     ? maximizedPaneId
     : null;
-  const displayedTerminalSessions = activeMaximizedPaneId
-    ? visibleSessions.filter((session) => session.id === activeMaximizedPaneId)
-    : visibleSessions;
-  const visibleAgentSessions = agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session)));
+  const agentPanes = useMemo(() => visibleSessions.filter((session) => session.kind !== "shell"), [visibleSessions]);
+
+  const visibleAgentSessions = useMemo(
+    () => agentSessions.filter((session) => !deletedSessionKeys.has(agentSessionKey(session))),
+    [agentSessions, deletedSessionKeys],
+  );
+  const searchedAgentSessions = useMemo(
+    () => visibleAgentSessions.filter((session) => matchesSessionQuery(session, sessionQuery)),
+    [visibleAgentSessions, sessionQuery],
+  );
   const providerTabs = useMemo(() => {
-    const counts = new Map<SessionProviderFilter, number>([["all", visibleAgentSessions.length]]);
-    for (const session of visibleAgentSessions) {
-      counts.set(session.provider, (counts.get(session.provider) ?? 0) + 1);
+    const counts = new Map<SessionProviderFilter, number>();
+    for (const session of searchedAgentSessions) counts.set(session.provider, (counts.get(session.provider) ?? 0) + 1);
+    const tabs: Array<{ provider: SessionProviderFilter; label: string; count: number }> = [
+      { provider: "all", label: "All", count: searchedAgentSessions.length },
+    ];
+    for (const provider of sessionProviders) {
+      const count = counts.get(provider) ?? 0;
+      if (count > 0 || provider === activeSessionProvider) tabs.push({ provider, label: providerLabel(provider), count });
     }
-    return (["all", "codex", "opencode", "athena", "claude", "grok", "hermes"] as SessionProviderFilter[]).map((provider) => ({
-      provider,
-      label: provider === "all" ? "All" : providerLabel(provider),
-      count: counts.get(provider) ?? 0,
-    }));
-  }, [visibleAgentSessions]);
-  const filteredAgentSessions = activeSessionProvider === "all"
-    ? visibleAgentSessions
-    : visibleAgentSessions.filter((session) => session.provider === activeSessionProvider);
-  const promptTargetIds = visibleSessions
-    .filter((session) => session.status === "running" && session.kind !== "shell")
-    .map((session) => session.id);
+    return tabs;
+  }, [searchedAgentSessions, activeSessionProvider]);
+  const filteredAgentSessions = useMemo(
+    () => activeSessionProvider === "all"
+      ? searchedAgentSessions
+      : searchedAgentSessions.filter((session) => session.provider === activeSessionProvider),
+    [activeSessionProvider, searchedAgentSessions],
+  );
   const runningAgentSessions = visibleAgentSessions.filter((session) => session.status === "running").length;
   const liveSessionSignature = sessions.map((session) => `${session.id}:${session.status}`).join("|");
 
-  // Native session history is only scanned while the Sessions tab is open.
-  // Opening the tab (or a live pane starting/exiting) refreshes anything older
+  // Native session history is only scanned while the Sessions view is open.
+  // Opening it (or a live pane starting/exiting) refreshes anything older
   // than a few seconds; while it stays open, refresh at most once a minute.
   useEffect(() => {
-    if (activeTab !== "sessions" || !workspace) return undefined;
+    if (activeView !== "sessions" || !workspace) return undefined;
     void onRefreshAgentSessions(5_000);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void onRefreshAgentSessions();
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [activeTab, workspace, liveSessionSignature, onRefreshAgentSessions]);
+  }, [activeView, workspace, liveSessionSignature, onRefreshAgentSessions]);
 
   useEffect(() => {
     const previousSignature = paneSetSignatureByWorkspaceRef.current.get(workspaceOrderKey);
@@ -193,40 +299,32 @@ export function CommandRoom({
 
   useEffect(() => {
     setDeletedSessionKeys(readDeletedAgentSessions(workspace));
+    setSessionQuery("");
   }, [workspace]);
 
   useEffect(() => {
     setActiveTerminalPaneByWorkspace((current) => {
-      const activeTerminalPaneId = current[workspaceOrderKey];
-      if (activeTerminalPaneId && visibleSessions.some((session) => session.id === activeTerminalPaneId)) return current;
-      const nextActiveTerminalPaneId = visibleSessions[0]?.id ?? "";
-      if (activeTerminalPaneId === nextActiveTerminalPaneId) return current;
-      if (!nextActiveTerminalPaneId) {
+      const currentActiveId = current[workspaceOrderKey];
+      if (currentActiveId && visibleSessions.some((session) => session.id === currentActiveId)) return current;
+      const nextActiveId = visibleSessions[0]?.id ?? "";
+      if (currentActiveId === nextActiveId) return current;
+      if (!nextActiveId) {
         const next = { ...current };
         delete next[workspaceOrderKey];
         return next;
       }
-      return { ...current, [workspaceOrderKey]: nextActiveTerminalPaneId };
+      return { ...current, [workspaceOrderKey]: nextActiveId };
     });
   }, [visibleSessionKey, workspaceOrderKey]);
 
   useEffect(() => {
-    if (!newMenuOpen) return;
+    if (!revealPaneRequest || revealPaneRequest.nonce === lastRevealNonceRef.current) return;
+    lastRevealNonceRef.current = revealPaneRequest.nonce;
+    revealTerminalPane(revealPaneRequest.id);
+    onRevealPaneHandled?.();
+  }, [revealPaneRequest]);
 
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!newMenuRef.current?.contains(event.target as Node)) setNewMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setNewMenuOpen(false);
-    };
-
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [newMenuOpen]);
+  useEffect(() => () => window.clearTimeout(armedCloseTimerRef.current), []);
 
   function togglePaneCollapsed(sessionId: string) {
     const collapsing = !collapsedPaneIds.has(sessionId);
@@ -267,7 +365,7 @@ export function CommandRoom({
   }
 
   function revealTerminalPane(sessionId: string) {
-    setActiveTab("terminals");
+    setActiveView("terminals");
     setActiveTerminalPaneForWorkspace(workspaceOrderKey, sessionId);
     setCollapsedPaneIds((current) => {
       if (!current.has(sessionId)) return current;
@@ -285,6 +383,20 @@ export function CommandRoom({
     ));
   }
 
+  function requestClose(session: EmbeddedTerminalSession) {
+    window.clearTimeout(armedCloseTimerRef.current);
+    // A running agent is one click from losing its process: the first click arms, the second closes.
+    if (session.status !== "running" || armedCloseId === session.id) {
+      setArmedCloseId(null);
+      void onClose(session.id);
+      return;
+    }
+    setArmedCloseId(session.id);
+    armedCloseTimerRef.current = window.setTimeout(() => {
+      setArmedCloseId((current) => current === session.id ? null : current);
+    }, closeConfirmMs);
+  }
+
   function movePaneToSlot(sourceSessionId: string, targetSessionId: string) {
     if (sourceSessionId === targetSessionId) return;
     setPaneOrderByWorkspace((current) => {
@@ -299,43 +411,43 @@ export function CommandRoom({
     });
   }
 
-  function startPaneDrag(event: ReactPointerEvent, sessionId: string) {
-    if ((event.target as HTMLElement).closest("button")) return;
+  // Dragging starts only past a small threshold, so clicks and double-clicks on
+  // the chrome never re-render the grid.
+  function startPaneDrag(event: ReactPointerEvent<HTMLDivElement>, sessionId: string) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
     event.preventDefault();
-    const chrome = event.currentTarget as HTMLElement;
-    chrome.setPointerCapture(event.pointerId);
-    dragStartRef.current = { id: sessionId, x: event.clientX, y: event.clientY };
-    setDragState({ id: sessionId, deltaX: 0, deltaY: 0, targetId: null });
-
+    const chrome = event.currentTarget;
+    const pointerId = event.pointerId;
+    chrome.setPointerCapture(pointerId);
+    const start = { x: event.clientX, y: event.clientY };
+    let lastPointer = start;
+    let dragging = false;
     let moveFrame = 0;
-    let lastPointer = { x: event.clientX, y: event.clientY };
+
     const commitMove = () => {
       moveFrame = 0;
-      const dragStart = dragStartRef.current;
-      if (!dragStart) return;
-      const nextTargetId = nearestPaneDropTarget(lastPointer.x, lastPointer.y, dragStart.id);
-      dragTargetRef.current = nextTargetId;
-      setDragState({
-        id: dragStart.id,
-        deltaX: lastPointer.x - dragStart.x,
-        deltaY: lastPointer.y - dragStart.y,
-        targetId: nextTargetId,
-      });
+      const targetId = nearestPaneDropTarget(lastPointer.x, lastPointer.y, sessionId);
+      dragTargetRef.current = targetId;
+      setDragState({ id: sessionId, deltaX: lastPointer.x - start.x, deltaY: lastPointer.y - start.y, targetId });
     };
     const move = (moveEvent: PointerEvent) => {
       lastPointer = { x: moveEvent.clientX, y: moveEvent.clientY };
+      if (!dragging) {
+        if (Math.hypot(lastPointer.x - start.x, lastPointer.y - start.y) < dragThresholdPx) return;
+        dragging = true;
+      }
       if (!moveFrame) moveFrame = window.requestAnimationFrame(commitMove);
     };
-
     const end = () => {
       if (moveFrame) window.cancelAnimationFrame(moveFrame);
       moveFrame = 0;
-      const dragStart = dragStartRef.current;
       const targetId = dragTargetRef.current;
-      dragStartRef.current = null;
       dragTargetRef.current = null;
-      if (dragStart && targetId) movePaneToSlot(dragStart.id, targetId);
-      setDragState(null);
+      if (dragging) {
+        if (targetId) movePaneToSlot(sessionId, targetId);
+        setDragState(null);
+      }
+      if (chrome.hasPointerCapture(pointerId)) chrome.releasePointerCapture(pointerId);
       chrome.removeEventListener("pointermove", move);
       chrome.removeEventListener("pointerup", end);
       chrome.removeEventListener("pointercancel", end);
@@ -389,22 +501,45 @@ export function CommandRoom({
     handle.addEventListener("pointercancel", end);
   }
 
-  async function copySessionText(value: string | null) {
-    if (!value) return;
-    await navigator.clipboard?.writeText(value).catch(() => undefined);
+  async function copySessionId(session: AgentSession) {
+    try {
+      await navigator.clipboard.writeText(session.id);
+      onToast?.("Session ID copied");
+    } catch {
+      onToast?.("Could not copy the session ID");
+    }
   }
 
   async function resumeSession(session: AgentSession) {
     await onResumeSession(session);
-    setActiveTab("terminals");
+    setActiveView("terminals");
   }
 
-  function deleteAgentSession(session: AgentSession) {
+  function hideAgentSession(session: AgentSession) {
     const next = new Set(deletedSessionKeys);
     next.add(agentSessionKey(session));
     setDeletedSessionKeys(next);
     writeDeletedAgentSessions(workspace, next);
   }
+
+  async function refreshSessionsNow() {
+    setRefreshingSessions(true);
+    try {
+      await onRefreshAgentSessions(0);
+    } finally {
+      setRefreshingSessions(false);
+    }
+  }
+
+  function launch(kind: EmbeddedTerminalKind, count: number) {
+    void onLaunch(kind, count);
+  }
+
+  const stageClassName = [
+    "terminalStage embeddedStage slotTerminalStage",
+    activeMaximizedPaneId ? "hasMaximized" : "",
+    visibleSessions.length > 1 ? "multiPane" : "",
+  ].filter(Boolean).join(" ");
 
   return (
     <div className={focused ? "roomPanel commandRoom focused" : "roomPanel commandRoom"}>
@@ -412,249 +547,632 @@ export function CommandRoom({
         <div className="commandRoomTabs" role="tablist" aria-label="Command room views">
           <button
             type="button"
-            className={activeTab === "terminals" ? "active" : ""}
-            onClick={() => setActiveTab("terminals")}
+            className={activeView === "terminals" ? "active" : ""}
+            onClick={() => setActiveView("terminals")}
             role="tab"
-            aria-selected={activeTab === "terminals"}
+            aria-selected={activeView === "terminals"}
+            title={shortcutTitle("Live terminals", "toggleSessions")}
           >
             <TerminalSquare size={14} /> Terminals
-            {visibleSessions.length > 0 && <span>{visibleSessions.length}</span>}
+            {visibleSessions.length > 0 && <span className="commandTabCount">{visibleSessions.length}</span>}
           </button>
           <button
             type="button"
-            className={activeTab === "sessions" ? "active" : ""}
-            onClick={() => setActiveTab("sessions")}
+            className={activeView === "sessions" ? "active" : ""}
+            onClick={() => setActiveView("sessions")}
             role="tab"
-            aria-selected={activeTab === "sessions"}
+            aria-selected={activeView === "sessions"}
+            title={shortcutTitle("Native session history", "toggleSessions")}
           >
-            <Code2 size={14} /> Sessions
-            {visibleAgentSessions.length > 0 && <span>{runningAgentSessions || visibleAgentSessions.length}</span>}
+            <History size={14} /> Sessions
+            {visibleAgentSessions.length > 0 && (
+              <span className={runningAgentSessions ? "commandTabCount live" : "commandTabCount"}>
+                {runningAgentSessions || visibleAgentSessions.length}
+              </span>
+            )}
           </button>
         </div>
-        <div className="buttonRow">
-          <button className="ghostButton" onClick={() => onFocusChange(!focused)} title={focused ? "Exit shell focus (Esc)" : "Enter shell focus"}>
-            {focused ? <Minimize2 size={15} /> : <Maximize2 size={15} />} {focused ? "Exit Focus" : "Shell Focus"}
+        <div className="commandToolbarActions">
+          <div className="segmentedControl viewModeToggle" role="group" aria-label="Pane view">
+            <button
+              type="button"
+              className={interfaceMode === "terminal" ? "active" : ""}
+              aria-pressed={interfaceMode === "terminal"}
+              aria-label="Terminal view"
+              title={shortcutTitle("Terminal view", "toggleInterfaceMode")}
+              onClick={() => onInterfaceModeChange?.("terminal")}
+            >
+              <TerminalSquare size={14} />
+            </button>
+            <button
+              type="button"
+              className={interfaceMode === "chat" ? "active" : ""}
+              aria-pressed={interfaceMode === "chat"}
+              aria-label="Chat view"
+              title={shortcutTitle("Chat view: conversation bubbles over the same terminals", "toggleInterfaceMode")}
+              onClick={() => onInterfaceModeChange?.("chat")}
+            >
+              <MessageSquare size={14} />
+            </button>
+          </div>
+          <button
+            type="button"
+            className={focused ? "ghostButton focusToggle active" : "ghostButton focusToggle"}
+            aria-pressed={focused}
+            onClick={() => onFocusChange(!focused)}
+            title={shortcutTitle(focused ? "Exit shell focus (Esc)" : "Shell focus: terminals fill the window", "shellFocus")}
+          >
+            {focused ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            <span className="toolbarLabel">{focused ? "Exit focus" : "Focus"}</span>
           </button>
-          <button className="ghostButton" onClick={() => void onLaunch("shell", 1)} disabled={!workspace || busy}>
-            <TerminalSquare size={15} /> New Shell
+          <button
+            type="button"
+            className="ghostButton"
+            onClick={() => launch("shell", 1)}
+            disabled={!workspace || busy}
+            title={shortcutTitle("New shell", "newShell")}
+          >
+            <TerminalSquare size={14} /> <span className="toolbarLabel">New Shell</span>
           </button>
-          <NewLaunchMenu
+          <LaunchMenu
             open={newMenuOpen}
             workspace={workspace}
-            menuRef={newMenuRef}
+            busy={busy}
             onOpenChange={setNewMenuOpen}
-            onLaunch={onLaunch}
+            onLaunch={launch}
             missingAgents={missingAgents}
           />
         </div>
       </div>
 
-      {activeTab === "terminals" ? (
-        <div
-          className={[
-            "terminalStage embeddedStage slotTerminalStage",
-            activeMaximizedPaneId ? "hasMaximized" : "",
-          ].filter(Boolean).join(" ")}
-        >
+      {activeView === "terminals" ? (
+        <div className={stageClassName}>
           {visibleSessions.map((session) => {
-            const displayed = displayedTerminalSessions.some((item) => item.id === session.id);
-            const customHeight = !collapsedPaneIds.has(session.id) && activeMaximizedPaneId !== session.id
-              ? paneHeights[session.id]
-              : undefined;
+            const displayed = !activeMaximizedPaneId || activeMaximizedPaneId === session.id;
+            const collapsed = collapsedPaneIds.has(session.id);
+            const maximized = activeMaximizedPaneId === session.id;
+            const customHeight = !collapsed && !maximized ? paneHeights[session.id] : undefined;
+            const dragging = dragState?.id === session.id;
             const paneStyle: CSSProperties = {
-              position: "relative",
-              resize: "none",
               ...(customHeight ? { height: `${customHeight}px` } : {}),
-              ...(dragState?.id === session.id
-                ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` }
-                : {}),
+              ...(dragging && dragState ? { transform: `translate(${dragState.deltaX}px, ${dragState.deltaY}px)` } : {}),
             };
+            const instance = instanceNumbers.get(session.id);
+            const statusLabel = paneStatusLabel(session);
+            const armed = armedCloseId === session.id;
             return (
-            <div
-              key={session.id}
-              data-pane-id={session.id}
-              className={[
-                "terminalPane liveTerminalPane slotPane",
-                !displayed ? "workspaceHidden" : "",
-                dragState?.id === session.id ? "dragging" : "",
-                dragState?.targetId === session.id ? "dropTarget" : "",
-                collapsedPaneIds.has(session.id) ? "collapsed" : "",
-                activeMaximizedPaneId === session.id ? "maximized" : "",
-                activeTerminalPaneId === session.id ? "activeTerminalPane" : "",
-              ].filter(Boolean).join(" ")}
-              aria-hidden={!displayed}
-              aria-label={`${session.title} terminal pane`}
-              onPointerDownCapture={() => setActiveTerminalPaneForWorkspace(workspaceOrderKey, session.id)}
-              style={paneStyle}
-            >
               <div
-                className="terminalChrome draggableChrome"
-                onPointerDown={(event) => startPaneDrag(event, session.id)}
+                key={session.id}
+                data-pane-id={session.id}
+                className={[
+                  "terminalPane liveTerminalPane slotPane",
+                  !displayed ? "workspaceHidden" : "",
+                  dragging ? "dragging" : "",
+                  dragState?.targetId === session.id ? "dropTarget" : "",
+                  collapsed ? "collapsed" : "",
+                  maximized ? "maximized" : "",
+                  activeTerminalPaneId === session.id ? "activeTerminalPane" : "",
+                ].filter(Boolean).join(" ")}
+                aria-hidden={!displayed}
+                aria-label={`${session.title} terminal pane`}
+                onPointerDownCapture={() => setActiveTerminalPaneForWorkspace(workspaceOrderKey, session.id)}
+                style={paneStyle}
               >
-                <button className="terminalControl close" type="button" onClick={() => void onClose(session.id)} title={`Close ${session.title}`} aria-label={`Close ${session.title}`} />
-                <button
-                  className="terminalControl amber"
-                  type="button"
-                  onClick={() => togglePaneCollapsed(session.id)}
-                  title={collapsedPaneIds.has(session.id) ? `Restore ${session.title}` : `Minimize ${session.title}`}
-                  aria-label={collapsedPaneIds.has(session.id) ? `Restore ${session.title}` : `Minimize ${session.title}`}
-                />
-                <button
-                  className="terminalControl green"
-                  type="button"
-                  onClick={() => togglePaneMaximized(session.id)}
-                  title={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
-                  aria-label={maximizedPaneId === session.id ? `Restore ${session.title}` : `Maximize ${session.title}`}
-                />
-                <strong>
-                  <span className="paneInstanceBadge">#{sessionInstanceNumber(session, sessions)}</span>
-                  {session.title}
-                </strong>
-                <em>{terminalPaneMeta(session)}</em>
-                <button type="button" className="terminalChromeAction" onClick={() => onRenameEmbeddedSession(session)} title={`Rename ${session.title}`}>
-                  <Pencil size={13} />
-                </button>
-              </div>
-              {displayed && !collapsedPaneIds.has(session.id) && (
-                interfaceMode === "chat" && session.kind !== "shell"
-                  ? terminalViewIds.has(session.id)
-                    ? <div className="chatTerminalFallback">
-                        <button type="button" className="chatViewReturn" onClick={() => setTerminalViewIds((current) => {
-                          const next = new Set(current); next.delete(session.id); return next;
-                        })}>← Back to chat</button>
-                        <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
-                      </div>
-                    : <EmbeddedChatTerminal session={session} onOpenTerminal={() => setTerminalViewIds((current) => new Set(current).add(session.id))} />
-                  : <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
-              )}
-              {displayed && !collapsedPaneIds.has(session.id) && activeMaximizedPaneId !== session.id && (
                 <div
-                  className="terminalPaneResizeHandle"
-                  role="separator"
-                  aria-label={`Resize ${session.title}`}
-                  aria-orientation="horizontal"
-                  onPointerDown={(event) => startPaneResize(event, session.id)}
-                />
-              )}
-            </div>
+                  className="terminalChrome draggableChrome"
+                  onPointerDown={(event) => startPaneDrag(event, session.id)}
+                  onDoubleClick={(event) => {
+                    if (!(event.target as HTMLElement).closest("button")) togglePaneMaximized(session.id);
+                  }}
+                >
+                  <AgentGlyph kind={session.kind} size="small" />
+                  <strong className="paneTitle" title={session.title}>{session.title}</strong>
+                  {instance && instance.total > 1 && (
+                    <span className="paneInstanceBadge" title={`${session.kind}#${instance.number}`}>#{instance.number}</span>
+                  )}
+                  <span className={`paneStatusDot ${session.status}`} role="img" aria-label={statusLabel} title={statusLabel} />
+                  <em className="paneMeta">{terminalPaneMeta(session)}</em>
+                  <div className="paneActions">
+                    <button
+                      type="button"
+                      className="iconButton"
+                      onClick={() => onRenameEmbeddedSession(session)}
+                      title="Rename"
+                      aria-label={`Rename ${session.title}`}
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="iconButton"
+                      onClick={() => togglePaneCollapsed(session.id)}
+                      title={collapsed ? "Restore" : "Minimize"}
+                      aria-label={collapsed ? `Restore ${session.title}` : `Minimize ${session.title}`}
+                    >
+                      {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="iconButton"
+                      onClick={() => togglePaneMaximized(session.id)}
+                      title={maximized ? "Restore size" : "Maximize (or double-click the title bar)"}
+                      aria-label={maximized ? `Restore ${session.title}` : `Maximize ${session.title}`}
+                    >
+                      {maximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    </button>
+                    <button
+                      type="button"
+                      className={armed ? "iconButton paneCloseButton armed" : "iconButton danger paneCloseButton"}
+                      onClick={() => requestClose(session)}
+                      title={armed
+                        ? "Click again to close the pane and stop its process"
+                        : session.status === "running" ? "Close (stops the process)" : "Close"}
+                      aria-label={armed ? `Confirm closing ${session.title}` : `Close ${session.title}`}
+                    >
+                      <X size={13} />
+                      {armed && <span>Close?</span>}
+                    </button>
+                  </div>
+                </div>
+                {displayed && !collapsed && (
+                  interfaceMode === "chat" && session.kind !== "shell"
+                    ? terminalViewIds.has(session.id)
+                      ? <div className="chatTerminalFallback">
+                          <button type="button" className="chatViewReturn" onClick={() => setTerminalViewIds((current) => {
+                            const next = new Set(current); next.delete(session.id); return next;
+                          })}>← Back to chat</button>
+                          <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
+                        </div>
+                      : <EmbeddedChatTerminal session={session} onOpenTerminal={() => setTerminalViewIds((current) => new Set(current).add(session.id))} />
+                    : <EmbeddedTerminal session={session} active={activeTerminalPaneId === session.id} />
+                )}
+                {displayed && !collapsed && !maximized && (
+                  <div
+                    className="terminalPaneResizeHandle"
+                    role="separator"
+                    aria-label={`Resize ${session.title}`}
+                    aria-orientation="horizontal"
+                    onPointerDown={(event) => startPaneResize(event, session.id)}
+                  />
+                )}
+              </div>
             );
           })}
           {visibleSessions.length === 0 && (
-            <div className="terminalEmptyState">
-              {emptyMark}
-              <strong>{workspace ? "Nothing running in this workspace" : "No workspace open"}</strong>
-              <span>{workspace ? "Start a shell or an agent." : "Add a project folder from the workspace bar above."}</span>
-              {workspace && (
-                <div className="emptyLaunchRow">
-                  {launchActions.filter((action) => action.count === 1).map((action) => (
-                    <button
-                      key={action.kind}
-                      type="button"
-                      className="ghostButton"
-                      disabled={busy}
-                      title={missingAgents?.has(action.kind) ? `${action.label} is not installed: Athena will offer to install it` : undefined}
-                      onClick={() => void onLaunch(action.kind, 1)}
-                    >
-                      {action.icon} {action.label}
-                      {missingAgents?.has(action.kind) ? <em className="launchMissing">not installed</em> : null}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <EmptyStage
+              workspace={workspace}
+              busy={busy}
+              emptyMark={emptyMark}
+              missingAgents={missingAgents}
+              onLaunch={launch}
+              onAddWorkspace={onAddWorkspace}
+            />
           )}
         </div>
       ) : (
         <div className="agentSessionsPanel">
-          <div className="agentProviderTabs" role="tablist" aria-label="Session providers">
-            {providerTabs.map((tab) => (
-              <button
-                key={tab.provider}
-                type="button"
-                className={activeSessionProvider === tab.provider ? "active" : ""}
-                onClick={() => setActiveSessionProvider(tab.provider)}
-                role="tab"
-                aria-selected={activeSessionProvider === tab.provider}
-              >
-                {tab.label}
-                <span>{tab.count}</span>
-              </button>
+          <div className="agentSessionsToolbar">
+            <label className="searchField sessionSearch">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="text"
+                value={sessionQuery}
+                onChange={(event) => setSessionQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && sessionQuery) {
+                    event.stopPropagation();
+                    setSessionQuery("");
+                  }
+                }}
+                placeholder="Search title, id, branch, model…"
+                aria-label="Search sessions"
+                spellCheck={false}
+              />
+              {sessionQuery && (
+                <button type="button" className="iconButton" onClick={() => setSessionQuery("")} aria-label="Clear search" title="Clear search (Esc)">
+                  <X size={13} />
+                </button>
+              )}
+            </label>
+            <div className="agentProviderTabs" role="tablist" aria-label="Session providers">
+              {providerTabs.map((tab) => (
+                <button
+                  key={tab.provider}
+                  type="button"
+                  className={activeSessionProvider === tab.provider ? "chip active" : "chip"}
+                  onClick={() => setActiveSessionProvider(tab.provider)}
+                  role="tab"
+                  aria-selected={activeSessionProvider === tab.provider}
+                >
+                  {tab.provider !== "all" && <AgentGlyph kind={tab.provider} size="small" />}
+                  {tab.label}
+                  <span className="chipCount">{tab.count}</span>
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="iconButton outlined sessionRefresh"
+              onClick={() => void refreshSessionsNow()}
+              disabled={!workspace || refreshingSessions}
+              aria-label="Refresh sessions"
+              title="Rescan native session history"
+            >
+              <RefreshCw size={13} className={refreshingSessions ? "spinning" : undefined} />
+            </button>
+          </div>
+          <div className="agentSessionList" role="list" aria-label="Agent sessions">
+            {filteredAgentSessions.length > 0 && (
+              <div className="agentSessionsHeader" aria-hidden="true">
+                <span>Provider</span>
+                <span>Session</span>
+                <span className="agentSessionMetaColumn">Model / Agent</span>
+                <span>Updated</span>
+                <span className="agentSessionStatusColumn">Status</span>
+                <span />
+              </div>
+            )}
+            {filteredAgentSessions.map((session) => (
+              <div className="agentSessionRow" role="listitem" key={`${session.provider}:${session.id}`}>
+                <div className="agentSessionProvider">
+                  <span className={`providerBadge ${session.provider}`}>{providerLabel(session.provider)}</span>
+                </div>
+                <div className="agentSessionTitle">
+                  <strong title={session.title}>{session.title}</strong>
+                  <span title={session.id}>{session.id}{session.branch ? ` · ${session.branch}` : ""}</span>
+                </div>
+                <div className="agentSessionMeta agentSessionMetaColumn">
+                  <strong>{session.model ?? "Unknown model"}</strong>
+                  <span>{session.agent ?? "Default agent"}</span>
+                </div>
+                <time className="agentSessionTime" dateTime={session.updatedAt} title={formatAbsoluteTime(session.updatedAt)}>
+                  {formatRelativeTime(session.updatedAt)}
+                </time>
+                <span className={`statusPill agentSessionStatus agentSessionStatusColumn${session.status === "running" ? " ok" : ""}`}>
+                  <span />{session.status === "running" ? "Running" : session.status === "exited" ? "Exited" : "History"}
+                </span>
+                <div className="agentSessionActions">
+                  {session.terminalId && (
+                    <button
+                      type="button"
+                      className="primaryButton small"
+                      onClick={() => { if (session.terminalId) revealTerminalPane(session.terminalId); }}
+                      title="Show this session's pane"
+                    >
+                      <TerminalSquare size={12} /> Focus
+                    </button>
+                  )}
+                  {session.resumeCommand && (
+                    <button
+                      type="button"
+                      className={session.terminalId ? "ghostButton small" : "primaryButton small"}
+                      onClick={() => void resumeSession(session)}
+                      disabled={busy}
+                      title={`Resume in a new pane: ${session.resumeCommand}`}
+                    >
+                      <Play size={12} /> Resume
+                    </button>
+                  )}
+                  <button type="button" className="iconButton sessionIconAction" onClick={() => void copySessionId(session)} aria-label={`Copy ID of ${session.title}`} title="Copy session ID">
+                    <Copy size={13} />
+                  </button>
+                  <button type="button" className="iconButton sessionIconAction" onClick={() => onRenameAgentSession(session)} aria-label={`Rename ${session.title}`} title="Rename">
+                    <Pencil size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="iconButton danger sessionIconAction"
+                    onClick={() => hideAgentSession(session)}
+                    aria-label={`Hide ${session.title}`}
+                    title="Hide from this list — session files are untouched"
+                  >
+                    <EyeOff size={13} />
+                  </button>
+                </div>
+              </div>
             ))}
+            {filteredAgentSessions.length === 0 && (
+              <SessionsEmptyState
+                hasSessions={visibleAgentSessions.length > 0}
+                query={sessionQuery}
+                provider={activeSessionProvider}
+                onClearQuery={() => setSessionQuery("")}
+                onShowAll={() => setActiveSessionProvider("all")}
+              />
+            )}
           </div>
-          <div className="agentSessionsHeader">
-            <span>Provider</span>
-            <span>Session</span>
-            <span>Model / Agent</span>
-            <span>Updated</span>
-            <span>Status</span>
-            <span>Actions</span>
-          </div>
-          {filteredAgentSessions.map((session) => (
-            <div className="agentSessionRow" key={`${session.provider}:${session.id}`}>
-              <div className="agentSessionProvider">
-                <span className={`providerBadge ${session.provider}`}>{providerLabel(session.provider)}</span>
-              </div>
-              <div className="agentSessionTitle">
-                <strong>{session.title}</strong>
-                <span>{session.id}{session.branch ? ` · ${session.branch}` : ""}</span>
-              </div>
-              <div className="agentSessionMeta">
-                <strong>{session.model ?? "unknown model"}</strong>
-                <span>{session.agent ?? "default agent"}</span>
-              </div>
-              <span className="agentSessionTime">{formatSessionTime(session.updatedAt)}</span>
-              <span className={`agentSessionStatus ${session.status}`}>{session.status}</span>
-              <div className="agentSessionActions">
-                {session.terminalId && (
-                  <button type="button" onClick={() => {
-                    if (session.terminalId) revealTerminalPane(session.terminalId);
-                  }}>
-                    <TerminalSquare size={13} /> Focus
-                  </button>
-                )}
-                <button type="button" onClick={() => void copySessionText(session.id)}>
-                  <Code2 size={13} /> ID
-                </button>
-                <button type="button" onClick={() => onRenameAgentSession(session)}>
-                  <Pencil size={13} /> Rename
-                </button>
-                {session.resumeCommand && (
-                  <button type="button" onClick={() => void resumeSession(session)} disabled={busy}>
-                    <RefreshCw size={13} /> Resume
-                  </button>
-                )}
-                <button type="button" className="danger" onClick={() => deleteAgentSession(session)}>
-                  <Trash2 size={13} /> Delete
-                </button>
-              </div>
-            </div>
-          ))}
-          {filteredAgentSessions.length === 0 && (
-            <div className="agentSessionsEmpty">
-              <Code2 size={30} />
-              <strong>No agent sessions found.</strong>
-              <span>Launch Codex, OpenCode, Athena Code, Claude, Grok, or Hermes from this workspace to track live and historical sessions here.</span>
-            </div>
-          )}
         </div>
       )}
 
-      <BroadcastComposer targetIds={promptTargetIds} onBroadcast={onBroadcastPrompt} />
+      <BroadcastComposer agentPanes={agentPanes} onBroadcast={onBroadcastPrompt} />
+    </div>
+  );
+}
+
+function EmptyStage({
+  workspace,
+  busy,
+  emptyMark,
+  missingAgents,
+  onLaunch,
+  onAddWorkspace,
+}: {
+  workspace: string;
+  busy: boolean;
+  emptyMark: ReactNode;
+  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
+  onLaunch: (kind: EmbeddedTerminalKind, count: number) => void;
+  onAddWorkspace?: () => void;
+}) {
+  if (!workspace) {
+    return (
+      <div className="terminalEmptyState">
+        <div className="emptyHero">
+          {emptyMark}
+          <h2>No workspace open</h2>
+          <p>Athena runs agents and shells inside a project folder. Open one to get started.</p>
+        </div>
+        {onAddWorkspace && (
+          <button type="button" className="primaryButton" onClick={onAddWorkspace}>
+            <FolderOpen size={15} /> Open a project folder
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="terminalEmptyState">
+      <div className="emptyHero">
+        {emptyMark}
+        <h2>Start something in <span>{workspaceFolderName(workspace)}</span></h2>
+        <p>Every agent runs in a real terminal in this folder. Launch one, or a grid of four to work in parallel.</p>
+      </div>
+      <div className="emptyLaunchGrid">
+        {launchOptions.map((option) => {
+          const missing = Boolean(missingAgents?.has(option.kind));
+          return (
+            <div key={option.kind} className={missing ? "emptyLaunchCard missing" : "emptyLaunchCard"}>
+              <button
+                type="button"
+                className="emptyLaunchMain"
+                disabled={busy}
+                onClick={() => onLaunch(option.kind, 1)}
+                title={missing ? `${option.label} is not installed: Athena will offer to install it` : `Launch ${option.label}`}
+              >
+                <AgentGlyph kind={option.kind} size="large" />
+                <span className="emptyLaunchText">
+                  <strong>{option.label}</strong>
+                  <small>{option.detail}</small>
+                </span>
+                {missing && <em className="launchMissingTag">Not installed</em>}
+              </button>
+              {supportsGrid(option.kind) && (
+                <button
+                  type="button"
+                  className="ghostButton small quiet emptyLaunchGridButton"
+                  disabled={busy}
+                  onClick={() => onLaunch(option.kind, gridSize)}
+                  aria-label={`Launch four ${option.label} panes`}
+                  title={`Launch a grid of four ${option.label} panes`}
+                >
+                  <LayoutGrid size={12} /> ×4 grid
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="emptyHint">Press <KeyHint id="palette" /> for every command</p>
+    </div>
+  );
+}
+
+function SessionsEmptyState({
+  hasSessions,
+  query,
+  provider,
+  onClearQuery,
+  onShowAll,
+}: {
+  hasSessions: boolean;
+  query: string;
+  provider: SessionProviderFilter;
+  onClearQuery: () => void;
+  onShowAll: () => void;
+}) {
+  if (query.trim()) {
+    return (
+      <div className="agentSessionsEmpty">
+        <Search size={26} />
+        <strong>No sessions match “{query.trim()}”</strong>
+        <span>Search looks at titles, session ids, branches, models and agents.</span>
+        <button type="button" className="ghostButton small" onClick={onClearQuery}>
+          <X size={12} /> Clear search
+        </button>
+      </div>
+    );
+  }
+  if (hasSessions && provider !== "all") {
+    return (
+      <div className="agentSessionsEmpty">
+        <AgentGlyph kind={provider} size="large" />
+        <strong>No {providerLabel(provider)} sessions here</strong>
+        <button type="button" className="ghostButton small" onClick={onShowAll}>Show all sessions</button>
+      </div>
+    );
+  }
+  return (
+    <div className="agentSessionsEmpty">
+      <History size={28} />
+      <strong>No agent sessions yet</strong>
+      <span>Sessions from Claude Code, Codex, OpenCode, Athena Code, Grok and Hermes in this workspace show up here, ready to resume.</span>
+    </div>
+  );
+}
+
+function LaunchMenu({
+  open,
+  workspace,
+  busy,
+  onOpenChange,
+  onLaunch,
+  missingAgents,
+}: {
+  open: boolean;
+  workspace: string;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onLaunch: (kind: EmbeddedTerminalKind, count: number) => void;
+  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    panelRef.current?.querySelector<HTMLElement>(".launchMenuItem:not(:disabled)")?.focus();
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) onOpenChange(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      onOpenChange(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [open, onOpenChange]);
+
+  function launch(kind: EmbeddedTerminalKind, count: number) {
+    onOpenChange(false);
+    onLaunch(kind, count);
+  }
+
+  function moveFocus(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const items = Array.from(panel.querySelectorAll<HTMLElement>(".launchMenuItem"));
+    const row = (document.activeElement as HTMLElement | null)?.closest(".launchMenuRow") ?? null;
+    const index = items.findIndex((item) => item.closest(".launchMenuRow") === row);
+    let target: HTMLElement | null | undefined = null;
+    if (event.key === "ArrowDown") target = items[(index + 1) % items.length];
+    else if (event.key === "ArrowUp") target = items[(index - 1 + items.length) % items.length];
+    else if (event.key === "Home") target = items[0];
+    else if (event.key === "End") target = items.at(-1);
+    else if (event.key === "ArrowRight") target = row?.querySelector<HTMLElement>(".launchGridButton");
+    else if (event.key === "ArrowLeft") target = row?.querySelector<HTMLElement>(".launchMenuItem");
+    else return;
+    event.preventDefault();
+    target?.focus();
+  }
+
+  return (
+    <div className="newMenu" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        className="primaryButton newMenuButton"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={!workspace}
+        onClick={() => onOpenChange(!open)}
+        title={shortcutTitle("Launch an agent", "launchAgent")}
+      >
+        <Plus size={14} /> New <ChevronDown size={13} className="newMenuChevron" />
+      </button>
+      {open && (
+        <div className="menuPanel launchMenu" role="menu" aria-label="Launch" ref={panelRef} onKeyDown={moveFocus}>
+          <div className="menuLabel">Launch in {workspaceFolderName(workspace)}</div>
+          {launchOptions.map((option) => {
+            const missing = Boolean(missingAgents?.has(option.kind));
+            return (
+              <div className="launchMenuRow" key={option.kind} role="none">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="menuItem launchMenuItem"
+                  disabled={busy}
+                  onClick={() => launch(option.kind, 1)}
+                >
+                  <AgentGlyph kind={option.kind} />
+                  <span className="launchMenuText">
+                    <strong>{option.label}</strong>
+                    <small className={missing ? "launchMissing" : undefined}>
+                      {missing ? "Not installed: Athena will offer to install it" : option.detail}
+                    </small>
+                  </span>
+                </button>
+                {supportsGrid(option.kind) && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="iconButton outlined launchGridButton"
+                    disabled={busy}
+                    onClick={() => launch(option.kind, gridSize)}
+                    aria-label={`Launch four ${option.label} panes`}
+                    title={`Launch a grid of four ${option.label} panes`}
+                  >
+                    ×4
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 function BroadcastComposer({
-  targetIds,
+  agentPanes,
   onBroadcast,
 }: {
-  targetIds: string[];
+  agentPanes: EmbeddedTerminalSession[];
   onBroadcast: (prompt: string, sessionIds: string[]) => Promise<void>;
 }) {
-  // Local state keeps keystrokes from re-rendering the whole terminal grid.
+  // Local state keeps keystrokes from re-rendering the terminal grid.
   const [prompt, setPrompt] = useState("");
   const [sending, setSending] = useState(false);
+  // Deselected panes; anything new is a target by default.
+  const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const paneSignature = agentPanes.map((pane) => pane.id).join("|");
+  const running = agentPanes.filter((pane) => pane.status === "running");
+  const targetIds = running.filter((pane) => !excluded.has(pane.id)).map((pane) => pane.id);
   const canSend = targetIds.length > 0 && prompt.trim().length > 0 && !sending;
+
+  useEffect(() => {
+    const live = new Set(paneSignature.split("|"));
+    setExcluded((current) => {
+      const next = new Set([...current].filter((id) => live.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [paneSignature]);
+
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 136)}px`;
+  }, [prompt, paneSignature]);
+
+  if (agentPanes.length === 0) return null;
+
+  function toggleTarget(id: string) {
+    setExcluded((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   async function submit() {
     const trimmed = prompt.trim();
@@ -665,8 +1183,15 @@ function BroadcastComposer({
       setPrompt("");
     } finally {
       setSending(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
     }
   }
+
+  const placeholder = running.length === 0
+    ? "Start an agent to broadcast a prompt"
+    : targetIds.length === running.length
+      ? "Prompt every running agent · Shift+Enter for a new line"
+      : `Prompt ${targetIds.length} of ${running.length} agents · Shift+Enter for a new line`;
 
   return (
     <form
@@ -676,85 +1201,46 @@ function BroadcastComposer({
         void submit();
       }}
     >
-      <span>{targetIds.length ? `${targetIds.length} ready` : "No agents"}</span>
-      <input
-        value={prompt}
-        onChange={(event) => setPrompt(event.target.value)}
-        placeholder="Prompt all ready agents"
-        disabled={sending || targetIds.length === 0}
-      />
-      <button className="primaryButton" type="submit" disabled={!canSend} title="Send prompt to all ready agents">
-        <Send size={14} /> Send
-      </button>
-    </form>
-  );
-}
-
-type LaunchAction = { label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number };
-
-const launchActions: LaunchAction[] = [
-  { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
-  { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
-  { label: "Athena Code", detail: "Spawn external Athena Code CLI", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
-  { label: "Athena Code Grid", detail: "Spawn four external CLI panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
-  { label: "Codex", detail: "Spawn one Codex agent", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1 },
-  { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <OpenAIIcon size={14} />, kind: "codex", count: 4 },
-  { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1 },
-  { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 4 },
-  { label: "Claude", detail: "Spawn one Claude agent", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1 },
-  { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ClaudeIcon size={14} />, kind: "claude", count: 4 },
-  { label: "Grok", detail: "Spawn external Grok Build CLI", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
-  { label: "Grok Grid", detail: "Spawn four external CLI panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
-];
-
-function NewLaunchMenu({
-  open,
-  workspace,
-  menuRef,
-  onOpenChange,
-  onLaunch,
-  missingAgents,
-}: {
-  open: boolean;
-  workspace: string;
-  menuRef: RefObject<HTMLDivElement | null>;
-  onOpenChange: (open: boolean) => void;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
-  missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
-}) {
-  function launch(kind: EmbeddedTerminalKind, count: number) {
-    onOpenChange(false);
-    void onLaunch(kind, count);
-  }
-
-  return (
-    <div className="newMenu" ref={menuRef}>
-      <button
-        className="primaryButton newMenuButton"
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={!workspace}
-        onClick={() => onOpenChange(!open)}
-      >
-        <Play size={14} /> New <ChevronDown size={13} />
-      </button>
-      {open && (
-        <div className="newMenuPanel" role="menu">
-          {launchActions.map((action) => (
-            <button key={`${action.kind}-${action.count}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count)}>
-              <span>{action.icon}</span>
-              <span>
-                <strong>{action.label}</strong>
-                {missingAgents?.has(action.kind)
-                  ? <small className="launchMissing">Not installed: Athena offers to install it</small>
-                  : <small>{action.detail}</small>}
-              </span>
+      <div className="broadcastTargets" role="group" aria-label="Broadcast targets">
+        <span className="eyebrow">Broadcast</span>
+        {running.map((pane) => {
+          const selected = !excluded.has(pane.id);
+          return (
+            <button
+              key={pane.id}
+              type="button"
+              className={selected ? "chip active" : "chip"}
+              aria-pressed={selected}
+              onClick={() => toggleTarget(pane.id)}
+              title={selected ? `Skip ${pane.title}` : `Include ${pane.title}`}
+            >
+              <AgentGlyph kind={pane.kind} size="small" />
+              {pane.title}
             </button>
-          ))}
-        </div>
-      )}
-    </div>
+          );
+        })}
+        {running.length === 0 && <span className="broadcastNote">No agents are running in this workspace.</span>}
+      </div>
+      <div className="broadcastInputRow">
+        <textarea
+          ref={inputRef}
+          rows={1}
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            void submit();
+          }}
+          placeholder={placeholder}
+          aria-label="Prompt for selected agents"
+          disabled={sending || running.length === 0}
+        />
+        <button className="primaryButton" type="submit" disabled={!canSend} title="Send to the selected agents (Enter)">
+          <Send size={14} /> Send to {targetIds.length}
+        </button>
+      </div>
+    </form>
   );
 }
 

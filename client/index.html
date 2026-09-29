@@ -4,19 +4,31 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;"
-    />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800;900&family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,0..100;1,9..144,300..900,0..100&family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
-      rel="stylesheet"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*;"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" sizes="32x32" href="/athena-icon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/athena-icon-16.png" />
     <link rel="apple-touch-icon" sizes="256x256" href="/athena-icon-256.png" />
     <title>ATHENA</title>
+    <script>
+      // Apply the saved theme and density before the first paint so the window
+      // never flashes the default palette. App.tsx takes over once mounted.
+      (function () {
+        try {
+          var root = document.documentElement;
+          var theme = localStorage.getItem("context-workspace:uiTheme");
+          if (theme === "system") {
+            theme = window.matchMedia("(prefers-color-scheme: light)").matches ? "daylight" : "classic";
+          }
+          if (theme && /^[a-z-]+$/.test(theme)) root.dataset.theme = theme;
+          var density = localStorage.getItem("context-workspace:density");
+          if (density === "compact" || density === "comfortable") root.dataset.density = density;
+        } catch (error) {
+          // Storage unavailable: the default theme applies.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

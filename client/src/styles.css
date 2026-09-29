@@ -1770,3 +1770,11 @@ html[data-theme="mono-light"] .appTitleBar .titleMark img {
     grid-row: 2;
   }
 }
+/* Settings rows must fit their content. The grid scrolls inside the room at
+   a fixed height, and each section's min-height replaces the content-based
+   minimum, so auto rows could shrink to that min-height and taller sections
+   (Coding agents, diagnostics) spilled under the next one. */
+.settingsRoom .settingsGrid {
+  grid-auto-rows: max-content;
+  align-content: start;
+}

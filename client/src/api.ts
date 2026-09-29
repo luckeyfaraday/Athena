@@ -1,3 +1,5 @@
+import type { UsageSnapshot } from "./usage-display";
+
 export type BackendStatus = {
   baseUrl: string | null;
   healthy: boolean;
@@ -60,6 +62,23 @@ export class BackendClient {
   async adapters(): Promise<Record<string, AdapterStatus>> {
     const response = await this.json<{ adapters: Record<string, AdapterStatus> }>("/agents/adapters");
     return response.adapters;
+  }
+
+  /** Cached subscription usage; the backend refreshes providers in the background. */
+  async usageAccounts(): Promise<UsageSnapshot> {
+    // Bounded, so a hung backend surfaces as a failed poll instead of a frozen "live" reading.
+    return this.json("/usage/accounts", { signal: AbortSignal.timeout(15_000) });
+  }
+
+  /** Ask the backend to re-read provider quotas now (bounded wait, deduplicated). */
+  async refreshUsage(options: { provider?: string; accountKey?: string } = {}): Promise<UsageSnapshot> {
+    return this.json("/usage/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: options.provider ?? null, account_key: options.accountKey ?? null }),
+      // The backend waits up to 12 s for the probe itself.
+      signal: AbortSignal.timeout(25_000),
+    });
   }
 
   private async json<T>(path: string, init?: RequestInit): Promise<T> {

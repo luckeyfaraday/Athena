@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from .hermes import HermesManager
 from .memory import HermesMemoryStore
 from .runtime import AdapterStatusCache
 from .safety import resolve_project_dir
+from .usage import UsageService, create_default_usage_service
 
 
 class MemoryStoreRequest(BaseModel):
@@ -44,6 +46,11 @@ class HermesAskRequest(BaseModel):
     timeout_seconds: float = Field(default=120, gt=0, le=600)
 
 
+class UsageRefreshRequest(BaseModel):
+    provider: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,31}$")
+    account_key: str | None = Field(default=None, max_length=80)
+
+
 ALL_SESSIONS_CACHE_TTL_SECONDS = float(os.environ.get("CONTEXT_WORKSPACE_SESSIONS_CACHE_TTL", "60"))
 # The cache key includes the caller-supplied search query, so without a cap a
 # client issuing many distinct queries would grow this dict without bound.
@@ -55,8 +62,17 @@ def create_app(
     memory: HermesMemoryStore | None = None,
     hermes: HermesManager | None = None,
     agent_executables: dict[str, str] | None = None,
+    usage: UsageService | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Context Workspace Backend")
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        try:
+            yield
+        finally:
+            # Stop scheduling usage probes and reap any codex app-server still running.
+            application.state.usage.shutdown()
+
+    app = FastAPI(title="Context Workspace Backend", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
@@ -75,6 +91,11 @@ def create_app(
     # coalesces cold misses across project and all-workspace callers instead of
     # allowing each surface to duplicate the scan concurrently.
     app.state.session_scan_lock = threading.Lock()
+    # Provider quota windows, shared by every client. Reads serve the cache and
+    # schedule due probes in the background; credentials never leave the service.
+    app.state.usage = usage or create_default_usage_service(
+        codex_executable=(agent_executables or {}).get("codex"),
+    )
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -295,6 +316,17 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/usage/accounts")
+    def usage_accounts() -> dict[str, Any]:
+        return app.state.usage.snapshot()
+
+    @app.post("/usage/refresh")
+    def refresh_usage(request: UsageRefreshRequest) -> dict[str, Any]:
+        try:
+            return app.state.usage.refresh(provider=request.provider, account_key=request.account_key)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Unknown usage account.") from exc
 
     return app
 

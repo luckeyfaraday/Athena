@@ -86,6 +86,11 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 - The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, grouped by provider, with Resume, Rename, and Focus actions.
 - Chat view renders agent output as chat bubbles instead of a raw terminal.
 
+### Subscription Usage
+
+- Title-bar chips show how much of each Claude and Codex subscription window is used; click one for the plan, account, every quota window with its reset countdown, and a manual refresh.
+- Every signed-in account is shown separately, so several accounts can be watched side by side (config homes signed into the same account are merged). See [Subscription Usage](#subscription-usage).
+
 ### Settings
 
 - Graphics mode (auto, safe, accelerated), backend and Electron control status, and terminal restore.
@@ -239,6 +244,8 @@ POST /memory/delete
 GET  /agents/adapters
 GET  /agents/sessions
 GET  /agents/sessions/{provider}/{session_id}/transcript
+GET  /usage/accounts
+POST /usage/refresh
 ```
 
 ## Testing
@@ -284,6 +291,44 @@ task or curated context is supplied, for example by Hermes through MCP. Athena
 does not write any files into your project directory.
 
 Athena also discovers native provider sessions already on disk, so previous Codex, OpenCode, Claude Code, Athena Code, and Hermes work can be resumed from the Sessions tab. Discovery runs off the main thread, only for the active workspace, and only while the Sessions tab is open.
+
+## Subscription Usage
+
+The backend reads the real subscription quotas of the CLIs you are already
+signed into. It never asks for a token and never signs in, refreshes, or
+switches accounts. The CLIs own their logins.
+
+| Provider | Source | Windows |
+|---|---|---|
+| Claude | The OAuth login Claude Code saved in `<config dir>/.credentials.json`, sent only to Anthropic's usage endpoint | Session (5-hour), Weekly, and any model-scoped weekly limits |
+| Codex | A short-lived `codex app-server` per `CODEX_HOME` (`account/rateLimits/read`) | Session, Weekly, and any extra limit buckets |
+
+Config homes are discovered, not configured: `CLAUDE_CONFIG_DIR` or `~/.claude`,
+profiles registered with claude-account-switcher, and `~/.claude-accounts/*`;
+`CODEX_HOME` or `~/.codex`, and `~/.codex-accounts/*`. Add other homes with
+`CONTEXT_WORKSPACE_USAGE_CLAUDE_HOMES` / `CONTEXT_WORKSPACE_USAGE_CODEX_HOMES`
+(`os.pathsep`-separated).
+
+Records are keyed by provider plus a hash of the account's stable identity, not
+by folder. Homes signed into one account share a record, a home that signs into
+another account starts a fresh one, and an account signed out everywhere drops
+its cached numbers. A probe whose home changed accounts mid-flight is discarded.
+
+`GET /usage/accounts` only reads the cache and schedules due probes in the
+background, so the desktop app, Athena Mobile, and any other client share one
+set of upstream calls: at most one per account per
+`CONTEXT_WORKSPACE_USAGE_REFRESH_SECONDS` (default 300, minimum 60).
+`POST /usage/refresh` (optional `provider` or `account_key`) forces a
+deduplicated re-read and waits up to 12 seconds. Failures back off, a 429 honors
+`Retry-After`, and a rejected or expired login is not retried until the CLI
+rewrites its credentials. Responses carry display fields only (email, plan,
+profile label, `~`-relative path), never tokens. A window whose reset time
+has passed is dropped rather than shown. Numbers that are not from a fresh
+reading are marked `stale`, and unknown quota is omitted, never shown as 0%.
+
+These are provider-reported limits. Local transcript token counts are a
+separate thing and are not mixed in. Claude Code on macOS keeps its login in the
+Keychain, which this does not read.
 
 ## Embedded Terminals
 

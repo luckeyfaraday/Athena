@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Minus, Square, X } from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus } from "./api";
 import {
@@ -20,6 +20,7 @@ import { AthenaMark } from "./components/AthenaMark";
 import { AgentInstallDialog } from "./components/AgentInstallDialog";
 import athenaMarkUrl from "./assets/athena-mark.png";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
+import { UsageMeters } from "./components/UsageMeters";
 import { CommandRoom } from "./rooms/CommandRoom";
 import { SettingsRoom } from "./rooms/SettingsRoom";
 import { roomRoutes, type ActiveRoom } from "./routes";
@@ -869,6 +870,7 @@ export function App() {
         activeRoom={activeRoom}
         backendOnline={Boolean(backend?.healthy)}
         controlOnline={Boolean(electronControl?.running)}
+        usage={<UsageMeters client={client} />}
         onNavigate={setActiveRoom}
       />
       <main className={shellFocus ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
@@ -973,11 +975,13 @@ function AppTitleBar({
   activeRoom,
   backendOnline,
   controlOnline,
+  usage,
   onNavigate,
 }: {
   activeRoom: ActiveRoom;
   backendOnline: boolean;
   controlOnline: boolean;
+  usage?: ReactNode;
   onNavigate: (room: ActiveRoom) => void;
 }) {
   return (
@@ -1011,9 +1015,12 @@ function AppTitleBar({
           </button>
         ))}
       </nav>
-      <div className="titleStatus" title={`Backend ${backendOnline ? "online" : "offline"} · Control ${controlOnline ? "online" : "offline"}`}>
-        <span className={backendOnline && controlOnline ? "online" : ""} />
-        {backendOnline ? (controlOnline ? "Ready" : "Control stale") : "Offline"}
+      <div className="titleEnd">
+        {usage}
+        <div className="titleStatus" title={`Backend ${backendOnline ? "online" : "offline"} · Control ${controlOnline ? "online" : "offline"}`}>
+          <span className={backendOnline && controlOnline ? "online" : ""} />
+          {backendOnline ? (controlOnline ? "Ready" : "Control stale") : "Offline"}
+        </div>
       </div>
     </header>
   );

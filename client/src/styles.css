@@ -1778,3 +1778,323 @@ html[data-theme="mono-light"] .appTitleBar .titleMark img {
   grid-auto-rows: max-content;
   align-content: start;
 }
+
+/* ---- Subscription usage: title-bar chips + detail panel ----
+   Layout selectors carry the extra .appTitleBar class so injected theme CSS
+   (which styles .titleStatus) cannot pull the status out of this group. */
+.appTitleBar .titleEnd {
+  grid-column: 4 / -1;
+  justify-self: end;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.appTitleBar .titleEnd .titleStatus { grid-column: auto; }
+.titleUsage {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.appTitleBar .usageChip {
+  height: 22px;
+  padding: 0 7px;
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 800;
+}
+.appTitleBar .usageChip:hover,
+.appTitleBar .usageChip[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.usageChip svg { flex: 0 0 auto; opacity: .85; }
+.usageChipLabel {
+  max-width: 76px;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.usageChip strong { font-variant-numeric: tabular-nums; }
+.usageChipTracks {
+  width: 24px;
+  display: grid;
+  gap: 2px;
+}
+.usageChipTracks .usageTrack { height: 2px; }
+.usageChip strong.usageChipState.status-expired,
+.usageChip strong.usageChipState.status-error,
+.usageChip strong.usageChipState.status-rate_limited,
+.usageChip strong.usageChipState.status-signed_out { color: var(--orange); }
+.usageChip:focus-visible,
+.usageIconButton:focus-visible,
+.usageTab:focus-visible,
+.usageRefresh:focus-visible,
+.usagePanel:focus-visible {
+  outline: 1px solid var(--accent, var(--orange));
+  outline-offset: 1px;
+}
+@media (max-width: 1180px) {
+  .usageChipLabel { display: none; }
+}
+@media (max-width: 960px) {
+  .usageChipTracks { display: none; }
+}
+.usageTrack {
+  position: relative;
+  height: 3px;
+  display: block;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+.usageTrack.large { height: 6px; }
+.usageFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width .4s ease;
+}
+.usageFill.usageLevel-mid { background: var(--orange); }
+.usageFill.usageLevel-high,
+.usageFill.usageLevel-full { background: var(--red); }
+strong.usageLevel-low { color: var(--text); }
+strong.usageLevel-mid { color: var(--orange); }
+strong.usageLevel-high,
+strong.usageLevel-full { color: var(--red); }
+/* A last-known reading is dimmed and hatched so it never passes for live. */
+.appTitleBar .usageChip.notLive { border-style: dashed; }
+.usageChip.notLive .usageFill,
+.usageWindows.stale .usageFill {
+  opacity: .45;
+  background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(0, 0, 0, .35) 3px 5px);
+}
+.usageChip.notLive strong { color: var(--muted); }
+
+.usagePanel {
+  -webkit-app-region: no-drag;
+  position: fixed;
+  top: 40px;
+  right: 12px;
+  z-index: 60;
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .45);
+  user-select: text;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.usagePanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.usagePanelHead > div { display: inline-flex; gap: 4px; }
+.usagePanelTitle {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.usagePanel .usageIconButton {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-2);
+}
+.usagePanel .usageIconButton:hover { color: var(--text); background: var(--panel-2); }
+.usageTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.usagePanel .usageTab {
+  height: 24px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 700;
+}
+.usagePanel .usageTab.active {
+  border-color: var(--line-strong);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.usageAccount { display: grid; gap: 10px; }
+.usageAccountHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.usageAccountHead > svg { margin-top: 2px; flex-shrink: 0; }
+.usageAccountHead > div { min-width: 0; display: grid; gap: 2px; }
+.usageAccountHead strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.usageAccountHead span,
+.usageAccountHead small {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.usageAccountHead small { color: var(--muted); font-size: 10px; }
+.usagePlan {
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.usageStatus {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 700;
+}
+.usageStatus strong { font-weight: inherit; }
+.usageStatus span { color: var(--muted); font-weight: 600; }
+.usageStatus i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.usageStatus.status-ok:not(.stale) i { background: var(--green); box-shadow: 0 0 10px var(--green); }
+.usageStatus.status-loading i { background: var(--text-2); animation: usagePulse 1.2s ease-in-out infinite; }
+.usageStatus.stale i,
+.usageStatus.status-stale i,
+.usageStatus.status-rate_limited i,
+.usageStatus.status-expired i { background: var(--orange); }
+.usageStatus.status-error i,
+.usageStatus.status-signed_out i { background: var(--red); }
+.usageMessage {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.usageMessage svg { margin-top: 2px; flex-shrink: 0; color: var(--orange); }
+.usageEmpty { margin: 0; color: var(--muted); font-size: 11px; }
+.usageWindows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 10px;
+}
+.usageWindow { display: grid; gap: 4px; }
+.usageWindowHead {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+}
+.usageWindowHead strong { font-variant-numeric: tabular-nums; }
+.usageWindow small { color: var(--muted); font-size: 10px; }
+.usageProfiles {
+  margin: 0;
+  display: grid;
+  gap: 3px;
+  font-size: 10px;
+}
+.usageProfiles dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.usageProfiles dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.usageProfiles code { color: var(--muted); font-size: 10px; }
+.usagePanelFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.usagePanel .usageRefresh {
+  height: 26px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.usageFootnote {
+  margin: 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  line-height: 1.4;
+}
+.usagePanel .spinning { animation: usageSpin 1s linear infinite; }
+@keyframes usageSpin { to { transform: rotate(360deg); } }
+@keyframes usagePulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .usagePanel .spinning,
+  .usageStatus.status-loading i { animation: none; }
+  .usageFill { transition: none; }
+}

@@ -81,9 +81,11 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 ### Command Room
 
 - Launch embedded shell, Hermes, Codex, OpenCode, Claude, Athena Code, and Grok panes.
-- Launch four-pane grids for parallel work; drag panes to reorder, resize, minimize, or maximize them.
+- Launch four-pane grids for parallel work; drag panes to reorder, resize, minimize, or maximize them (double-click a pane's title bar to maximize it).
+- Closing a running pane asks for a second click, so an agent is never killed by a stray click.
 - Shell Focus hides the surrounding chrome so terminals fill the window (Esc exits).
-- The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, grouped by provider, with Resume, Rename, and Focus actions.
+- The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, with search, provider filters, and Resume, Rename, Focus, and Hide actions.
+- Broadcast a prompt to every ready agent pane, or pick which ones receive it.
 - Chat view reads native user and assistant messages for Codex, Claude Code, OpenCode, Athena Code, Grok, and Hermes, with terminal output as a fallback. Replies retain Markdown, code blocks, and short answers. Use the pane's **Terminal** button for approvals, menus, and live tool output, then **Back to chat** to continue with your draft intact.
 
 ### Subscription Usage
@@ -91,12 +93,41 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 - Title-bar chips show how much of each Claude and Codex subscription window is used; click one for the plan, account, every quota window with its reset countdown, and a manual refresh.
 - Every signed-in account is shown separately, so several accounts can be watched side by side (config homes signed into the same account are merged). See [Subscription Usage](#subscription-usage).
 
+### Command Palette and Shortcuts
+
+Press **Ctrl+Shift+P** (**⌘⇧P** on macOS) for the command palette: launch any agent or grid, switch workspaces, jump to a pane, resume a native session, change theme (highlighting a theme previews it live), adjust density and terminal text, or open any Settings section. Recently used commands appear first.
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Shift+P | Command palette |
+| Ctrl+, | Settings |
+| Ctrl+Shift+T | New shell |
+| Ctrl+Shift+N | Launch an agent (opens the palette on the launch commands) |
+| Ctrl+Shift+F | Toggle Shell Focus |
+| Ctrl+Shift+S | Switch Terminals / Sessions |
+| Ctrl+Shift+M | Switch agent panes between terminal and chat view |
+| Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
+| Ctrl+1 … Ctrl+9 | Go to workspace 1–9 |
+
+On macOS, Ctrl becomes ⌘ except for Ctrl+Tab. App shortcuts avoid the bare Ctrl+letter keys that shells and agent TUIs use, so Ctrl+R, Ctrl+K, Ctrl+T and the rest still reach the terminal.
+
+### Themes
+
+Thirteen themes, each with its own 16-color terminal palette, plus **Match system**, which follows your OS light/dark setting:
+
+| Dark | Light |
+|---|---|
+| Classic, Nightfall, Fjord, Dusk, Ember, Neon, Solstice, Monolith, Press, Mono Dark, High Contrast | Daylight, Mono Light |
+
+Themes are sets of design tokens (`client/src/styles/themes.css`), so switching is instant and every text/background pair is checked against WCAG contrast in `tests/themes.test.mjs`. Settings > Appearance shows a live preview of each theme and also sets density (compact, default, comfortable) and the terminal font and size. Fonts ship with the app, so Athena makes no network requests for them and looks the same offline.
+
 ### Settings
 
-- Graphics mode (auto, safe, accelerated), backend and Electron control status, and terminal restore.
-- Interface mode (terminal or chat), theme, and Shell Focus defaults.
-- Hermes status and install, the MCP bridge connect helper, and detected agent CLIs.
-- Performance diagnostics for terminal throughput, event-loop lag, and agent processes.
+- Appearance: theme gallery, density, interface mode (terminal or chat), Shell Focus default, terminal font and size.
+- Workspace, notifications, and terminal restore.
+- Agents: detected agent CLIs with Install and Update, Hermes status and install, and the MCP bridge connect helper.
+- System: graphics mode (auto, safe, accelerated), backend and Electron control status.
+- Diagnostics for terminal throughput, event-loop lag, and agent processes, and a keyboard shortcut reference.
 
 ### Hermes MCP Integration
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog, powerMonitor, shell, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
+import { app, BrowserWindow, Menu, dialog, nativeTheme, powerMonitor, shell, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,7 @@ import {
   quarantineGraphicsAcceleration,
 } from "./graphics-state.js";
 import { getPreferences } from "./preferences.js";
+import { THEME_PREFERENCE_KEY, themeWindowBackground } from "./theme-window.js";
 import { shouldConfirmEmbeddedTerminalRestoreShutdown } from "./terminal-restore-policy.js";
 import { resolveNpmGlobalPrefix } from "./terminal-env.js";
 import type { IncomingMessage } from "node:http";
@@ -206,7 +207,7 @@ async function createWindow(): Promise<void> {
     ...(appIcon ? { icon: appIcon } : {}),
     frame: false,
     titleBarStyle: "hidden",
-    backgroundColor: "#07120f",
+    backgroundColor: themeWindowBackground(getPreferences()[THEME_PREFERENCE_KEY], nativeTheme.shouldUseDarkColors),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

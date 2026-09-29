@@ -1,7 +1,13 @@
 import { DragEvent, memo, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
+import type { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal, type ILink, type ITheme } from "@xterm/xterm";
+import {
+  getTerminalAppearance,
+  subscribeTerminalAppearance,
+  terminalFontFamily,
+  type TerminalAppearance,
+} from "../terminal-appearance";
 import {
   desktop,
   type EmbeddedTerminalDataPayload,
@@ -21,6 +27,32 @@ type FitRequest = { refresh?: boolean; focus?: boolean };
 const EXIT_STREAM_RECOVERY_MS = 2_500;
 
 let webglRendererAllowed: Promise<boolean> | null = null;
+let webglModule: Promise<typeof import("@xterm/addon-webgl")> | null = null;
+
+// The WebGL addon is only fetched and parsed when accelerated graphics can use
+// it, keeping it off the startup path (and out of crash-safe mode entirely).
+function loadWebglAddon(): Promise<typeof import("@xterm/addon-webgl")> {
+  webglModule ??= import("@xterm/addon-webgl").catch((error) => {
+    webglModule = null;
+    throw error;
+  });
+  return webglModule;
+}
+
+// Wait for a bundled web font before xterm measures its cell size; measuring
+// the fallback font first leaves glyphs misaligned until the next resize.
+function whenTerminalFontReady(appearance: TerminalAppearance): Promise<void> {
+  const family = terminalFontFamily(appearance.font).split(",")[0]?.trim();
+  if (!family || typeof document.fonts?.load !== "function") return Promise.resolve();
+  const spec = `${appearance.fontSize}px ${family}`;
+  try {
+    if (document.fonts.check(spec)) return Promise.resolve();
+  } catch {
+    return Promise.resolve();
+  }
+  const timeout = new Promise<void>((resolve) => window.setTimeout(resolve, 1_500));
+  return Promise.race([document.fonts.load(spec).then(() => undefined, () => undefined), timeout]);
+}
 
 // xterm's default DOM renderer re-lays out every changed row. When Chromium is
 // running with GPU acceleration, the WebGL renderer draws the grid on the GPU
@@ -75,15 +107,16 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
     const container = containerRef.current;
     if (!container) return;
 
+    const initialAppearance = getTerminalAppearance();
     const terminal = new Terminal({
       // Blinking cursors keep xterm repainting even when output is idle. Keep
       // this disabled in both accelerated and crash-safe graphics modes so a
       // workspace with several visible panes remains genuinely idle.
       cursorBlink: false,
       cursorStyle: "block",
-      fontFamily: "'Cascadia Mono', 'SFMono-Regular', Consolas, monospace",
-      fontSize: 10,
-      lineHeight: 1.25,
+      fontFamily: terminalFontFamily(initialAppearance.font),
+      fontSize: initialAppearance.fontSize,
+      lineHeight: 1.2,
       scrollback: 2000,
       convertEol: false,
       theme: readTerminalTheme(),
@@ -95,29 +128,52 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
         callback(detectExternalLinks(terminal, bufferLineNumber));
       },
     });
-    terminal.open(container);
     terminalRef.current = terminal;
     fitRef.current = fit;
     let disposed = false;
+    let opened = false;
     let webgl: WebglAddon | null = null;
-    void allowWebglRenderer().then((allowed) => {
-      if (!allowed || disposed) return;
-      try {
-        const addon = new WebglAddon();
-        // Chromium caps live WebGL contexts per page; when one is reclaimed,
-        // fall back to the DOM renderer for this pane.
-        addon.onContextLoss(() => {
-          addon.dispose();
-          if (webgl === addon) webgl = null;
-          // DOM and WebGL renderers measure cells differently; refit.
-          if (!disposed) scheduleFit({ refresh: true });
-        });
-        terminal.loadAddon(addon);
-        webgl = addon;
+    // Output that arrives before open() is parsed into the buffer and painted on open.
+    const openTerminal = () => {
+      if (disposed || opened) return;
+      opened = true;
+      terminal.open(container);
+      scheduleFit({ refresh: true, focus: activeRef.current });
+      void allowWebglRenderer().then(async (allowed) => {
+        if (!allowed || disposed) return;
+        let WebglAddonClass: typeof WebglAddon;
+        try {
+          WebglAddonClass = (await loadWebglAddon()).WebglAddon;
+        } catch {
+          return;
+        }
+        if (disposed) return;
+        try {
+          const addon = new WebglAddonClass();
+          // Chromium caps live WebGL contexts per page; when one is reclaimed,
+          // fall back to the DOM renderer for this pane.
+          addon.onContextLoss(() => {
+            addon.dispose();
+            if (webgl === addon) webgl = null;
+            // DOM and WebGL renderers measure cells differently; refit.
+            if (!disposed) scheduleFit({ refresh: true });
+          });
+          terminal.loadAddon(addon);
+          webgl = addon;
+          scheduleFit({ refresh: true });
+        } catch {
+          // WebGL2 unavailable (e.g. blocklisted GPU); the DOM renderer stays active.
+        }
+      });
+    };
+    void whenTerminalFontReady(initialAppearance).then(openTerminal);
+    const removeAppearance = subscribeTerminalAppearance((next) => {
+      void whenTerminalFontReady(next).then(() => {
+        if (disposed) return;
+        terminal.options.fontFamily = terminalFontFamily(next.font);
+        terminal.options.fontSize = next.fontSize;
         scheduleFit({ refresh: true });
-      } catch {
-        // WebGL2 unavailable (e.g. blocklisted GPU); the DOM renderer stays active.
-      }
+      });
     });
     let writeInFlight = false;
     let attachResolved = false;
@@ -316,7 +372,7 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
         pendingFitRequest = {};
         fitVisibleTerminal(container, terminal, fit, session.id, lastResizeRef);
         if (next.refresh) refreshTerminal(terminal);
-        if (next.focus && activeRef.current) terminal.focus();
+        if (next.focus && activeRef.current && terminalMayTakeFocus(container)) terminal.focus();
       });
     };
     scheduleFitRef.current = scheduleFit;
@@ -329,7 +385,7 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
       terminal.options.theme = readTerminalTheme();
       scheduleFit({ refresh: true });
     });
-    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-theme-loaded"] });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     const stopWheelPropagation = (event: WheelEvent) => {
       if (!terminalUsesMouseWheelProtocol(container)) return;
@@ -345,6 +401,7 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
       beforeAttach.length = 0;
       container.removeEventListener("wheel", stopWheelPropagation);
       removeWindowReturn();
+      removeAppearance();
       if (fitFrame) window.cancelAnimationFrame(fitFrame);
       observer.disconnect();
       themeObserver.disconnect();
@@ -486,6 +543,22 @@ function fitVisibleTerminal(
   }
 }
 
+// Panes focus themselves when they mount, become active, or the window comes
+// back. Never do that under an open dialog (the palette, a rename) or out of
+// a text field the user is typing in, or keystrokes meant for it would land
+// in an agent's terminal. Moving focus between terminals is fine.
+function terminalMayTakeFocus(container: HTMLElement): boolean {
+  if (document.querySelector('[aria-modal="true"]')) return false;
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || focused === document.body || container.contains(focused)) return true;
+  if (focused.closest(".xterm")) return true;
+  const typing = focused instanceof HTMLInputElement
+    || focused instanceof HTMLTextAreaElement
+    || focused instanceof HTMLSelectElement
+    || focused.isContentEditable;
+  return !typing;
+}
+
 function hasUsableTerminalSize(container: HTMLDivElement): boolean {
   const rect = container.getBoundingClientRect();
   return rect.width >= 160 && rect.height >= 80;
@@ -514,23 +587,36 @@ function quoteTerminalPath(path: string): string {
   return `"${path.replace(/(["\\$`])/g, "\\$1")}"`;
 }
 
+// The terminal follows the active theme: every theme defines a full 16-color
+// ANSI palette (styles/themes.css) tuned for its own background.
 function readTerminalTheme(): ITheme {
   const root = getComputedStyle(document.documentElement);
   const value = (name: string, fallback: string) => root.getPropertyValue(name).trim() || fallback;
-  const accent = value("--accent", value("--blue", "#60a5fa"));
+  const accent = value("--accent", "#60a5fa");
+  const background = value("--terminal", "#03050a");
   return {
-    background: value("--terminal", "#03050a"),
+    background,
     foreground: value("--text", "#dbeafe"),
     cursor: accent,
-    selectionBackground: colorMix(accent, 0.28),
-    black: "#020617",
-    blue: value("--blue", "#60a5fa"),
-    cyan: accent,
-    green: value("--green", "#22c55e"),
-    magenta: value("--violet", "#a78bfa"),
-    red: value("--red", "#fb7185"),
-    white: value("--text", "#e2e8f0"),
-    yellow: value("--orange", "#f59e0b"),
+    cursorAccent: background,
+    selectionBackground: colorMix(accent, 0.3),
+    selectionInactiveBackground: colorMix(accent, 0.16),
+    black: value("--ansi-black", "#020617"),
+    red: value("--ansi-red", "#fb7185"),
+    green: value("--ansi-green", "#22c55e"),
+    yellow: value("--ansi-yellow", "#f59e0b"),
+    blue: value("--ansi-blue", "#60a5fa"),
+    magenta: value("--ansi-magenta", "#a78bfa"),
+    cyan: value("--ansi-cyan", "#22d3ee"),
+    white: value("--ansi-white", "#e2e8f0"),
+    brightBlack: value("--ansi-bright-black", "#64748b"),
+    brightRed: value("--ansi-bright-red", "#fda4af"),
+    brightGreen: value("--ansi-bright-green", "#86efac"),
+    brightYellow: value("--ansi-bright-yellow", "#fcd34d"),
+    brightBlue: value("--ansi-bright-blue", "#93c5fd"),
+    brightMagenta: value("--ansi-bright-magenta", "#c4b5fd"),
+    brightCyan: value("--ansi-bright-cyan", "#67e8f9"),
+    brightWhite: value("--ansi-bright-white", "#f8fafc"),
   };
 }
 

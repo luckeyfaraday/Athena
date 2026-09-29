@@ -1,0 +1,182 @@
+/* ════════════════════════════════════════════════════════════════════════════
+   ATHENA DESIGN TOKENS
+   Every component reads these custom properties; a theme is only a block of
+   token overrides in themes.css. Declaring the defaults and the derived
+   tokens on every [data-theme] element (not just :root) lets any subtree be
+   re-themed, which is how Settings renders live previews of every theme.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+:root,
+[data-theme] {
+  color-scheme: dark;
+
+  /* ── Palette (Classic: Athena forest + gold) ── */
+  --bg: #0b1712;
+  --app-backdrop:
+    radial-gradient(circle at 8% 6%, rgba(46, 90, 70, .30), transparent 36%),
+    linear-gradient(135deg, #0f1c16 0%, #07120f 100%);
+  --titlebar-bg: linear-gradient(180deg, #13231c 0%, #0a1611 100%);
+  --surface-1: #10201a;
+  --surface-2: #152a21;
+  --surface-3: #1d3a2d;
+  --surface-sunken: #081310;
+  --surface-overlay: #13261e;
+  --terminal: #06110d;
+  --border: rgba(243, 237, 227, .10);
+  --border-strong: rgba(243, 237, 227, .20);
+  --text: #f3ede3;
+  --text-2: #d4ccba;
+  --text-muted: #a39c8a;
+  --text-faint: #6f6a5c;
+  --accent: #d9c48a;
+  --accent-fg: #13201a;
+  --ok: #5bb287;
+  --warn: #e0b653;
+  --danger: #d9705e;
+  --info: #6fb3d9;
+  --shadow-color: rgba(0, 0, 0, .42);
+  --scrim: rgba(3, 10, 8, .62);
+  --mark-filter: none;
+
+  /* Agent identity colors (badges, pane accents, launch cards) */
+  --agent-codex: #7cc4ff;
+  --agent-claude: #f0a36b;
+  --agent-opencode: #7fdca0;
+  --agent-hermes: #e59cf4;
+  --agent-athena: #d9c48a;
+  --agent-grok: #c8ccd6;
+  --agent-shell: #9fb4a8;
+
+  /* Terminal ANSI palette */
+  --ansi-black: #0c1a14;
+  --ansi-red: #d9705e;
+  --ansi-green: #6cbf8f;
+  --ansi-yellow: #e0c27a;
+  --ansi-blue: #6fa8c9;
+  --ansi-magenta: #c48bb0;
+  --ansi-cyan: #6fc2b5;
+  --ansi-white: #d9d1bf;
+  --ansi-bright-black: #52705f;
+  --ansi-bright-red: #f08c78;
+  --ansi-bright-green: #8fdcad;
+  --ansi-bright-yellow: #f3d99a;
+  --ansi-bright-blue: #92c3e0;
+  --ansi-bright-magenta: #dfa8cc;
+  --ansi-bright-cyan: #8fdccf;
+  --ansi-bright-white: #f7f2e8;
+
+  /* ── Typography ── */
+  --font-ui: "Manrope Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-ui);
+  --font-mono: "JetBrains Mono Variable", "Cascadia Mono", ui-monospace, "SF Mono", Consolas, monospace;
+  --font-label: var(--font-ui);
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 24px;
+  --weight-regular: 450;
+  --weight-medium: 560;
+  --weight-strong: 680;
+  --weight-heading: 720;
+  --label-transform: uppercase;
+  --label-tracking: .08em;
+  --label-weight: 700;
+  --heading-tracking: -.01em;
+
+  /* ── Shape ── */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius: 7px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --focus-width: 2px;
+
+  /* ── Density (overridden by [data-density]) ── */
+  --control-h: 30px;
+  --control-h-sm: 26px;
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 24px;
+  --titlebar-h: 38px;
+
+  /* ── Motion ── */
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --dur-3: 240ms;
+
+  /* ── Derived: recomputed in every theme scope from the palette above ── */
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, var(--text));
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 48%, transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 26%, transparent);
+  --ok-soft: color-mix(in srgb, var(--ok) 14%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 15%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 14%, transparent);
+  --info-soft: color-mix(in srgb, var(--info) 14%, transparent);
+  --hover: color-mix(in srgb, var(--text) 6%, transparent);
+  --pressed: color-mix(in srgb, var(--text) 10%, transparent);
+  --focus-ring: 0 0 0 var(--focus-width) var(--accent-line);
+  --shadow-sm: 0 1px 2px var(--shadow-color);
+  --shadow-md: 0 8px 24px var(--shadow-color);
+  --shadow-lg: 0 24px 72px var(--shadow-color);
+  --selection: color-mix(in srgb, var(--accent) 28%, transparent);
+
+  /* ── Legacy aliases (chat.css, usage meters, older selectors) ── */
+  --panel: var(--surface-1);
+  --panel-2: var(--surface-2);
+  --panel-3: var(--surface-3);
+  --surface: var(--surface-overlay);
+  --sidebar: var(--surface-1);
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --muted: var(--text-muted);
+  --faint: var(--text-faint);
+  --green: var(--ok);
+  --green-soft: var(--ok-soft);
+  --orange: var(--warn);
+  --orange-soft: var(--warn-soft);
+  --red: var(--danger);
+  --red-soft: var(--danger-soft);
+  --blue: var(--info);
+  --blue-soft: var(--info-soft);
+  --violet: var(--agent-hermes);
+  --violet-soft: color-mix(in srgb, var(--agent-hermes) 14%, transparent);
+  --gold: var(--accent);
+  --gold-soft: var(--accent-soft);
+}
+
+[data-density="compact"] {
+  --control-h: 26px;
+  --control-h-sm: 22px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --titlebar-h: 34px;
+}
+
+[data-density="comfortable"] {
+  --control-h: 34px;
+  --control-h-sm: 28px;
+  --space-3: 10px;
+  --space-4: 14px;
+  --space-5: 20px;
+  --space-6: 28px;
+  --titlebar-h: 42px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  [data-theme] {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+  }
+}

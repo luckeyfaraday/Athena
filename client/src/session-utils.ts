@@ -1,8 +1,8 @@
 import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "./electron";
-import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
-import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils";
+import { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys.ts";
+import { normalizeWorkspaceKey, sameWorkspacePath } from "./workspace-utils.ts";
 
-export { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys";
+export { agentSessionKey, appendEmbeddedSessions, embeddedSessionKey, selectedAgentSessionKey } from "./session-rename-keys.ts";
 
 export type SessionProviderFilter = AgentSession["provider"] | "all";
 
@@ -137,4 +137,73 @@ export function formatSessionTime(value: string): string {
   if (!Number.isFinite(timestamp)) return "unknown";
   const ageSeconds = Math.max(0, (Date.now() - timestamp) / 1000);
   return formatAge(ageSeconds);
+}
+
+// Friendlier relative time for the Sessions list ("3 min ago", "yesterday").
+export function formatRelativeTime(value: string, now = Date.now()): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  if (hours < 48) return "yesterday";
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) {
+    const weeks = Math.floor(days / 7);
+    return weeks === 1 ? "last week" : `${weeks} weeks ago`;
+  }
+  const date = new Date(timestamp);
+  const sameYear = date.getFullYear() === new Date(now).getFullYear();
+  return date.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+}
+
+export function formatAbsoluteTime(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString() : "Unknown time";
+}
+
+// Every whitespace-separated term must appear in the title, id, branch, model, agent or provider.
+export function matchesSessionQuery(session: AgentSession, query: string): boolean {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  const haystack = [session.title, session.id, session.branch, session.model, session.agent, providerLabel(session.provider)]
+    .filter((part): part is string => Boolean(part))
+    .join(" ")
+    .toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
+// sessionInstanceNumber for every pane at once: the pane's number among panes of
+// its kind in its workspace, and how many such panes there are.
+export function paneInstanceNumbers(sessions: EmbeddedTerminalSession[]): Map<string, { number: number; total: number }> {
+  const groups = new Map<string, EmbeddedTerminalSession[]>();
+  for (const session of sessions) {
+    const workspaceKey = normalizeWorkspaceKey(session.workspace);
+    if (!workspaceKey) continue;
+    const key = `${session.kind}|${workspaceKey}`;
+    const group = groups.get(key);
+    if (group) group.push(session);
+    else groups.set(key, [session]);
+  }
+  const numbers = new Map<string, { number: number; total: number }>();
+  for (const session of sessions) numbers.set(session.id, { number: 1, total: 1 });
+  for (const group of groups.values()) {
+    group.sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id));
+    group.forEach((session, index) => numbers.set(session.id, { number: index + 1, total: group.length }));
+  }
+  return numbers;
+}
+
+export function paneStatusLabel(session: EmbeddedTerminalSession): string {
+  if (session.status === "running") return "Running";
+  if (session.status === "failed") return session.error ? `Failed: ${session.error}` : "Failed";
+  return session.exitCode == null ? "Exited" : `Exited with code ${session.exitCode}`;
+}
+
+export function workspaceFolderName(workspace: string): string {
+  return workspace.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean).at(-1) ?? workspace;
 }

@@ -348,12 +348,12 @@ const browserFallback: WorkspaceApi = {
     return {
       id,
       epoch: "preview",
-      buffer: "[preview terminal buffer]\\r\\n$ ",
+      buffer: "[preview terminal buffer]\r\n$ ",
       throughSequence: 0,
     };
   },
   ackEmbeddedTerminalData() {},
-  async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
+  async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\r\n$ "; },
   async getPerformanceDiagnostics() {
     return {
       activeTerminals: 0,

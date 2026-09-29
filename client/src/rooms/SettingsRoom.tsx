@@ -1,6 +1,30 @@
-import { Bell, BellOff, Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare, Volume2 } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  Activity,
+  Bell,
+  BellOff,
+  Bot,
+  Check,
+  Copy,
+  Download,
+  FolderOpen,
+  Keyboard,
+  Maximize2,
+  MessageSquare,
+  Minus,
+  Palette,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Server,
+  TerminalSquare,
+  Volume2,
+} from "lucide-react";
+import "./settings.css";
 import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus } from "../api";
-import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, StatusPill } from "../components/status";
+import { AgentGlyph } from "../components/AgentGlyph";
+import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, StatusPill, type StatusTone } from "../components/status";
+import { ThemePreviewCard } from "../components/ThemePreviewCard";
 import type {
   AgentCliKind,
   AgentCliReport,
@@ -10,7 +34,18 @@ import type {
   GraphicsRuntimeStatus,
   PerformanceDiagnostics,
 } from "../electron";
-import type { UiTheme } from "../ui-preferences";
+import { settingsSections, type SettingsSection } from "../settings-sections";
+import { shortcutReference } from "../shortcuts";
+import {
+  defaultTerminalAppearance,
+  maxTerminalFontSize,
+  minTerminalFontSize,
+  terminalFontFamily,
+  terminalFonts,
+  type TerminalAppearance,
+} from "../terminal-appearance";
+import { systemThemes, themeDefinition, themes, type ThemeId, type ThemePreference } from "../themes";
+import type { Density } from "../ui-preferences";
 import type {
   AttentionSoundStyle,
   NotificationLevel,
@@ -18,12 +53,22 @@ import type {
   WorkspaceAttentionKind,
 } from "../workspace-attention";
 
-const themeOptions: Array<{ id: UiTheme; label: string }> = [
-  { id: "classic", label: "Classic" },
-  { id: "monolith", label: "Monolith" },
-  { id: "press", label: "Press" },
-  { id: "mono-light", label: "Mono Light" },
-  { id: "mono-dark", label: "Mono Dark" },
+export type { SettingsSection } from "../settings-sections";
+
+const sectionIcons: Record<SettingsSection, ReactNode> = {
+  appearance: <Palette size={15} />,
+  workspace: <FolderOpen size={15} />,
+  notifications: <Bell size={15} />,
+  agents: <Bot size={15} />,
+  system: <Server size={15} />,
+  diagnostics: <Activity size={15} />,
+  shortcuts: <Keyboard size={15} />,
+};
+
+const densityOptions: Array<{ id: Density; label: string }> = [
+  { id: "compact", label: "Compact" },
+  { id: "default", label: "Default" },
+  { id: "comfortable", label: "Comfortable" },
 ];
 
 const notificationLevelOptions: Array<{ id: NotificationLevel; label: string }> = [
@@ -49,8 +94,17 @@ const HERMES_BRIDGE_SNIPPET = `mcp_servers:
     env:
       CONTEXT_WORKSPACE_BACKEND_STATE: "~/.context-workspace/backend.json"`;
 
+// "Match system" first, then every theme in registry order.
+const themeChoices: ThemePreference[] = ["system", ...themes.map((theme) => theme.id)];
+
 function copyToClipboard(text: string): Promise<void> {
   return navigator.clipboard?.writeText(text) ?? Promise.resolve();
+}
+
+function worseTone(a: StatusTone, b: StatusTone): StatusTone {
+  if (a === "bad" || b === "bad") return "bad";
+  if (a === "warn" || b === "warn") return "warn";
+  return "ok";
 }
 
 export function SettingsRoom({
@@ -63,6 +117,7 @@ export function SettingsRoom({
   installingHermes,
   interfaceMode,
   uiTheme,
+  resolvedTheme,
   terminalFocus,
   performance,
   launchState,
@@ -83,6 +138,12 @@ export function SettingsRoom({
   notificationPreferences,
   onNotificationPreferencesChange,
   onPreviewAttentionSound,
+  density,
+  onDensityChange,
+  terminalAppearance,
+  onTerminalAppearanceChange,
+  section,
+  onSectionChange,
 }: {
   workspace: string;
   backend: BackendStatus | null;
@@ -92,7 +153,9 @@ export function SettingsRoom({
   busy: boolean;
   installingHermes: boolean;
   interfaceMode: "terminal" | "chat";
-  uiTheme: UiTheme;
+  uiTheme: ThemePreference;
+  // what "system" currently resolves to
+  resolvedTheme: ThemeId;
   terminalFocus: boolean;
   performance: PerformanceDiagnostics | null;
   launchState: AthenaLaunchState | null;
@@ -109,15 +172,591 @@ export function SettingsRoom({
   onAgentSetup: (kind: AgentCliKind, action: AgentSetupAction) => void;
   onRefreshDiagnostics: () => Promise<void>;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
-  onThemeChange: (theme: UiTheme) => void;
+  onThemeChange: (theme: ThemePreference) => void;
   onTerminalFocusChange: (focused: boolean) => void;
   onGraphicsPreferenceChange: (preference: GraphicsPreference) => void;
   notificationPreferences: NotificationPreferences;
   onNotificationPreferencesChange: (preferences: NotificationPreferences) => void;
   onPreviewAttentionSound: (kind: WorkspaceAttentionKind) => void;
+  density: Density;
+  onDensityChange: (density: Density) => void;
+  terminalAppearance: TerminalAppearance;
+  onTerminalAppearanceChange: (next: TerminalAppearance) => void;
+  // controlled so the command palette can deep-link into a section
+  section: SettingsSection;
+  onSectionChange: (section: SettingsSection) => void;
 }) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const backendStatus = backendStatusView(backend);
   const electronControlStatus = electronControlStatusView(electronControl);
+  const systemTone = worseTone(backendStatus.tone, electronControlStatus.tone);
+  const agentsMissing = Boolean(agentClis?.agents.some((agent) => !agent.installed));
+  const activeSection = settingsSections.find((item) => item.id === section) ?? settingsSections[0];
+
+  // A new section starts at its top, not wherever the last one was scrolled to.
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0 });
+  }, [section]);
+
+  function navDot(id: SettingsSection): ReactNode {
+    if (id === "system" && systemTone !== "ok") {
+      return <span className={`settingsNavDot ${systemTone}`} title={systemTone === "bad" ? "A service is offline" : "A service is starting"} />;
+    }
+    if (id === "agents" && agentsMissing) {
+      return <span className="settingsNavDot warn" title="Some agent CLIs are not installed" />;
+    }
+    return null;
+  }
+
+  return (
+    <section className="roomPanel settingsRoom">
+      <nav className="settingsNav" aria-label="Settings sections">
+        <div className="settingsNavTitle">
+          <span className="eyebrow">Athena</span>
+          <strong>Settings</strong>
+        </div>
+        <ul>
+          {settingsSections.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                className={item.id === activeSection.id ? "active" : ""}
+                aria-current={item.id === activeSection.id ? "page" : undefined}
+                onClick={() => onSectionChange(item.id)}
+              >
+                {sectionIcons[item.id]}
+                <span>{item.label}</span>
+                {navDot(item.id)}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <div className="settingsContent" ref={contentRef}>
+        <div className="settingsContentInner">
+          <header className="settingsSectionHeader">
+            <h2>{activeSection.label}</h2>
+            <p>{activeSection.description}</p>
+          </header>
+
+          {activeSection.id === "appearance" && (
+            <AppearanceSection
+              uiTheme={uiTheme}
+              resolvedTheme={resolvedTheme}
+              density={density}
+              interfaceMode={interfaceMode}
+              terminalFocus={terminalFocus}
+              terminalAppearance={terminalAppearance}
+              onThemeChange={onThemeChange}
+              onDensityChange={onDensityChange}
+              onInterfaceModeChange={onInterfaceModeChange}
+              onTerminalFocusChange={onTerminalFocusChange}
+              onTerminalAppearanceChange={onTerminalAppearanceChange}
+            />
+          )}
+
+          {activeSection.id === "workspace" && (
+            <>
+              <SettingsGroup title="Project">
+                <SettingsRow
+                  label="Current workspace"
+                  help={workspace ? <code className="settingsPath">{workspace}</code> : "No workspace selected. Agents and shells start in this folder."}
+                >
+                  <button className="ghostButton" type="button" onClick={() => void onSelectWorkspace()}>
+                    <FolderOpen size={14} /> Change
+                  </button>
+                </SettingsRow>
+              </SettingsGroup>
+              <SettingsGroup title="Terminal restore">
+                <SettingsRow
+                  label="Restore terminals on launch"
+                  help={launchState?.terminalRestorePaused
+                    ? `Paused after the previous launch did not exit cleanly${launchState.previousCrashAt ? ` (${launchState.previousCrashAt})` : ""}. Enabling starts fresh.`
+                    : "Saved terminals come back when a workspace is opened or selected."}
+                >
+                  <div className="settingsControlCluster">
+                    <StatusPill tone={launchState?.terminalRestorePaused ? "warn" : "ok"}>
+                      {launchState?.terminalRestorePaused ? "Paused" : "Enabled"}
+                    </StatusPill>
+                    {launchState?.terminalRestorePaused && (
+                      <button className="ghostButton" type="button" onClick={() => void onClearTerminalRestorePause()} disabled={busy}>
+                        <RefreshCw size={14} /> Enable restore
+                      </button>
+                    )}
+                  </div>
+                </SettingsRow>
+              </SettingsGroup>
+            </>
+          )}
+
+          {activeSection.id === "notifications" && (
+            <NotificationsSection
+              preferences={notificationPreferences}
+              onChange={onNotificationPreferencesChange}
+              onPreview={onPreviewAttentionSound}
+            />
+          )}
+
+          {activeSection.id === "agents" && (
+            <AgentsSection
+              adapters={adapters}
+              agentClis={agentClis}
+              busy={busy}
+              canRunSetup={canRunSetup}
+              hermes={hermes}
+              installingHermes={installingHermes}
+              onAgentSetup={onAgentSetup}
+              onInstallHermes={onInstallHermes}
+            />
+          )}
+
+          {activeSection.id === "system" && (
+            <>
+              <SettingsGroup title="Services">
+                <SettingsRow
+                  label="Backend"
+                  help={backend?.baseUrl ? <code className="settingsPath">{backend.baseUrl}</code> : (backend?.lastError ?? "Not connected")}
+                >
+                  <div className="settingsControlCluster">
+                    <StatusPill tone={backendStatus.tone}>{backendStatus.label}</StatusPill>
+                    <button className="ghostButton" type="button" onClick={() => void onRestartBackend()} disabled={busy}>
+                      <RefreshCw size={14} className={busy ? "spinning" : undefined} /> {busy ? "Restarting" : "Restart"}
+                    </button>
+                  </div>
+                </SettingsRow>
+                <SettingsRow
+                  label="Electron control"
+                  help={electronControl?.lastError ?? (electronControl?.baseUrl ? <code className="settingsPath">{electronControl.baseUrl}</code> : "Not connected")}
+                >
+                  <div className="settingsControlCluster">
+                    <StatusPill tone={electronControlStatus.tone}>{electronControlStatus.label}</StatusPill>
+                    <button className="ghostButton" type="button" onClick={() => void onRestartControl()} disabled={busy}>
+                      <RefreshCw size={14} className={busy ? "spinning" : undefined} /> {busy ? "Restarting" : "Restart"}
+                    </button>
+                  </div>
+                </SettingsRow>
+              </SettingsGroup>
+              <SettingsGroup title="Graphics">
+                <SettingsRow
+                  label="Rendering mode"
+                  help={graphics
+                    ? `${graphics.mode === "accelerated" ? "Hardware acceleration is active." : "Crash-safe software mode is active."} ${graphics.reason}${graphics.restartRequired ? " Restart Athena to apply the selected mode." : ""}`
+                    : "Graphics status unavailable."}
+                >
+                  <div className="segmentedControl" role="group" aria-label="Graphics mode">
+                    {(["auto", "safe", "accelerated"] as GraphicsPreference[]).map((preference) => (
+                      <button
+                        key={preference}
+                        type="button"
+                        className={graphics?.preference === preference ? "active" : ""}
+                        aria-pressed={graphics?.preference === preference}
+                        onClick={() => onGraphicsPreferenceChange(preference)}
+                        title={preference === "accelerated" ? "Retry acceleration and automatically quarantine it after a GPU-process crash" : undefined}
+                      >
+                        {preference === "safe" ? "Safe" : preference === "accelerated" ? "Accelerated" : "Auto"}
+                      </button>
+                    ))}
+                  </div>
+                </SettingsRow>
+              </SettingsGroup>
+            </>
+          )}
+
+          {activeSection.id === "diagnostics" && (
+            <DiagnosticsSection performance={performance} onRefresh={onRefreshDiagnostics} />
+          )}
+
+          {activeSection.id === "shortcuts" && <ShortcutsSection />}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SettingsGroup({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="settingsGroup">
+      <div className="settingsGroupHead">
+        <h3>{title}</h3>
+        {actions}
+      </div>
+      <div className="settingsGroupBody">{children}</div>
+    </section>
+  );
+}
+
+function SettingsRow({
+  label,
+  help,
+  children,
+  wide = false,
+  labelId,
+}: {
+  label: string;
+  help?: ReactNode;
+  children?: ReactNode;
+  // control spans the full row under the label
+  wide?: boolean;
+  labelId?: string;
+}) {
+  return (
+    <div className={wide ? "settingsRow wide" : "settingsRow"}>
+      <div className="settingsRowLabel">
+        <strong id={labelId}>{label}</strong>
+        {help ? <span>{help}</span> : null}
+      </div>
+      {children ? <div className="settingsRowControl">{children}</div> : null}
+    </div>
+  );
+}
+
+function AppearanceSection({
+  uiTheme,
+  resolvedTheme,
+  density,
+  interfaceMode,
+  terminalFocus,
+  terminalAppearance,
+  onThemeChange,
+  onDensityChange,
+  onInterfaceModeChange,
+  onTerminalFocusChange,
+  onTerminalAppearanceChange,
+}: {
+  uiTheme: ThemePreference;
+  resolvedTheme: ThemeId;
+  density: Density;
+  interfaceMode: "terminal" | "chat";
+  terminalFocus: boolean;
+  terminalAppearance: TerminalAppearance;
+  onThemeChange: (theme: ThemePreference) => void;
+  onDensityChange: (density: Density) => void;
+  onInterfaceModeChange: (mode: "terminal" | "chat") => void;
+  onTerminalFocusChange: (focused: boolean) => void;
+  onTerminalAppearanceChange: (next: TerminalAppearance) => void;
+}) {
+  const cardRefs = useRef(new Map<ThemePreference, HTMLButtonElement>());
+
+  // Radio-group keyboard model: arrows move the selection (and apply it).
+  function handleThemeKeyDown(event: KeyboardEvent<HTMLButtonElement>, current: ThemePreference) {
+    const index = themeChoices.indexOf(current);
+    let next: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % themeChoices.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index - 1 + themeChoices.length) % themeChoices.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = themeChoices.length - 1;
+    if (next == null) return;
+    event.preventDefault();
+    const choice = themeChoices[next];
+    onThemeChange(choice);
+    cardRefs.current.get(choice)?.focus();
+  }
+
+  function bindCard(choice: ThemePreference) {
+    return (element: HTMLButtonElement | null) => {
+      if (element) cardRefs.current.set(choice, element);
+      else cardRefs.current.delete(choice);
+    };
+  }
+
+  const fontSize = terminalAppearance.fontSize;
+  const selectedTheme = uiTheme === "system" ? null : themeDefinition(uiTheme);
+
+  return (
+    <>
+      <SettingsGroup
+        title="Theme"
+        actions={<span className="settingsGroupNote">{uiTheme === "system" ? `Following your system: ${themeDefinition(resolvedTheme).label}` : selectedTheme?.label}</span>}
+      >
+        <div className="themeGallery" role="radiogroup" aria-label="Theme">
+          <ThemePreviewCard
+            cardRef={bindCard("system")}
+            label="Match system"
+            description={`${themeDefinition(systemThemes.dark).label} in dark mode, ${themeDefinition(systemThemes.light).label} in light mode.`}
+            appearance="auto"
+            tag={uiTheme === "system" ? `Now ${themeDefinition(resolvedTheme).label}` : "Auto"}
+            preview={systemThemes}
+            selected={uiTheme === "system"}
+            onSelect={() => onThemeChange("system")}
+            onKeyDown={(event) => handleThemeKeyDown(event, "system")}
+          />
+          {themes.map((theme) => (
+            <ThemePreviewCard
+              key={theme.id}
+              cardRef={bindCard(theme.id)}
+              label={theme.label}
+              description={theme.description}
+              appearance={theme.appearance}
+              preview={theme.id}
+              selected={uiTheme === theme.id}
+              onSelect={() => onThemeChange(theme.id)}
+              onKeyDown={(event) => handleThemeKeyDown(event, theme.id)}
+            />
+          ))}
+        </div>
+      </SettingsGroup>
+
+      <SettingsGroup title="Layout">
+        <SettingsRow label="Density" help="How much room controls, tabs, and panels get around them." labelId="settingsDensityLabel">
+          <div className="segmentedControl" role="group" aria-labelledby="settingsDensityLabel">
+            {densityOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={density === option.id ? "active" : ""}
+                aria-pressed={density === option.id}
+                onClick={() => onDensityChange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label="Interface mode"
+          labelId="settingsInterfaceLabel"
+          help={interfaceMode === "chat"
+            ? "Agent panes show a chat view. The terminal process still runs underneath; open it from a pane for approvals and menus."
+            : "Agent panes show the live embedded terminal."}
+        >
+          <div className="segmentedControl" role="group" aria-labelledby="settingsInterfaceLabel">
+            <button type="button" className={interfaceMode === "terminal" ? "active" : ""} aria-pressed={interfaceMode === "terminal"} onClick={() => onInterfaceModeChange("terminal")}>
+              <TerminalSquare size={14} /> Terminal
+            </button>
+            <button type="button" className={interfaceMode === "chat" ? "active" : ""} aria-pressed={interfaceMode === "chat"} onClick={() => onInterfaceModeChange("chat")}>
+              <MessageSquare size={14} /> Chat
+            </button>
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label="Shell focus"
+          labelId="settingsFocusLabel"
+          help={terminalFocus
+            ? "Terminals fill the window and the surrounding chrome is hidden. Press Esc to bring it back."
+            : "The full workspace is visible around the terminal grid."}
+        >
+          <div className="segmentedControl" role="group" aria-labelledby="settingsFocusLabel">
+            <button type="button" className={!terminalFocus ? "active" : ""} aria-pressed={!terminalFocus} onClick={() => onTerminalFocusChange(false)}>
+              <TerminalSquare size={14} /> Normal
+            </button>
+            <button type="button" className={terminalFocus ? "active" : ""} aria-pressed={terminalFocus} onClick={() => onTerminalFocusChange(true)}>
+              <Maximize2 size={14} /> Focus
+            </button>
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup title="Terminal text">
+        <SettingsRow label="Font" help="Used by every embedded terminal pane." wide labelId="settingsTerminalFontLabel">
+          <div className="terminalFontOptions" role="radiogroup" aria-labelledby="settingsTerminalFontLabel">
+            {terminalFonts.map((font) => {
+              const selected = terminalAppearance.font === font.id;
+              return (
+                <button
+                  key={font.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  className={selected ? "terminalFontOption selected" : "terminalFontOption"}
+                  onClick={() => onTerminalAppearanceChange({ ...terminalAppearance, font: font.id })}
+                >
+                  <strong style={{ fontFamily: font.family }}>{font.label}</strong>
+                  <small>{font.detail}</small>
+                  {selected && <Check size={13} className="terminalFontCheck" aria-hidden="true" />}
+                </button>
+              );
+            })}
+          </div>
+        </SettingsRow>
+        <SettingsRow label="Size" help={`${minTerminalFontSize}–${maxTerminalFontSize} px. Panes refit their columns and rows to the new size.`}>
+          <div className="settingsControlCluster">
+            <div className="settingsStepper" role="group" aria-label="Terminal font size">
+              <button
+                type="button"
+                className="iconButton"
+                aria-label="Smaller terminal text"
+                disabled={fontSize <= minTerminalFontSize}
+                onClick={() => onTerminalAppearanceChange({ ...terminalAppearance, fontSize: fontSize - 1 })}
+              >
+                <Minus size={14} />
+              </button>
+              <output aria-live="polite">{fontSize}<small>px</small></output>
+              <button
+                type="button"
+                className="iconButton"
+                aria-label="Larger terminal text"
+                disabled={fontSize >= maxTerminalFontSize}
+                onClick={() => onTerminalAppearanceChange({ ...terminalAppearance, fontSize: fontSize + 1 })}
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+            <button
+              type="button"
+              className="ghostButton quiet small"
+              disabled={fontSize === defaultTerminalAppearance.fontSize}
+              onClick={() => onTerminalAppearanceChange({ ...terminalAppearance, fontSize: defaultTerminalAppearance.fontSize })}
+              title={`Reset to ${defaultTerminalAppearance.fontSize} px`}
+            >
+              <RotateCcw size={13} /> Reset
+            </button>
+          </div>
+        </SettingsRow>
+        <div
+          className="terminalSample"
+          aria-label="Terminal text preview"
+          style={{ fontFamily: terminalFontFamily(terminalAppearance.font), fontSize: `${fontSize}px` }}
+        >
+          <div>
+            <span className="ansiGreen">athena</span> <span className="ansiBlue">~/project</span>{" "}
+            <span className="ansiYellow">(main)</span> <span className="ansiMuted">$</span> codex --resume
+          </div>
+          <div><span className="ansiMagenta">●</span> Reading src/App.tsx, src/styles.css</div>
+          <div>
+            <span className="ansiGreen">+ 42 insertions</span>  <span className="ansiRed">- 7 deletions</span>{" "}
+            <span className="ansiMuted">0O il1| {"{}"} =&gt; != ===</span>
+          </div>
+        </div>
+      </SettingsGroup>
+    </>
+  );
+}
+
+function NotificationsSection({
+  preferences,
+  onChange,
+  onPreview,
+}: {
+  preferences: NotificationPreferences;
+  onChange: (preferences: NotificationPreferences) => void;
+  onPreview: (kind: WorkspaceAttentionKind) => void;
+}) {
+  const off = preferences.level === "off";
+  return (
+    <>
+      <p className="settingsCallout">
+        <Bell size={14} aria-hidden="true" />
+        <span>{notificationDescription(preferences)}</span>
+      </p>
+      <SettingsGroup title="Alerts">
+        <SettingsRow label="Alert me" help="Which agent events count as news." labelId="notificationLevelLabel">
+          <div className="segmentedControl" role="group" aria-labelledby="notificationLevelLabel">
+            {notificationLevelOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={preferences.level === option.id ? "active" : ""}
+                aria-pressed={preferences.level === option.id}
+                onClick={() => onChange({ ...preferences, level: option.id })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+        <SettingsRow label="Desktop notifications" help="Only while Athena is not the focused window." labelId="notificationDesktopLabel">
+          <div className="segmentedControl" role="group" aria-labelledby="notificationDesktopLabel">
+            <button
+              type="button"
+              className={preferences.desktop ? "active" : ""}
+              aria-pressed={preferences.desktop}
+              disabled={off}
+              onClick={() => onChange({ ...preferences, desktop: true })}
+            >
+              <Bell size={14} /> In background
+            </button>
+            <button
+              type="button"
+              className={!preferences.desktop ? "active" : ""}
+              aria-pressed={!preferences.desktop}
+              disabled={off}
+              onClick={() => onChange({ ...preferences, desktop: false })}
+            >
+              <BellOff size={14} /> Never
+            </button>
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+      <SettingsGroup title="Sound">
+        <SettingsRow label="Sound" help="Picking a sound plays it." labelId="notificationSoundLabel">
+          <div className="segmentedControl" role="group" aria-labelledby="notificationSoundLabel">
+            {soundOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={preferences.sound === option.id ? "active" : ""}
+                aria-pressed={preferences.sound === option.id}
+                disabled={off}
+                onClick={() => onChange({ ...preferences, sound: option.id })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+        <SettingsRow label="Volume" help="Preview the two alert sounds at this volume.">
+          <div className="notificationVolume">
+            <input
+              id="notificationVolume"
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              aria-label="Alert volume"
+              value={Math.round(preferences.volume * 100)}
+              disabled={off || preferences.sound === "none"}
+              onChange={(event) => onChange({ ...preferences, volume: Number(event.currentTarget.value) / 100 })}
+            />
+            <output htmlFor="notificationVolume">{Math.round(preferences.volume * 100)}%</output>
+          </div>
+        </SettingsRow>
+        <SettingsRow label="Test" help="Needs input plays when an agent waits on you; Finished when it ends a turn.">
+          <div className="settingsControlCluster">
+            {(["action", "update"] as WorkspaceAttentionKind[]).map((kind) => (
+              <button
+                key={kind}
+                className="ghostButton small"
+                type="button"
+                disabled={preferences.sound === "none" || preferences.volume === 0}
+                title={kind === "action" ? "Play the sound for an agent waiting on you" : "Play the sound for an agent finishing"}
+                onClick={() => onPreview(kind)}
+              >
+                <Volume2 size={13} /> {kind === "action" ? "Needs input" : "Finished"}
+              </button>
+            ))}
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+    </>
+  );
+}
+
+function AgentsSection({
+  adapters,
+  agentClis,
+  busy,
+  canRunSetup,
+  hermes,
+  installingHermes,
+  onAgentSetup,
+  onInstallHermes,
+}: {
+  adapters: Record<string, AdapterStatus>;
+  agentClis: AgentCliReport | null;
+  busy: boolean;
+  canRunSetup: boolean;
+  hermes: HermesStatus | null;
+  installingHermes: boolean;
+  onAgentSetup: (kind: AgentCliKind, action: AgentSetupAction) => void;
+  onInstallHermes: () => Promise<void>;
+}) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = window.setTimeout(() => setCopied(false), 1_600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   const hermesStatus = hermesStatusView(hermes);
   const adapterList = Object.values(adapters);
   const adapterStatus = adapterInstallStatusView(adapterList);
@@ -129,368 +768,224 @@ export function SettingsRoom({
     ? { tone: installedAgents === agentClis.agents.length ? "ok" as const : "warn" as const, label: `${installedAgents} of ${agentClis.agents.length} installed` }
     : adapterStatus;
   const privateCopies = agentClis?.privateCopies ?? null;
+  const hermesPaths = [
+    hermes?.command_path ? ["Command", hermes.command_path] : null,
+    hermes?.hermes_home ? ["Home", hermes.hermes_home] : null,
+    hermes?.memory_path ? ["Memory", hermes.memory_path] : null,
+  ].filter((item): item is [string, string] => Boolean(item));
 
   return (
-    <section className="roomPanel settingsRoom">
-      <div className="roomPanelHeader">
-        <div>
-          <span className="eyebrow">Settings</span>
-          <h3>Workspace, runtime, and appearance</h3>
-        </div>
-      </div>
-      <div className="settingsGrid">
-        <article className="settingsSection">
-          <div>
-            <strong>Workspace</strong>
-            <span>{workspace || "No workspace selected"}</span>
-          </div>
-          <button className="ghostButton" type="button" onClick={() => void onSelectWorkspace()}>
-            <FolderOpen size={14} /> Change
-          </button>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Graphics</strong>
-            <span>{graphics
-              ? `${graphics.mode === "accelerated" ? "Hardware acceleration active" : "Crash-safe software mode active"}. ${graphics.reason}${graphics.restartRequired ? " Restart Athena to apply the selected mode." : ""}`
-              : "Graphics status unavailable."}</span>
-          </div>
-          <div className="segmentedControl" role="group" aria-label="Graphics mode">
-            {(["auto", "safe", "accelerated"] as GraphicsPreference[]).map((preference) => (
-              <button
-                key={preference}
-                type="button"
-                className={graphics?.preference === preference ? "active" : ""}
-                onClick={() => onGraphicsPreferenceChange(preference)}
-                title={preference === "accelerated" ? "Retry acceleration and automatically quarantine it after a GPU-process crash" : undefined}
-              >
-                {preference === "safe" ? "Safe" : preference === "accelerated" ? "Accelerated" : "Auto"}
-              </button>
-            ))}
-          </div>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Backend</strong>
-            <span>{backend?.baseUrl ?? "Not connected"}</span>
-          </div>
-          <StatusPill tone={backendStatus.tone}>{backendStatus.label}</StatusPill>
-          <button className="ghostButton" type="button" onClick={() => void onRestartBackend()} disabled={busy}>
-            <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
-          </button>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Electron control</strong>
-            <span>{electronControl?.lastError ?? electronControl?.baseUrl ?? "Not connected"}</span>
-          </div>
-          <StatusPill tone={electronControlStatus.tone}>{electronControlStatus.label}</StatusPill>
-          <button className="ghostButton" type="button" onClick={() => void onRestartControl()} disabled={busy}>
-            <RefreshCw size={14} /> {busy ? "Restarting" : "Restart"}
-          </button>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Terminal restore</strong>
-            <span>{launchState?.terminalRestorePaused
-              ? `Paused after previous unclean launch${launchState.previousCrashAt ? ` at ${launchState.previousCrashAt}` : ""}. Enabling starts fresh.`
-              : "Restore is enabled when a workspace is opened or selected."}</span>
-          </div>
-          <StatusPill tone={launchState?.terminalRestorePaused ? "warn" : "ok"}>
-            {launchState?.terminalRestorePaused ? "Paused" : "Enabled"}
-          </StatusPill>
-          <button className="ghostButton" type="button" onClick={() => void onClearTerminalRestorePause()} disabled={busy || !launchState?.terminalRestorePaused}>
-            <RefreshCw size={14} /> Enable Restore
-          </button>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Interface mode</strong>
-            <span>{interfaceMode === "chat" ? "All instances use the chat visual layer. Terminal processes still run underneath." : "All instances use the current embedded terminal view."}</span>
-          </div>
-          <div className="segmentedControl" role="group" aria-label="Interface mode">
-            <button
-              type="button"
-              className={interfaceMode === "terminal" ? "active" : ""}
-              onClick={() => onInterfaceModeChange("terminal")}
-            >
-              <TerminalSquare size={14} /> Terminal
-            </button>
-            <button
-              type="button"
-              className={interfaceMode === "chat" ? "active" : ""}
-              onClick={() => onInterfaceModeChange("chat")}
-            >
-              <MessageSquare size={14} /> Chat
-            </button>
-          </div>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Theme</strong>
-            <span>{themeDescription(uiTheme)}</span>
-          </div>
-          <div className="segmentedControl themeSegmentedControl" role="group" aria-label="Theme">
-            {themeOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className={uiTheme === option.id ? "active" : ""}
-                onClick={() => onThemeChange(option.id)}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Shell focus</strong>
-            <span>{terminalFocus ? "Command Room terminals fill the app while surrounding workspace chrome is hidden. Press Esc to restore the full workspace." : "The full Athena workspace is visible around the terminal grid."}</span>
-          </div>
-          <div className="segmentedControl" role="group" aria-label="Shell focus">
-            <button
-              type="button"
-              className={!terminalFocus ? "active" : ""}
-              onClick={() => onTerminalFocusChange(false)}
-            >
-              <TerminalSquare size={14} /> Normal
-            </button>
-            <button
-              type="button"
-              className={terminalFocus ? "active" : ""}
-              onClick={() => onTerminalFocusChange(true)}
-            >
-              <Maximize2 size={14} /> Focus
-            </button>
-          </div>
-        </article>
-        <article className="settingsSection wide">
-          <div>
-            <strong>Notifications</strong>
-            <span>{notificationDescription(notificationPreferences)}</span>
-          </div>
-          <div className="notificationSettingsRows">
-            <div className="notificationSettingsRow">
-              <label id="notificationLevelLabel">Alert me</label>
-              <div className="segmentedControl" role="group" aria-labelledby="notificationLevelLabel">
-                {notificationLevelOptions.map((option) => (
+    <>
+      <SettingsGroup title="Coding agents" actions={<StatusPill tone={agentPill.tone}>{agentPill.label}</StatusPill>}>
+        <p className="settingsGroupIntro">
+          Athena runs the copy on your PATH, the same one your other terminals use, so updating an agent here or anywhere
+          else updates it everywhere. Installs and updates run in a terminal you can watch.
+        </p>
+        {agentClis ? (
+          <ul className="agentCliList">
+            {agentClis.agents.map((agent) => {
+              const needsNode = agent.needsNpm && !agent.npmAvailable;
+              const command = agent.installed ? agent.updateCommand : agent.installCommand;
+              return (
+                <li key={agent.kind} className={agent.installed ? "" : "missing"}>
+                  <AgentGlyph kind={agent.kind} />
+                  <div className="agentCliText">
+                    <strong>{agent.label}</strong>
+                    <span className="agentCliPath" title={agent.path ?? command}>
+                      {agent.installed ? agent.path : needsNode ? "Not installed · needs Node.js (npm)" : "Not installed"}
+                    </span>
+                  </div>
                   <button
-                    key={option.id}
+                    className={agent.installed ? "ghostButton small" : "primaryButton small"}
                     type="button"
-                    className={notificationPreferences.level === option.id ? "active" : ""}
-                    onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, level: option.id })}
+                    disabled={busy || !canRunSetup || needsNode}
+                    title={!canRunSetup ? "Open a workspace first: this runs in a terminal there" : needsNode ? "Needs npm: install Node.js LTS first" : command}
+                    onClick={() => onAgentSetup(agent.kind, agent.installed ? "update" : "install")}
                   >
-                    {option.label}
+                    {agent.installed ? <><RefreshCw size={13} /> Update</> : <><Download size={13} /> Install</>}
                   </button>
-                ))}
-              </div>
-            </div>
-            <div className="notificationSettingsRow">
-              <label id="notificationSoundLabel">Sound</label>
-              <div className="segmentedControl" role="group" aria-labelledby="notificationSoundLabel">
-                {soundOptions.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={notificationPreferences.sound === option.id ? "active" : ""}
-                    disabled={notificationPreferences.level === "off"}
-                    onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, sound: option.id })}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="notificationSettingsRow">
-              <label htmlFor="notificationVolume">Volume</label>
-              <div className="notificationVolume">
-                <input
-                  id="notificationVolume"
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={Math.round(notificationPreferences.volume * 100)}
-                  disabled={notificationPreferences.level === "off" || notificationPreferences.sound === "none"}
-                  onChange={(event) => onNotificationPreferencesChange({
-                    ...notificationPreferences,
-                    volume: Number(event.currentTarget.value) / 100,
-                  })}
-                />
-                <output htmlFor="notificationVolume">{Math.round(notificationPreferences.volume * 100)}%</output>
-                {(["action", "update"] as WorkspaceAttentionKind[]).map((kind) => (
-                  <button
-                    key={kind}
-                    className="ghostButton"
-                    type="button"
-                    disabled={notificationPreferences.sound === "none" || notificationPreferences.volume === 0}
-                    title={kind === "action" ? "Play the sound for an agent waiting on you" : "Play the sound for an agent finishing"}
-                    onClick={() => onPreviewAttentionSound(kind)}
-                  >
-                    <Volume2 size={14} /> {kind === "action" ? "Needs input" : "Finished"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="notificationSettingsRow">
-              <label id="notificationDesktopLabel">Desktop</label>
-              <div className="segmentedControl" role="group" aria-labelledby="notificationDesktopLabel">
-                <button
-                  type="button"
-                  className={notificationPreferences.desktop ? "active" : ""}
-                  disabled={notificationPreferences.level === "off"}
-                  onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, desktop: true })}
-                >
-                  <Bell size={14} /> When Athena is in the background
-                </button>
-                <button
-                  type="button"
-                  className={!notificationPreferences.desktop ? "active" : ""}
-                  disabled={notificationPreferences.level === "off"}
-                  onClick={() => onNotificationPreferencesChange({ ...notificationPreferences, desktop: false })}
-                >
-                  <BellOff size={14} /> Never
-                </button>
-              </div>
-            </div>
-          </div>
-        </article>
-        <article className="settingsSection wide">
-          <div>
-            <strong>Hermes</strong>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <pre className="settingsPre">{adapterSummary}</pre>
+        )}
+        {privateCopies ? (
+          <div className="agentCliNotice">
             <span>
-              {[
-                hermes?.message ?? "Status unavailable",
-                hermes?.command_path ? `Command: ${hermes.command_path}` : null,
-                hermes?.hermes_home ? `Home: ${hermes.hermes_home}` : null,
-                hermes?.memory_path ? `Memory: ${hermes.memory_path}` : null,
-              ].filter(Boolean).join("\n")}
+              Earlier versions of Athena installed their own copies of {privateCopies.labels.join(" and ")} in{" "}
+              <code>{privateCopies.prefix}</code> and ran those instead of yours. Athena no longer uses them; remove them
+              to save space and avoid confusion.
             </span>
-            <details className="settingsHermesConnect">
-              <summary>Connect Hermes to Athena (MCP bridge)</summary>
-              <p>
-                Lets Hermes call Athena's <code>context_workspace_*</code> tools and answer
-                "ask hermes" requests. Add this block to your Hermes config
-                (<code>~/.hermes/config.yaml</code>), adjust the paths for your install, then
-                restart Hermes. See the README "Hermes MCP Bridge" section for the full setup.
-              </p>
-              <pre>{HERMES_BRIDGE_SNIPPET}</pre>
-              <button
-                className="ghostButton"
-                type="button"
-                onClick={() => void copyToClipboard(HERMES_BRIDGE_SNIPPET)}
-              >
-                <Copy size={14} /> Copy config
-              </button>
-            </details>
-          </div>
-          <StatusPill tone={hermesStatus.tone}>{hermesStatus.label}</StatusPill>
-          {hermes && !hermes.installed && hermes.install_supported ? (
             <button
-              className="ghostButton"
+              className="ghostButton small"
               type="button"
-              onClick={() => void onInstallHermes()}
-              disabled={installingHermes}
+              disabled={busy || !canRunSetup}
+              title={privateCopies.command}
+              onClick={() => onAgentSetup(privateCopies.kinds[0], "cleanup")}
             >
-              <Download size={14} /> {installingHermes ? "Installing" : "Install Hermes"}
+              Remove old copies
+            </button>
+          </div>
+        ) : null}
+      </SettingsGroup>
+
+      <SettingsGroup title="Hermes" actions={<StatusPill tone={hermesStatus.tone}>{hermesStatus.label}</StatusPill>}>
+        <SettingsRow label="Status" help={hermes?.message ?? "Status unavailable"}>
+          {hermes && !hermes.installed && hermes.install_supported ? (
+            <button className="primaryButton small" type="button" onClick={() => void onInstallHermes()} disabled={installingHermes}>
+              <Download size={13} className={installingHermes ? "spinning" : undefined} /> {installingHermes ? "Installing" : "Install Hermes"}
             </button>
           ) : null}
-        </article>
-        <article className="settingsSection wide agentCliSection">
-          <div>
-            <strong>Coding agents</strong>
-            <span>
-              Athena runs the copy on your PATH, the same one your other terminals use, so updating an agent here or
-              anywhere else updates it everywhere. Installs and updates run in a terminal you can watch.
-            </span>
-            {agentClis ? (
-              <ul className="agentCliList">
-                {agentClis.agents.map((agent) => {
-                  const needsNode = agent.needsNpm && !agent.npmAvailable;
-                  const command = agent.installed ? agent.updateCommand : agent.installCommand;
-                  return (
-                    <li key={agent.kind}>
-                      <span className="agentCliName">{agent.label}</span>
-                      <span className={`agentCliPath${agent.installed ? "" : " missing"}`} title={agent.path ?? command}>
-                        {agent.installed ? agent.path : "Not installed"}
-                      </span>
-                      <button
-                        className="ghostButton"
-                        type="button"
-                        disabled={busy || !canRunSetup || needsNode}
-                        title={!canRunSetup ? "Open a workspace first: this runs in a terminal there" : needsNode ? "Needs npm: install Node.js LTS first" : command}
-                        onClick={() => onAgentSetup(agent.kind, agent.installed ? "update" : "install")}
-                      >
-                        {agent.installed ? <><RefreshCw size={14} /> Update</> : <><Download size={14} /> Install</>}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : <span>{adapterSummary}</span>}
-            {privateCopies ? (
-              <div className="agentCliNotice">
-                <span>
-                  Earlier versions of Athena installed their own copies of {privateCopies.labels.join(" and ")} in{" "}
-                  <code>{privateCopies.prefix}</code> and ran those instead of yours. Athena no longer uses them; remove
-                  them to save space and avoid confusion.
-                </span>
-                <button
-                  className="ghostButton"
-                  type="button"
-                  disabled={busy || !canRunSetup}
-                  title={privateCopies.command}
-                  onClick={() => onAgentSetup(privateCopies.kinds[0], "cleanup")}
-                >
-                  Remove old copies
-                </button>
+        </SettingsRow>
+        {hermesPaths.length > 0 && (
+          <dl className="settingsPaths">
+            {hermesPaths.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd><code title={value}>{value}</code></dd>
               </div>
-            ) : null}
+            ))}
+          </dl>
+        )}
+        <details className="settingsDisclosure">
+          <summary>Connect Hermes to Athena (MCP bridge)</summary>
+          <div className="settingsDisclosureBody">
+            <p>
+              Lets Hermes call Athena's <code>context_workspace_*</code> tools and answer "ask hermes" requests. Add this
+              block to your Hermes config (<code>~/.hermes/config.yaml</code>), adjust the paths for your install, then
+              restart Hermes. See the README "Hermes MCP Bridge" section for the full setup.
+            </p>
+            <pre className="settingsPre">{HERMES_BRIDGE_SNIPPET}</pre>
+            <button
+              className="ghostButton small"
+              type="button"
+              onClick={() => void copyToClipboard(HERMES_BRIDGE_SNIPPET).then(() => setCopied(true)).catch(() => undefined)}
+            >
+              {copied ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy config</>}
+            </button>
           </div>
-          <StatusPill tone={agentPill.tone}>{agentPill.label}</StatusPill>
-        </article>
-        <article className="settingsSection wide">
-          <div>
-            <strong>Performance diagnostics</strong>
-            <span className="settingsDiagnosticsText">
-              {performance ? performanceSummary(performance) : "Open Settings while the desktop app is running to sample terminal throughput."}
-            </span>
-          </div>
-          <StatusPill tone={performance?.pendingOutputBytes ? "warn" : "ok"}>{performance ? `${performance.activeTerminals} terminals` : "Unavailable"}</StatusPill>
-          <button className="ghostButton" type="button" onClick={() => void onRefreshDiagnostics()}>
-            <RefreshCw size={14} /> Sample
-          </button>
-        </article>
-        <article className="settingsSection wide">
-          <div>
-            <strong>Terminal control state</strong>
-            <span className="settingsDiagnosticsText">{performance ? terminalControlSummary(performance) : "No terminal control state loaded."}</span>
-          </div>
-          <StatusPill tone={performance?.terminalControl.some((terminal) => terminal.attentionReason) ? "warn" : "ok"}>
-            {performance ? `${performance.terminalControl.length} tracked` : "Unavailable"}
-          </StatusPill>
-        </article>
-        <article className="settingsSection wide">
-          <div>
-            <strong>Agent process diagnostics</strong>
-            <span className="settingsDiagnosticsText">{performance ? agentProcessSummary(performance) : "No agent process diagnostics loaded."}</span>
-          </div>
-          <StatusPill tone={performance?.agentProcesses.some((process) => !process.managedTerminalId) ? "warn" : "ok"}>
-            {performance ? `${performance.agentProcesses.filter((process) => !process.managedTerminalId).length} unmanaged` : "Unavailable"}
-          </StatusPill>
-        </article>
-        <article className="settingsSection wide">
-          <div>
-            <strong>Recent control events</strong>
-            <span className="settingsDiagnosticsText">{performance ? controlEventsSummary(performance) : "No control events loaded."}</span>
-          </div>
-          <StatusPill tone={performance?.controlEvents.some((event) => event.kind.endsWith(".failed")) ? "bad" : "ok"}>
-            {performance ? `${performance.controlEvents.length} events` : "Unavailable"}
-          </StatusPill>
-        </article>
+        </details>
+      </SettingsGroup>
+    </>
+  );
+}
+
+function DiagnosticsSection({
+  performance,
+  onRefresh,
+}: {
+  performance: PerformanceDiagnostics | null;
+  onRefresh: () => Promise<void>;
+}) {
+  const [sampling, setSampling] = useState(false);
+
+  async function sample() {
+    setSampling(true);
+    try {
+      await onRefresh();
+    } finally {
+      setSampling(false);
+    }
+  }
+
+  const blocks: Array<{ id: string; title: string; tone: StatusTone; pill: string; body: string }> = [
+    {
+      id: "performance",
+      title: "Terminal throughput",
+      tone: performance?.pendingOutputBytes ? "warn" : "ok",
+      pill: performance ? `${performance.activeTerminals} terminals` : "Unavailable",
+      body: performance ? performanceSummary(performance) : "Open Settings while the desktop app is running to sample terminal throughput.",
+    },
+    {
+      id: "control",
+      title: "Terminal control state",
+      tone: performance?.terminalControl.some((terminal) => terminal.attentionReason) ? "warn" : "ok",
+      pill: performance ? `${performance.terminalControl.length} tracked` : "Unavailable",
+      body: performance ? terminalControlSummary(performance) : "No terminal control state loaded.",
+    },
+    {
+      id: "processes",
+      title: "Agent processes",
+      tone: performance?.agentProcesses.some((process) => !process.managedTerminalId) ? "warn" : "ok",
+      pill: performance ? `${performance.agentProcesses.filter((process) => !process.managedTerminalId).length} unmanaged` : "Unavailable",
+      body: performance ? agentProcessSummary(performance) : "No agent process diagnostics loaded.",
+    },
+    {
+      id: "events",
+      title: "Recent control events",
+      tone: performance?.controlEvents.some((event) => event.kind.endsWith(".failed")) ? "bad" : "ok",
+      pill: performance ? `${performance.controlEvents.length} events` : "Unavailable",
+      body: performance ? controlEventsSummary(performance) : "No control events loaded.",
+    },
+  ];
+
+  return (
+    <SettingsGroup
+      title="Live sample"
+      actions={
+        <button className="ghostButton small" type="button" onClick={() => void sample()} disabled={sampling}>
+          <RefreshCw size={13} className={sampling ? "spinning" : undefined} /> Sample now
+        </button>
+      }
+    >
+      {performance && (
+        <div className="diagnosticStats">
+          <DiagnosticStat label="Main-process lag" value={`${Math.round(performance.eventLoopLagMs)} ms`} detail={`${Math.round(performance.maxEventLoopLagMs)} ms max`} />
+          <DiagnosticStat label="PTY input" value={`${formatBytes(performance.ptyBytesPerSecond)}/s`} detail={`${performance.ptyChunksPerSecond} chunks/s`} />
+          <DiagnosticStat label="Renderer output" value={`${formatBytes(performance.ipcBytesPerSecond)}/s`} detail={`${performance.ipcBatchesPerSecond} batches/s`} />
+          <DiagnosticStat label="Pending output" value={formatBytes(performance.pendingOutputBytes)} detail={`${performance.rendererTerminalSubscribers} visible consumers`} />
+        </div>
+      )}
+      <div className="diagnosticBlocks">
+        {blocks.map((block, index) => (
+          <details key={block.id} className="settingsDisclosure diagnostic" open={index === 0}>
+            <summary>
+              <span>{block.title}</span>
+              <StatusPill tone={block.tone}>{block.pill}</StatusPill>
+            </summary>
+            <pre className="settingsPre">{block.body}</pre>
+          </details>
+        ))}
       </div>
-    </section>
+    </SettingsGroup>
+  );
+}
+
+function DiagnosticStat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return (
+    <div className="diagnosticStat">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function ShortcutsSection() {
+  const rows = shortcutReference();
+  return (
+    <SettingsGroup title="Anywhere in Athena">
+      <table className="shortcutTable">
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <th scope="row">{row.label}</th>
+              <td>
+                <span className="kbdGroup">
+                  {row.keys.map((key) => <kbd key={key} className="kbd">{key}</kbd>)}
+                </span>
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <th scope="row">Leave shell focus, close menus and dialogs</th>
+            <td><span className="kbdGroup"><kbd className="kbd">Esc</kbd></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </SettingsGroup>
   );
 }
 
@@ -564,14 +1059,6 @@ function notificationDescription(preferences: NotificationPreferences): string {
     ? "when an agent is waiting for your approval or an answer, and when it finishes a turn"
     : "only when an agent is waiting for your approval or an answer; finished turns just badge their workspace tab";
   return `Alerts ${what}. Terminals you are looking at stay quiet; the rest alert with a tab badge, sound, and (while Athena is in the background) a desktop notification.`;
-}
-
-function themeDescription(theme: UiTheme): string {
-  if (theme === "monolith") return "Void black, acid lime, and sharp terminal surfaces.";
-  if (theme === "press") return "Warm editorial dark with serif headings and vermillion accents.";
-  if (theme === "mono-light") return "Pure grayscale light theme. System-default typography, no color accents.";
-  if (theme === "mono-dark") return "Pure grayscale dark theme. System-default typography, no color accents.";
-  return "Original Athena forest palette and neutral workspace typography.";
 }
 
 function formatBytes(value: number): string {

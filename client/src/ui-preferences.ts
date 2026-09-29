@@ -5,10 +5,12 @@ import {
   serializeNotificationPreferences,
   type NotificationPreferences,
 } from "./workspace-attention";
+import { parseThemePreference, type ThemePreference } from "./themes";
 import { workspaceKey } from "./workspace-utils";
 
 export type InterfaceMode = "terminal" | "chat";
-export type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
+export type UiTheme = ThemePreference;
+export type Density = "compact" | "default" | "comfortable";
 
 export const workspaceStorageKey = "context-workspace:lastWorkspace";
 export const workspaceListStorageKey = "context-workspace:workspaces";
@@ -16,6 +18,7 @@ export const interfaceModeStorageKey = "context-workspace:interfaceMode";
 export const uiThemeStorageKey = "context-workspace:uiTheme";
 export const terminalFocusStorageKey = "context-workspace:terminalFocus";
 export const notificationsStorageKey = "context-workspace:notifications";
+export const densityStorageKey = "context-workspace:density";
 
 const maxWorkspaceTabs = 12;
 
@@ -101,16 +104,7 @@ export function writeInterfaceMode(mode: InterfaceMode): void {
 }
 
 export function parseUiTheme(value: string | null): UiTheme | null {
-  if (
-    value === "classic" ||
-    value === "monolith" ||
-    value === "press" ||
-    value === "mono-light" ||
-    value === "mono-dark"
-  ) {
-    return value;
-  }
-  return null;
+  return parseThemePreference(value);
 }
 
 export function readUiTheme(): UiTheme {
@@ -119,6 +113,19 @@ export function readUiTheme(): UiTheme {
 
 export function writeUiTheme(theme: UiTheme): void {
   writeStorageValue(uiThemeStorageKey, theme);
+}
+
+export function parseDensity(value: string | null): Density | null {
+  if (value === "compact" || value === "default" || value === "comfortable") return value;
+  return null;
+}
+
+export function readDensity(): Density {
+  return parseDensity(storedValue(densityStorageKey)) ?? "default";
+}
+
+export function writeDensity(density: Density): void {
+  writeStorageValue(densityStorageKey, density);
 }
 
 export function parseTerminalFocus(value: string | null): boolean | null {

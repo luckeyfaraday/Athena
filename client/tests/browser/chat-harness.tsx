@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
+import "../../src/styles/tokens.css";
+import "../../src/styles/themes.css";
 import "../../src/styles.css";
 
 const listeners = new Set<(payload: unknown) => void>();

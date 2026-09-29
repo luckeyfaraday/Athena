@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -51,6 +51,7 @@ import {
 } from "./agent-cli.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { getPreferences, removePreference, setPreference } from "./preferences.js";
+import { THEME_PREFERENCE_KEY, themeWindowBackground } from "./theme-window.js";
 import {
   acknowledgeEmbeddedTerminalOutput,
   attachEmbeddedTerminalStream,
@@ -242,7 +243,14 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("workspace:getDefault", (): WorkspacePath => getDefaultWorkspace(appRoot));
   handle("workspace:toPath", (_event, workspace: string): WorkspacePath => toWorkspacePath(workspace));
   handle("preferences:get", (): Record<string, string> => getPreferences());
-  handle("preferences:set", (_event, key: string, value: string): Record<string, string> => setPreference(key, value));
+  handle("preferences:set", (event, key: string, value: string): Record<string, string> => {
+    const preferences = setPreference(key, value);
+    // Keep the native background in step with the theme for resizes and the next launch.
+    if (key === THEME_PREFERENCE_KEY) {
+      BrowserWindow.fromWebContents(event.sender)?.setBackgroundColor(themeWindowBackground(value, nativeTheme.shouldUseDarkColors));
+    }
+    return preferences;
+  });
   handle("preferences:remove", (_event, key: string): Record<string, string> => removePreference(key));
   handle("graphics:getStatus", (): GraphicsRuntimeStatus => {
     const preference = parseGraphicsPreference(getPreferences()[GRAPHICS_PREFERENCE_KEY]);

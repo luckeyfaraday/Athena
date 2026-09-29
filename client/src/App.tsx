@@ -1,5 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Minus, Square, X } from "lucide-react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  AlertTriangle,
+  Bell,
+  Code2,
+  Command,
+  FolderOpen,
+  FolderPlus,
+  Keyboard,
+  Maximize2,
+  MessageSquare,
+  Minus,
+  Palette,
+  Pencil,
+  RefreshCw,
+  Rows3,
+  Settings as SettingsIcon,
+  Square,
+  TerminalSquare,
+  Type,
+  X,
+  XCircle,
+} from "lucide-react";
 import { BackendClient, type AdapterStatus, type BackendStatus, type ElectronControlStatus, type HermesStatus } from "./api";
 import {
   desktop,
@@ -21,9 +42,26 @@ import { AgentInstallDialog } from "./components/AgentInstallDialog";
 import athenaMarkUrl from "./assets/athena-mark.png";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { UsageMeters } from "./components/UsageMeters";
+import { AgentGlyph } from "./components/AgentGlyph";
+import { PromptDialog, type TextPromptRequest } from "./components/PromptDialog";
+import { ToastStack, useToasts } from "./components/Toasts";
+import { CommandPalette, type PaletteCommand } from "./components/CommandPalette";
 import { CommandRoom } from "./rooms/CommandRoom";
-import { SettingsRoom } from "./rooms/SettingsRoom";
 import { roomRoutes, type ActiveRoom } from "./routes";
+import { settingsSections, type SettingsSection } from "./settings-sections";
+import { nextTheme, resolveTheme, themeLabel, themes, type ThemeId, type ThemePreference } from "./themes";
+import {
+  clampTerminalFontSize,
+  defaultTerminalAppearance,
+  parseTerminalFont,
+  parseTerminalFontSize,
+  setTerminalAppearance as publishTerminalAppearance,
+  terminalFontSizeStorageKey,
+  terminalFontStorageKey,
+  type TerminalAppearance,
+} from "./terminal-appearance";
+import { isMacPlatform, shortcutKeysFor, type ShortcutId } from "./shortcuts";
+import { useGlobalShortcuts } from "./use-shortcuts";
 import {
   sameAgentSessions,
   sameBackendStatus,
@@ -48,6 +86,7 @@ import {
   applyEmbeddedSessionRenames,
   appendEmbeddedSessions,
   embeddedSessionKey,
+  formatSessionTime,
   providerLabel,
   readRenamedSessions,
   selectedAgentSessionKey,
@@ -55,12 +94,15 @@ import {
   writeRenamedSessions,
 } from "./session-utils";
 import {
+  densityStorageKey,
   interfaceModeStorageKey,
   notificationsStorageKey,
+  parseDensity,
   parseInterfaceMode,
   parseStoredWorkspace,
   parseTerminalFocus,
   parseUiTheme,
+  readDensity,
   readInterfaceMode,
   readNotificationPreferences,
   readTerminalFocus,
@@ -73,12 +115,15 @@ import {
   upsertWorkspace,
   workspaceListStorageKey,
   workspaceStorageKey,
+  writeDensity,
   writeInterfaceMode,
   writeNotificationPreferences,
+  writeStorageValue,
   writeStoredWorkspace,
   writeTerminalFocus,
   writeUiTheme,
   writeWorkspaceList,
+  type Density,
   type InterfaceMode,
   type UiTheme,
 } from "./ui-preferences";
@@ -90,14 +135,31 @@ const statusPollIntervalMs = 15_000;
 const agentSessionMaxAgeMs = 60_000;
 // Main reports each prompt or finished turn once; this only keeps a flapping terminal from alerting in a loop.
 const attentionAlertThrottleMs = 5_000;
-const uiThemeStyleElementId = "athena-selected-ui-theme";
 
-const loadUiThemeCss: Record<Exclude<UiTheme, "classic">, () => Promise<{ default: string }>> = {
-  monolith: () => import("./themes/monolith.css?raw"),
-  press: () => import("./themes/press.css?raw"),
-  "mono-light": () => import("./themes/mono-light.css?raw"),
-  "mono-dark": () => import("./themes/mono-dark.css?raw"),
-};
+// Loaded on first use: Settings is not needed to paint the Command Room. The palette
+// stays in the main bundle so it opens in the same frame as its shortcut; while a
+// chunk loaded, keystrokes typed after Ctrl+Shift+P would reach the focused terminal.
+const SettingsRoom = lazy(() => import("./rooms/SettingsRoom").then((module) => ({ default: module.SettingsRoom })));
+
+const launchableAgents: Array<{ kind: EmbeddedTerminalKind; label: string; grid: boolean }> = [
+  { kind: "claude", label: "Claude Code", grid: true },
+  { kind: "codex", label: "Codex", grid: true },
+  { kind: "opencode", label: "OpenCode", grid: true },
+  { kind: "athena", label: "Athena Code", grid: true },
+  { kind: "grok", label: "Grok", grid: true },
+  { kind: "hermes", label: "Hermes", grid: false },
+];
+
+function readTerminalAppearancePreference(read: (key: string) => string | null): TerminalAppearance {
+  return {
+    font: parseTerminalFont(read(terminalFontStorageKey)) ?? defaultTerminalAppearance.font,
+    fontSize: parseTerminalFontSize(read(terminalFontSizeStorageKey)) ?? defaultTerminalAppearance.fontSize,
+  };
+}
+
+function systemPrefersLight(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: light)").matches;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -154,6 +216,25 @@ export function App() {
   const [terminalFocus, setTerminalFocusState] = useState(() => readTerminalFocus());
   const [interfaceMode, setInterfaceModeState] = useState<InterfaceMode>(() => readInterfaceMode());
   const [uiTheme, setUiThemeState] = useState<UiTheme>(() => readUiTheme());
+  const [prefersLight, setPrefersLight] = useState(() => systemPrefersLight());
+  // A theme highlighted in the command palette, shown live until it closes.
+  const [previewTheme, setPreviewTheme] = useState<ThemeId | null>(null);
+  const resolvedTheme = resolveTheme(uiTheme, prefersLight);
+  const [density, setDensityState] = useState<Density>(() => readDensity());
+  const [terminalAppearance, setTerminalAppearanceState] = useState<TerminalAppearance>(() => {
+    // Publish synchronously: terminal panes read the store in their own
+    // mount effects, which run before this component's effects.
+    const stored = readTerminalAppearancePreference(storedValue);
+    publishTerminalAppearance(stored);
+    return stored;
+  });
+  const [commandView, setCommandView] = useState<"terminals" | "sessions">("terminals");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
+  const [palette, setPalette] = useState<{ open: boolean; query: string }>({ open: false, query: "" });
+  const [promptRequest, setPromptRequest] = useState<TextPromptRequest | null>(null);
+  const promptResolveRef = useRef<((value: string | null) => void) | null>(null);
+  const [revealPaneRequest, setRevealPaneRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const toasts = useToasts();
   const [notificationPreferences, setNotificationPreferencesState] = useState<NotificationPreferences>(() => readNotificationPreferences());
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [installingHermes, setInstallingHermes] = useState(false);
@@ -195,8 +276,46 @@ export function App() {
   }
 
   function setUiTheme(theme: UiTheme) {
+    setPreviewTheme(null);
     setUiThemeState(theme);
     writeUiTheme(theme);
+  }
+
+  function setDensity(next: Density) {
+    setDensityState(next);
+    writeDensity(next);
+  }
+
+  function setTerminalAppearance(next: TerminalAppearance) {
+    const normalized = { font: next.font, fontSize: clampTerminalFontSize(next.fontSize) };
+    setTerminalAppearanceState(normalized);
+    writeStorageValue(terminalFontStorageKey, normalized.font);
+    writeStorageValue(terminalFontSizeStorageKey, String(normalized.fontSize));
+  }
+
+  // window.prompt() is not implemented in Electron; this is the in-app equivalent.
+  function requestText(request: TextPromptRequest): Promise<string | null> {
+    promptResolveRef.current?.(null);
+    return new Promise((resolve) => {
+      promptResolveRef.current = resolve;
+      setPromptRequest(request);
+    });
+  }
+
+  function closePrompt(value: string | null) {
+    const resolve = promptResolveRef.current;
+    promptResolveRef.current = null;
+    setPromptRequest(null);
+    resolve?.(value);
+  }
+
+  function openPalette(query = "") {
+    setPalette({ open: true, query });
+  }
+
+  function closePalette() {
+    setPreviewTheme(null);
+    setPalette((current) => current.open ? { open: false, query: "" } : current);
   }
 
   function setNotificationPreferences(preferences: NotificationPreferences) {
@@ -360,32 +479,30 @@ export function App() {
     }
   }, [client]);
 
+  // Themes are token blocks keyed by [data-theme]: switching is one attribute
+  // write, with no stylesheet to fetch or inject.
+  const appliedTheme = previewTheme ?? resolvedTheme;
   useEffect(() => {
-    let cancelled = false;
-    if (uiTheme === "classic") {
-      delete document.documentElement.dataset.theme;
-      delete document.documentElement.dataset.themeLoaded;
-      document.getElementById(uiThemeStyleElementId)?.remove();
-      return;
-    }
+    document.documentElement.dataset.theme = appliedTheme;
+  }, [appliedTheme]);
 
-    document.documentElement.dataset.theme = uiTheme;
-    delete document.documentElement.dataset.themeLoaded;
-    loadUiThemeCss[uiTheme]().then(({ default: css }) => {
-      if (cancelled) return;
-      let themeStyle = document.getElementById(uiThemeStyleElementId) as HTMLStyleElement | null;
-      if (!themeStyle) {
-        themeStyle = document.createElement("style");
-        themeStyle.id = uiThemeStyleElementId;
-        document.head.appendChild(themeStyle);
-      }
-      themeStyle.textContent = css;
-      document.documentElement.dataset.themeLoaded = uiTheme;
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [uiTheme]);
+  useEffect(() => {
+    if (density === "default") delete document.documentElement.dataset.density;
+    else document.documentElement.dataset.density = density;
+  }, [density]);
+
+  useEffect(() => {
+    publishTerminalAppearance(terminalAppearance);
+  }, [terminalAppearance]);
+
+  // "Match system" follows the OS light/dark setting live.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return undefined;
+    const query = window.matchMedia("(prefers-color-scheme: light)");
+    const update = () => setPrefersLight(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
 
   useEffect(() => {
     if (preferencesLoaded.current) writeStoredWorkspace(workspacePath);
@@ -417,6 +534,15 @@ export function App() {
       else {
         const fallbackFocus = parseTerminalFocus(storedValue(terminalFocusStorageKey));
         if (fallbackFocus != null) writeTerminalFocus(fallbackFocus);
+      }
+      const preferredDensity = parseDensity(preferences[densityStorageKey] ?? null);
+      if (preferredDensity) setDensityState(preferredDensity);
+      else {
+        const fallbackDensity = parseDensity(storedValue(densityStorageKey));
+        if (fallbackDensity) writeDensity(fallbackDensity);
+      }
+      if (preferences[terminalFontStorageKey] || preferences[terminalFontSizeStorageKey]) {
+        setTerminalAppearanceState(readTerminalAppearancePreference((key) => preferences[key] ?? storedValue(key)));
       }
       const preferredNotifications = parseNotificationPreferences(preferences[notificationsStorageKey] ?? null);
       if (preferredNotifications) setNotificationPreferencesState(preferredNotifications);
@@ -690,9 +816,14 @@ export function App() {
     });
   }
 
-  function renameWorkspaceTab(tab: WorkspacePath) {
-    const trimmed = window.prompt("Workspace display name", workspaceDisplayName(tab))?.trim();
-    if (!trimmed) return;
+  async function renameWorkspaceTab(tab: WorkspacePath) {
+    const trimmed = await requestText({
+      title: "Rename workspace",
+      label: `Display name for ${tab.nativePath}`,
+      initialValue: workspaceDisplayName(tab),
+      confirmLabel: "Rename",
+    });
+    if (!trimmed || trimmed === workspaceDisplayName(tab)) return;
     setWorkspaceTabs((current) =>
       current.map((item) => workspaceKey(item) === workspaceKey(tab) ? { ...item, displayPath: trimmed } : item),
     );
@@ -867,22 +998,22 @@ export function App() {
   }
 
   async function renameEmbeddedSession(session: EmbeddedTerminalSession) {
-    const nextTitle = window.prompt("Rename session", session.title)?.trim();
+    const nextTitle = await requestText({ title: "Rename pane", initialValue: session.title, confirmLabel: "Rename" });
     if (!nextTitle || nextTitle === session.title) return;
-    const nextRenames = { ...sessionRenames, [embeddedSessionKey(session)]: nextTitle };
+    const nextRenames = { ...sessionRenamesRef.current, [embeddedSessionKey(session)]: nextTitle };
     setSessionRenames(nextRenames);
     writeRenamedSessions(workspace, nextRenames);
     setEmbeddedSessions((current) => current.map((item) => item.id === session.id ? { ...item, title: nextTitle } : item));
     await desktop.renameEmbeddedTerminal(session.id, nextTitle).catch(() => undefined);
   }
 
-  function renameAgentSession(session: AgentSession) {
-    const nextTitle = window.prompt("Rename session", session.title)?.trim();
+  async function renameAgentSession(session: AgentSession) {
+    const nextTitle = await requestText({ title: "Rename session", initialValue: session.title, confirmLabel: "Rename" });
     if (!nextTitle || nextTitle === session.title) return;
     const key = selectedAgentSessionKey(session);
     const renameWorkspace = session.workspace || workspace;
     const activeWorkspace = sameWorkspacePath(renameWorkspace, workspace);
-    const nextRenames = { ...(activeWorkspace ? sessionRenames : readRenamedSessions(renameWorkspace)), [key]: nextTitle };
+    const nextRenames = { ...(activeWorkspace ? sessionRenamesRef.current : readRenamedSessions(renameWorkspace)), [key]: nextTitle };
     if (activeWorkspace) setSessionRenames(nextRenames);
     writeRenamedSessions(renameWorkspace, nextRenames);
     setAgentSessionsByWorkspace((current) => {
@@ -931,14 +1062,262 @@ export function App() {
   const shellFocus = terminalFocus && activeRoom === "command";
   const notice = error ?? (!backend?.healthy ? backend?.lastError : null) ?? (!electronControl?.running ? electronControl?.lastError : null) ?? null;
 
+  function showCommandRoom(view?: "terminals" | "sessions") {
+    setActiveRoom("command");
+    if (view) setCommandView(view);
+  }
+
+  function goToWorkspace(tab: WorkspacePath | undefined) {
+    if (!tab) return;
+    showCommandRoom();
+    if (workspacePath && workspaceKey(workspacePath) === workspaceKey(tab)) return;
+    activateWorkspace(tab);
+  }
+
+  function switchWorkspaceBy(offset: number) {
+    if (workspaceTabs.length < 2) return;
+    const index = workspacePath ? workspaceTabs.findIndex((tab) => workspaceKey(tab) === workspaceKey(workspacePath)) : -1;
+    goToWorkspace(workspaceTabs[(index + offset + workspaceTabs.length) % workspaceTabs.length]);
+  }
+
+  function openSettings(section?: SettingsSection) {
+    if (section) setSettingsSection(section);
+    setActiveRoom("settings");
+  }
+
+  function applyTheme(theme: ThemePreference) {
+    setUiTheme(theme);
+    toasts.show(`Theme: ${themeLabel(theme)}`);
+  }
+
+  function nudgeTerminalFontSize(delta: number) {
+    const fontSize = delta === 0 ? defaultTerminalAppearance.fontSize : terminalAppearance.fontSize + delta;
+    setTerminalAppearance({ ...terminalAppearance, fontSize });
+    toasts.show(`Terminal text: ${clampTerminalFontSize(fontSize)}px`);
+  }
+
+  const shortcutHandlers: Partial<Record<ShortcutId, () => void>> = {};
+  if (!promptRequest && !installPrompt) {
+    shortcutHandlers.palette = () => (palette.open ? closePalette() : openPalette());
+    if (!palette.open) {
+      shortcutHandlers.settings = () => (activeRoom === "settings" ? showCommandRoom() : openSettings());
+      shortcutHandlers.shellFocus = () => setTerminalFocus(!terminalFocus);
+      shortcutHandlers.newShell = () => {
+        showCommandRoom("terminals");
+        void launchEmbedded("shell", 1);
+      };
+      shortcutHandlers.launchAgent = () => openPalette("launch ");
+      shortcutHandlers.toggleSessions = () =>
+        showCommandRoom(activeRoom !== "command" || commandView === "terminals" ? "sessions" : "terminals");
+      shortcutHandlers.toggleInterfaceMode = () => {
+        const next = interfaceMode === "chat" ? "terminal" : "chat";
+        setInterfaceMode(next);
+        toasts.show(next === "chat" ? "Chat view" : "Terminal view");
+      };
+      shortcutHandlers.nextWorkspace = () => switchWorkspaceBy(1);
+      shortcutHandlers.previousWorkspace = () => switchWorkspaceBy(-1);
+      for (let position = 1; position <= 9; position += 1) {
+        shortcutHandlers[`workspace${position}` as ShortcutId] = () => goToWorkspace(workspaceTabs[position - 1]);
+      }
+    }
+  }
+  useGlobalShortcuts(shortcutHandlers);
+
+  function buildPaletteCommands(): PaletteCommand[] {
+    const commands: PaletteCommand[] = [];
+    const workspaceGate = workspace ? {} : { disabled: true, disabledReason: "Open a workspace first" };
+    const launch = (kind: EmbeddedTerminalKind, count: number) => () => {
+      showCommandRoom("terminals");
+      void launchEmbedded(kind, count);
+    };
+
+    commands.push({
+      id: "launch:shell",
+      group: "Launch",
+      title: "New shell",
+      icon: <AgentGlyph kind="shell" size="small" />,
+      keys: shortcutKeysFor("newShell"),
+      keywords: ["launch", "terminal", "console", "pty"],
+      ...workspaceGate,
+      run: launch("shell", 1),
+    });
+    for (const agent of launchableAgents) {
+      const missing = missingAgents.has(agent.kind);
+      commands.push({
+        id: `launch:${agent.kind}`,
+        group: "Launch",
+        title: `Launch ${agent.label}`,
+        subtitle: missing ? "Not installed: Athena will offer to install it" : undefined,
+        icon: <AgentGlyph kind={agent.kind} size="small" />,
+        keywords: ["new", "agent", "start", agent.kind],
+        ...workspaceGate,
+        run: launch(agent.kind, 1),
+      });
+      if (agent.grid) {
+        commands.push({
+          id: `launch:${agent.kind}:grid`,
+          group: "Launch",
+          title: `Launch ${agent.label} grid`,
+          subtitle: "Four panes side by side",
+          icon: <AgentGlyph kind={agent.kind} size="small" />,
+          keywords: ["new", "agent", "four", "4", "parallel", agent.kind],
+          ...workspaceGate,
+          run: launch(agent.kind, 4),
+        });
+      }
+    }
+
+    workspaceTabs.forEach((tab, index) => {
+      const current = Boolean(workspacePath && workspaceKey(workspacePath) === workspaceKey(tab));
+      commands.push({
+        id: `workspace:${workspaceKey(tab)}`,
+        group: "Workspaces",
+        title: `Switch to ${workspaceDisplayName(tab)}`,
+        subtitle: current ? `Current · ${tab.nativePath}` : tab.nativePath,
+        icon: <FolderOpen size={15} />,
+        keys: index < 9 ? shortcutKeysFor(`workspace${index + 1}` as ShortcutId) : undefined,
+        keywords: ["workspace", "project", "folder", "tab"],
+        run: () => goToWorkspace(tab),
+      });
+    });
+    commands.push(
+      { id: "workspace:add", group: "Workspaces", title: "Add a workspace folder…", icon: <FolderOpen size={15} />, keywords: ["open", "project"], run: () => void selectWorkspace() },
+      { id: "workspace:create", group: "Workspaces", title: "Create a new workspace folder…", icon: <FolderPlus size={15} />, keywords: ["new", "mkdir", "project"], run: () => void createWorkspace() },
+    );
+    if (workspacePath) {
+      const current = workspacePath;
+      commands.push(
+        { id: "workspace:rename", group: "Workspaces", title: "Rename this workspace…", icon: <Pencil size={15} />, run: () => void renameWorkspaceTab(current) },
+        { id: "workspace:reveal", group: "Workspaces", title: "Open this workspace in the file manager", icon: <FolderOpen size={15} />, keywords: ["explorer", "finder", "files"], run: () => void openWorkspaceInFiles(current) },
+      );
+      if (workspaceTabs.length > 1) {
+        commands.push({ id: "workspace:close", group: "Workspaces", title: "Close this workspace", subtitle: "Stops its terminals", icon: <XCircle size={15} />, run: () => closeWorkspaceTab(current) });
+      }
+    }
+
+    for (const session of activeEmbeddedSessions) {
+      commands.push({
+        id: `pane:${session.id}`,
+        group: "Panes",
+        title: `Go to ${session.title}`,
+        subtitle: session.status === "running"
+          ? `${session.kind === "shell" ? "Shell" : providerLabel(session.kind)} · running`
+          : `Exited${session.exitCode == null ? "" : ` (code ${session.exitCode})`}`,
+        icon: <AgentGlyph kind={session.kind} size="small" />,
+        keywords: ["pane", "terminal", "focus", session.kind],
+        run: () => {
+          showCommandRoom("terminals");
+          setRevealPaneRequest({ id: session.id, nonce: Date.now() });
+        },
+      });
+    }
+
+    for (const session of agentSessions.filter((item) => item.resumeCommand).slice(0, 30)) {
+      commands.push({
+        id: `resume:${session.provider}:${session.id}`,
+        group: "Sessions",
+        title: `Resume ${session.title}`,
+        subtitle: `${providerLabel(session.provider)} · ${formatSessionTime(session.updatedAt)}`,
+        icon: <AgentGlyph kind={session.provider} size="small" />,
+        keywords: ["resume", "history", "continue", session.provider, session.id],
+        ...workspaceGate,
+        run: () => void resumeAgentSession(session),
+      });
+    }
+
+    commands.push(
+      { id: "view:terminals", group: "View", title: "Show terminals", icon: <TerminalSquare size={15} />, run: () => showCommandRoom("terminals") },
+      { id: "view:sessions", group: "View", title: "Show session history", icon: <Code2 size={15} />, keys: shortcutKeysFor("toggleSessions"), keywords: ["resume", "native", "history"], run: () => showCommandRoom("sessions") },
+      { id: "view:focus", group: "View", title: terminalFocus ? "Exit shell focus" : "Enter shell focus", icon: <Maximize2 size={15} />, keys: shortcutKeysFor("shellFocus"), keywords: ["zen", "fullscreen", "distraction"], run: () => setTerminalFocus(!terminalFocus) },
+      {
+        id: "view:mode",
+        group: "View",
+        title: interfaceMode === "chat" ? "Use terminal view for agent panes" : "Use chat view for agent panes",
+        icon: interfaceMode === "chat" ? <TerminalSquare size={15} /> : <MessageSquare size={15} />,
+        keys: shortcutKeysFor("toggleInterfaceMode"),
+        keywords: ["chat", "terminal", "interface", "mode"],
+        run: () => setInterfaceMode(interfaceMode === "chat" ? "terminal" : "chat"),
+      },
+      { id: "view:settings", group: "View", title: "Open Settings", icon: <SettingsIcon size={15} />, keys: shortcutKeysFor("settings"), keywords: ["preferences", "options"], run: () => openSettings() },
+    );
+
+    for (const option of ["system", ...themes.map((theme) => theme.id)] as ThemePreference[]) {
+      const definition = option === "system" ? null : themes.find((theme) => theme.id === option);
+      commands.push({
+        id: `theme:${option}`,
+        group: "Appearance",
+        title: `Theme: ${themeLabel(option)}`,
+        subtitle: option === uiTheme
+          ? "Current theme"
+          : option === "system"
+            ? `Follows your OS appearance (now ${themeLabel(resolveTheme("system", prefersLight))})`
+            : definition?.description,
+        icon: <Palette size={15} />,
+        keywords: ["theme", "color", "appearance", "colour", definition?.appearance ?? "auto"],
+        preview: () => setPreviewTheme(resolveTheme(option, prefersLight)),
+        run: () => applyTheme(option),
+      });
+    }
+    commands.push({
+      id: "theme:next",
+      group: "Appearance",
+      title: "Next theme",
+      icon: <Palette size={15} />,
+      keywords: ["cycle", "theme"],
+      run: () => applyTheme(nextTheme(resolvedTheme)),
+    });
+    for (const option of ["compact", "default", "comfortable"] as Density[]) {
+      commands.push({
+        id: `density:${option}`,
+        group: "Appearance",
+        title: `Density: ${option[0].toUpperCase()}${option.slice(1)}`,
+        subtitle: option === density ? "Current density" : undefined,
+        icon: <Rows3 size={15} />,
+        keywords: ["spacing", "size", "density"],
+        run: () => setDensity(option),
+      });
+    }
+    commands.push(
+      { id: "terminal:bigger", group: "Appearance", title: "Terminal text: larger", subtitle: `Now ${terminalAppearance.fontSize}px`, icon: <Type size={15} />, keywords: ["font", "zoom", "size", "increase"], run: () => nudgeTerminalFontSize(1) },
+      { id: "terminal:smaller", group: "Appearance", title: "Terminal text: smaller", subtitle: `Now ${terminalAppearance.fontSize}px`, icon: <Type size={15} />, keywords: ["font", "zoom", "size", "decrease"], run: () => nudgeTerminalFontSize(-1) },
+      { id: "terminal:reset", group: "Appearance", title: "Terminal text: reset size", subtitle: `${defaultTerminalAppearance.fontSize}px`, icon: <Type size={15} />, keywords: ["font", "zoom", "size", "default"], run: () => nudgeTerminalFontSize(0) },
+    );
+
+    commands.push({
+      id: "notifications:toggle",
+      group: "Settings",
+      title: notificationPreferences.level === "off" ? "Turn agent alerts on" : "Mute agent alerts",
+      icon: <Bell size={15} />,
+      keywords: ["notifications", "sound", "alerts", "quiet"],
+      run: () => setNotificationPreferences({ ...notificationPreferences, level: notificationPreferences.level === "off" ? "all" : "off" }),
+    });
+    for (const section of settingsSections) {
+      commands.push({
+        id: `settings:${section.id}`,
+        group: "Settings",
+        title: `Settings: ${section.label}`,
+        subtitle: section.description,
+        icon: section.id === "shortcuts" ? <Keyboard size={15} /> : <SettingsIcon size={15} />,
+        keywords: ["preferences", "options", section.id],
+        run: () => openSettings(section.id),
+      });
+    }
+    commands.push(
+      { id: "system:restart-backend", group: "System", title: "Restart the backend", icon: <RefreshCw size={15} />, keywords: ["fastapi", "server", "python"], run: () => void restartBackend() },
+      { id: "system:restart-control", group: "System", title: "Restart Electron control", icon: <RefreshCw size={15} />, keywords: ["mcp", "hermes", "control"], run: () => void restartElectronControl() },
+    );
+    return commands;
+  }
+
   return (
     <div className="appFrame">
       <AppTitleBar
         activeRoom={activeRoom}
-        backendOnline={Boolean(backend?.healthy)}
-        controlOnline={Boolean(electronControl?.running)}
+        status={titleStatusView(backend, electronControl)}
         usage={<UsageMeters client={client} />}
+        paletteKeys={shortcutKeysFor("palette")}
         onNavigate={setActiveRoom}
+        onOpenPalette={() => openPalette()}
       />
       <main className={shellFocus ? "workspaceSurface shellFocusSurface" : "workspaceSurface"}>
         <section className={shellFocus ? "dashboardShell terminalFocusShell" : "dashboardShell"}>
@@ -946,10 +1325,11 @@ export function App() {
             <div className="commandColumn">
               {notice && (
                 <div className="noticeBar" role="status">
+                  <AlertTriangle size={15} />
                   <span>{notice}</span>
                   {error && (
                     <button type="button" className="noticeDismiss" onClick={() => setError(null)} aria-label="Dismiss message">
-                      <X size={12} />
+                      <X size={14} />
                     </button>
                   )}
                 </div>
@@ -964,7 +1344,7 @@ export function App() {
                 onClose={closeWorkspaceTab}
                 onAdd={selectWorkspace}
                 onCreate={createWorkspace}
-                onRename={renameWorkspaceTab}
+                onRename={(tab) => void renameWorkspaceTab(tab)}
                 onOpenInFiles={(tab) => void openWorkspaceInFiles(tab)}
               />
 
@@ -977,50 +1357,65 @@ export function App() {
                   focused={terminalFocus}
                   layoutResetNonce={layoutResetNonce}
                   interfaceMode={interfaceMode}
+                  view={commandView}
+                  onViewChange={setCommandView}
+                  revealPaneRequest={revealPaneRequest}
+                  onInterfaceModeChange={setInterfaceMode}
+                  onToast={(message) => toasts.show(message)}
+                  onAddWorkspace={() => void selectWorkspace()}
                   onFocusChange={setTerminalFocus}
                   onLaunch={launchEmbedded}
                   onClose={closeEmbeddedTerminal}
                   onBroadcastPrompt={broadcastPromptToAgents}
                   onResumeSession={resumeAgentSession}
-                  onRenameEmbeddedSession={renameEmbeddedSession}
-                  onRenameAgentSession={renameAgentSession}
+                  onRenameEmbeddedSession={(session) => void renameEmbeddedSession(session)}
+                  onRenameAgentSession={(session) => void renameAgentSession(session)}
                   onRefreshAgentSessions={refreshAgentSessions}
                   missingAgents={missingAgents}
                   emptyMark={<AthenaMark />}
                 />
               )}
               {activeRoom === "settings" && (
-                <SettingsRoom
-                  workspace={workspaceDisplay}
-                  backend={backend}
-                  electronControl={electronControl}
-                  hermes={hermes}
-                  adapters={adapters}
-                  busy={busy}
-                  installingHermes={installingHermes}
-                  onInstallHermes={installHermes}
-                  agentClis={agentClis}
-                  canRunSetup={Boolean(workspace)}
-                  onAgentSetup={(kind, action) => void runAgentSetup(kind, action)}
-                  interfaceMode={interfaceMode}
-                  uiTheme={uiTheme}
-                  terminalFocus={terminalFocus}
-                  performance={performanceDiagnostics}
-                  launchState={launchState}
-                  graphics={graphicsStatus}
-                  onSelectWorkspace={selectWorkspace}
-                  onRestartBackend={restartBackend}
-                  onRestartControl={restartElectronControl}
-                  onClearTerminalRestorePause={clearTerminalRestorePause}
-                  onRefreshDiagnostics={refreshPerformanceDiagnostics}
-                  onInterfaceModeChange={setInterfaceMode}
-                  onThemeChange={setUiTheme}
-                  onTerminalFocusChange={setTerminalFocus}
-                  onGraphicsPreferenceChange={updateGraphicsPreference}
-                  notificationPreferences={notificationPreferences}
-                  onNotificationPreferencesChange={setNotificationPreferences}
-                  onPreviewAttentionSound={previewAttentionSound}
-                />
+                <Suspense fallback={<section className="roomPanel" aria-busy="true" />}>
+                  <SettingsRoom
+                    workspace={workspaceDisplay}
+                    backend={backend}
+                    electronControl={electronControl}
+                    hermes={hermes}
+                    adapters={adapters}
+                    busy={busy}
+                    installingHermes={installingHermes}
+                    onInstallHermes={installHermes}
+                    agentClis={agentClis}
+                    canRunSetup={Boolean(workspace)}
+                    onAgentSetup={(kind, action) => void runAgentSetup(kind, action)}
+                    interfaceMode={interfaceMode}
+                    uiTheme={uiTheme}
+                    resolvedTheme={resolvedTheme}
+                    density={density}
+                    terminalAppearance={terminalAppearance}
+                    section={settingsSection}
+                    terminalFocus={terminalFocus}
+                    performance={performanceDiagnostics}
+                    launchState={launchState}
+                    graphics={graphicsStatus}
+                    onSelectWorkspace={selectWorkspace}
+                    onRestartBackend={restartBackend}
+                    onRestartControl={restartElectronControl}
+                    onClearTerminalRestorePause={clearTerminalRestorePause}
+                    onRefreshDiagnostics={refreshPerformanceDiagnostics}
+                    onInterfaceModeChange={setInterfaceMode}
+                    onThemeChange={setUiTheme}
+                    onDensityChange={setDensity}
+                    onTerminalAppearanceChange={setTerminalAppearance}
+                    onSectionChange={setSettingsSection}
+                    onTerminalFocusChange={setTerminalFocus}
+                    onGraphicsPreferenceChange={updateGraphicsPreference}
+                    notificationPreferences={notificationPreferences}
+                    onNotificationPreferencesChange={setNotificationPreferences}
+                    onPreviewAttentionSound={previewAttentionSound}
+                  />
+                </Suspense>
               )}
             </div>
           </section>
@@ -1037,60 +1432,118 @@ export function App() {
           onOpenDocs={(url) => void desktop.openExternalUrl(url)}
         />
       )}
+      {promptRequest && (
+        <PromptDialog request={promptRequest} onSubmit={(value) => closePrompt(value)} onCancel={() => closePrompt(null)} />
+      )}
+      {palette.open && (
+        <CommandPalette
+          open
+          commands={buildPaletteCommands()}
+          initialQuery={palette.query}
+          placeholder="Launch an agent, switch workspace, change theme…"
+          onClose={closePalette}
+          onPreviewReset={() => setPreviewTheme(null)}
+        />
+      )}
+      <ToastStack toasts={toasts.toasts} onDismiss={toasts.dismiss} />
     </div>
   );
 }
 
+type TitleStatus = { tone: "ready" | "starting" | "degraded" | "offline"; label: string; detail: string };
+
+function titleStatusView(backend: BackendStatus | null, control: ElectronControlStatus | null): TitleStatus {
+  if (!backend || (backend.running && !backend.healthy)) {
+    return { tone: "starting", label: "Starting…", detail: "The Athena backend is starting up." };
+  }
+  if (!backend.healthy) {
+    return { tone: "offline", label: "Backend offline", detail: backend.lastError ?? "The Athena backend is not running. Restart it from Settings > System." };
+  }
+  if (!control?.running) {
+    return { tone: "degraded", label: "Control offline", detail: control?.lastError ?? "Electron control is not running, so Hermes cannot drive this window." };
+  }
+  return { tone: "ready", label: "Ready", detail: "Backend and Electron control are healthy." };
+}
+
 function AppTitleBar({
   activeRoom,
-  backendOnline,
-  controlOnline,
+  status,
   usage,
+  paletteKeys,
   onNavigate,
+  onOpenPalette,
 }: {
   activeRoom: ActiveRoom;
-  backendOnline: boolean;
-  controlOnline: boolean;
+  status: TitleStatus;
   usage?: ReactNode;
+  paletteKeys: string[];
   onNavigate: (room: ActiveRoom) => void;
+  onOpenPalette: () => void;
 }) {
+  const mac = isMacPlatform();
+  const controls = mac ? (
+    <div className="windowControls mac" aria-label="Window controls">
+      <button type="button" className="windowDot close" aria-label="Close window" onClick={() => void desktop.closeWindow()}>
+        <X size={8} strokeWidth={3} />
+      </button>
+      <button type="button" className="windowDot minimize" aria-label="Minimize window" onClick={() => void desktop.minimizeWindow()}>
+        <Minus size={8} strokeWidth={3} />
+      </button>
+      <button type="button" className="windowDot maximize" aria-label="Maximize window" onClick={() => void desktop.toggleMaximizeWindow()}>
+        <Square size={7} strokeWidth={3} />
+      </button>
+    </div>
+  ) : (
+    <div className="windowControls caption" aria-label="Window controls">
+      <button type="button" aria-label="Minimize window" title="Minimize" onClick={() => void desktop.minimizeWindow()}>
+        <Minus size={15} strokeWidth={1.5} />
+      </button>
+      <button type="button" aria-label="Maximize window" title="Maximize" onClick={() => void desktop.toggleMaximizeWindow()}>
+        <Square size={12} strokeWidth={1.5} />
+      </button>
+      <button type="button" className="close" aria-label="Close window" title="Close" onClick={() => void desktop.closeWindow()}>
+        <X size={16} strokeWidth={1.5} />
+      </button>
+    </div>
+  );
+
   return (
     <header className="appTitleBar">
-      <div className="windowControls" aria-label="Window controls">
-        <button type="button" className="windowDot close" aria-label="Close window" onClick={() => void desktop.closeWindow()}>
-          <X size={9} />
-        </button>
-        <button type="button" className="windowDot minimize" aria-label="Minimize window" onClick={() => void desktop.minimizeWindow()}>
-          <Minus size={9} />
-        </button>
-        <button type="button" className="windowDot maximize" aria-label="Maximize window" onClick={() => void desktop.toggleMaximizeWindow()}>
-          <Square size={8} />
+      <div className="titleStart">
+        {mac && controls}
+        <div className="titleBrand">
+          <span className="titleMark" aria-hidden="true"><img src={athenaMarkUrl} alt="" /></span>
+          <strong>ATHENA</strong>
+        </div>
+      </div>
+      <div className="titleCenter">
+        <nav className="titleNav" aria-label="Rooms">
+          {roomRoutes.map((route) => (
+            <button
+              key={route.id}
+              type="button"
+              className={activeRoom === route.id ? "active" : ""}
+              aria-current={activeRoom === route.id ? "page" : undefined}
+              onClick={() => onNavigate(route.id)}
+            >
+              {route.icon}
+              <span>{route.label}</span>
+            </button>
+          ))}
+        </nav>
+        <button type="button" className="titleCommand" onClick={onOpenPalette} title="Command palette" aria-label="Open the command palette">
+          <Command size={13} />
+          <span className="titleCommandLabel">Search commands</span>
+          <span className="kbdGroup">{paletteKeys.map((key) => <kbd key={key} className="kbd">{key}</kbd>)}</span>
         </button>
       </div>
-      <div className="titleBrand">
-        <span className="titleMark" aria-hidden="true"><img src={athenaMarkUrl} alt="" /></span>
-        <strong>ATHENA</strong>
-      </div>
-      <nav className="titleNav" aria-label="Rooms">
-        {roomRoutes.map((route) => (
-          <button
-            key={route.id}
-            type="button"
-            className={activeRoom === route.id ? "active" : ""}
-            aria-current={activeRoom === route.id ? "page" : undefined}
-            onClick={() => onNavigate(route.id)}
-          >
-            {route.icon}
-            <span>{route.label}</span>
-          </button>
-        ))}
-      </nav>
       <div className="titleEnd">
         {usage}
-        <div className="titleStatus" title={`Backend ${backendOnline ? "online" : "offline"} · Control ${controlOnline ? "online" : "offline"}`}>
-          <span className={backendOnline && controlOnline ? "online" : ""} />
-          {backendOnline ? (controlOnline ? "Ready" : "Control stale") : "Offline"}
+        <div className={`titleStatus ${status.tone}`} title={status.detail} role="status">
+          <i aria-hidden="true" />
+          {status.label}
         </div>
+        {!mac && controls}
       </div>
     </header>
   );

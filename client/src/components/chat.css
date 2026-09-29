@@ -1,0 +1,33 @@
+/* Shared chat behavior and sizing across all dynamically loaded themes. */
+div.embeddedChatTerminal { min-width: 0; overflow: hidden; }
+div.embeddedChatStatus { gap: 8px; min-height: 38px; }
+div.embeddedChatStatus em { flex: 1; }
+div.embeddedChatStatus button {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 7px; border: 1px solid var(--line); border-radius: 5px;
+  background: transparent; color: var(--text); font-size: 11px; white-space: nowrap;
+}
+div.embeddedChatTranscript { padding: 16px; gap: 14px; overflow-anchor: none; }
+article.chatBubble { flex-shrink: 0; min-width: 0; padding: 14px 16px; border-radius: 10px; }
+article.chatBubble pre { font-size: 13px; line-height: 1.65; tab-size: 4; }
+.chatMarkdown { color: var(--text-2); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.chatMarkdown > :first-child { margin-top: 0; }
+.chatMarkdown > :last-child { margin-bottom: 0; }
+.chatMarkdown p { white-space: pre-wrap; margin: 0 0 12px; }
+.chatMarkdown ul, .chatMarkdown ol { padding-left: 22px; }
+.chatMarkdown h1, .chatMarkdown h2, .chatMarkdown h3 { font-size: 1.15em; margin: 16px 0 8px; color: var(--text); }
+.chatMarkdown a { color: var(--accent, var(--orange)); text-decoration: underline; }
+.chatMarkdown code { font-family: Consolas, 'Cascadia Code', monospace; font-size: .93em; }
+article.chatBubble .chatMarkdown pre { padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--terminal); overflow-x: auto; white-space: pre; }
+.chatMarkdown blockquote { margin-left: 0; padding-left: 12px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+.chatMarkdown table { border-collapse: collapse; display: block; max-width: 100%; overflow-x: auto; }
+.chatMarkdown th, .chatMarkdown td { padding: 6px 10px; border: 1px solid var(--line); text-align: left; }
+form.embeddedChatComposer { padding: 10px; align-items: end; }
+form.embeddedChatComposer textarea { min-height: 42px; max-height: 160px; resize: none; font-size: 13px; line-height: 1.5; }
+form.embeddedChatComposer > button { height: 38px; width: 34px; }
+.chatComposerHint { grid-column: 2 / -1; color: var(--muted); font-size: 10px; }
+.chatError { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; color: var(--red, #b85f50); font-size: 12px; overflow-wrap: anywhere; }
+.chatError span { flex: 1; }
+form.embeddedChatComposer .chatError button { width: auto; padding: 4px 8px; }
+.chatViewReturn { padding: 5px 10px; border: 0; border-bottom: 1px solid var(--line); background: var(--panel-2); color: var(--text); text-align: left; font-size: 12px; }
+.chatTerminalFallback { flex: 1; min-height: 0; display: flex; flex-direction: column; }

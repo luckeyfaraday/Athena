@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .agent_sessions import format_agent_sessions_summary, list_native_agent_sessions, read_agent_session_transcript
+from .chat_messages import read_chat_messages
 from .hermes import HermesManager
 from .memory import HermesMemoryStore
 from .runtime import AdapterStatusCache
@@ -312,6 +313,15 @@ def create_app(
             if session_provider is None:
                 raise ValueError("provider is required.")
             return read_agent_session_transcript(session_provider, session_id, max_bytes=max_bytes, tail=tail)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/agents/sessions/{provider}/{session_id}/chat")
+    def get_agent_chat_messages(provider: str, session_id: str, workspace: str | None = Query(default=None)) -> dict[str, Any]:
+        try:
+            return read_chat_messages(provider, session_id, workspace=workspace)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except FileNotFoundError as exc:

@@ -168,6 +168,11 @@ child.stderr.on("data", (chunk) => {
 try {
   await waitForHealth(port, child, stderr, childError);
   console.log(`Bundled backend health check passed on port ${port}.`);
+  const chat = await fetch(`http://127.0.0.1:${port}/agents/sessions/unsupported/smoke/chat`, { signal: AbortSignal.timeout(5_000) });
+  if (chat.status !== 400 || !(await chat.json()).detail?.includes("Unsupported session provider")) {
+    throw new Error("Bundled backend is missing the structured chat endpoint.");
+  }
+  console.log("Bundled chat endpoint check passed.");
 } finally {
   await stopChild(child);
 }

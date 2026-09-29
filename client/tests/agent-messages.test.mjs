@@ -101,6 +101,10 @@ test("flushAgentMessages persists synchronously and an older in-flight write can
 
   const message = send("racing");
   // The debounce fires and the background write of this older snapshot stalls.
+  // The writer's debounce timer is unref'd (it must not keep Electron alive),
+  // so poll with timers instead of awaiting a bare promise: on Node 22 the
+  // test runner cancels a test whose event loop drains while it awaits.
+  await waitFor(() => writeFile.mock.callCount() > 0);
   await writeStarted;
   assert.equal(writeFile.mock.callCount(), 1);
 
@@ -111,7 +115,11 @@ test("flushAgentMessages persists synchronously and an older in-flight write can
 
   // Let the stale write finish; its snapshot still says "queued".
   releaseWrite();
-  await writeFile.mock.calls[0].result;
+  const staleWrite = writeFile.mock.calls[0].result;
+  let staleWriteSettled = false;
+  const markSettled = () => { staleWriteSettled = true; };
+  staleWrite.then(markSettled, markSettled);
+  await waitFor(() => staleWriteSettled);
   await delay(20);
 
   assert.equal(savedMessages().find((entry) => entry.id === message.id).status, "output_seen");

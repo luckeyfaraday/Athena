@@ -8,10 +8,8 @@ import {
   isWslPath,
   normalizeComparablePath,
   preferredWindowsPowerShell,
-  scriptExtensionForPlatform,
   toWorkspacePath,
   windowsPathToWslPath,
-  windowsTerminalGridArgs,
   wslPathToWindowsPath,
 } from "../dist-electron/platform.js";
 
@@ -61,12 +59,10 @@ test("keeps Windows workspace paths first-class in the workspace model", () => {
   assert.equal(workspace.displayPath, "C:\\Users\\dev\\repo");
 });
 
-test("selects platform-specific command lookup and script conventions", () => {
+test("selects the platform-specific command lookup tool", () => {
   assert.equal(commandLookupTool("win32"), "where.exe");
   assert.equal(commandLookupTool("linux"), "which");
   assert.equal(commandLookupTool("darwin"), "which");
-  assert.equal(scriptExtensionForPlatform("win32"), ".ps1");
-  assert.equal(scriptExtensionForPlatform("linux"), ".sh");
 });
 
 test("prefers PowerShell 7 on Windows and falls back to Windows PowerShell", () => {
@@ -74,9 +70,14 @@ test("prefers PowerShell 7 on Windows and falls back to Windows PowerShell", () 
   assert.equal(preferredWindowsPowerShell(() => false), "powershell.exe");
 });
 
-test("generates Windows Terminal split-pane arguments", () => {
-  const args = windowsTerminalGridArgs("C:\\Users\\dev\\repo", ["a.ps1", "b.ps1"]);
-  assert.deepEqual(args.slice(0, 9), ["-d", "C:\\Users\\dev\\repo", "powershell.exe", "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "a.ps1"]);
-  assert.equal(args.includes("split-pane"), true);
-  assert.equal(args.at(-1), "b.ps1");
+test("memoizes the default PowerShell PATH probe for the process lifetime", () => {
+  const first = preferredWindowsPowerShell();
+  assert.ok(first === "pwsh.exe" || first === "powershell.exe");
+  // An injected probe is never cached and never poisons the default cache.
+  const flipped = preferredWindowsPowerShell(() => first !== "pwsh.exe");
+  assert.notEqual(flipped, first);
+  const started = process.hrtime.bigint();
+  for (let index = 0; index < 50; index += 1) assert.equal(preferredWindowsPowerShell(), first);
+  // Fifty uncached where.exe/which spawns would take whole seconds.
+  assert.ok(process.hrtime.bigint() - started < 50_000_000n);
 });

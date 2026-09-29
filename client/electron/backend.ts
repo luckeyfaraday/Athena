@@ -24,6 +24,9 @@ const BACKEND_STDERR_LIMIT = 16_384;
 
 let backendProcess: ChildProcessWithoutNullStreams | null = null;
 let startedAt: string | null = null;
+/** Serialized discovery content last written, excluding the timestamp. */
+let lastDiscoveryContent: string | null = null;
+let lastDiscoveryMtimeMs: number | null = null;
 let state: BackendState = {
   baseUrl: null,
   healthy: false,
@@ -45,8 +48,6 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
   const baseUrl = `http://127.0.0.1:${port}`;
   const launch = resolveBackendLaunch(appRoot, port);
   const backendParent = resolveBackendParent(appRoot);
-  const hermesRefreshCommand = process.env.CONTEXT_WORKSPACE_HERMES_REFRESH_CMD?.trim()
-    || defaultHermesRefreshCommand(appRoot, launch);
 
   backendProcess = spawn(
     launch.command,
@@ -59,7 +60,6 @@ export async function startBackend(appRoot: string): Promise<BackendState> {
       env: {
         ...process.env,
         CONTEXT_WORKSPACE_BACKEND_PORT: String(port),
-        CONTEXT_WORKSPACE_HERMES_REFRESH_CMD: hermesRefreshCommand,
         // Frozen runtimes already contain the backend package and dependencies.
         // Keep host modules from shadowing that tested bundle at runtime.
         PYTHONPATH: launch.bundled ? "" : mergePythonPath(backendParent, process.env.PYTHONPATH),
@@ -300,26 +300,6 @@ function mergePythonPath(backendParent: string, existing: string | undefined): s
   return existing ? `${backendParent}${path.delimiter}${existing}` : backendParent;
 }
 
-export function defaultHermesRefreshCommand(appRoot: string, launch: BackendLaunch): string {
-  const scriptPath = resolveRefreshScriptPath(appRoot);
-  const command = quoteCommandArg(launch.command);
-  return launch.bundled
-    ? `${command} --refresh-recall-script ${quoteCommandArg(scriptPath)}`
-    : `${command} ${quoteCommandArg(scriptPath)}`;
-}
-
-function resolveRefreshScriptPath(appRoot: string): string {
-  const candidates = [
-    path.resolve(appRoot, "..", "scripts", "hermes-refresh-recall.py"),
-    path.resolve(resolveBackendParent(appRoot), "scripts", "hermes-refresh-recall.py"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
-}
-
-function quoteCommandArg(value: string): string {
-  return `"${value.replace(/"/g, '\\"')}"`;
-}
-
 function fetchHealthStatus(baseUrl: string): Promise<number> {
   const url = new URL("/health", baseUrl);
   return new Promise((resolve, reject) => {
@@ -343,29 +323,40 @@ export function formatBackendExitError(exitSummary: string, stderr: string): str
   return detail ? `${exitSummary}\n${detail}` : exitSummary;
 }
 
+// The renderer polls health every few seconds; rewrite backend.json only when
+// its content (ignoring the timestamp) changes, or when another writer (such as
+// `athena serve`) replaced or removed it -- detected with a cheap stat.
 function writeBackendDiscovery(): void {
+  const discovery = {
+    baseUrl: state.baseUrl,
+    port: state.port,
+    pid: backendProcess?.pid ?? null,
+    healthy: state.healthy,
+    running: state.running,
+    startedAt,
+    lastError: state.lastError,
+  };
+  const content = JSON.stringify(discovery);
+  const filePath = path.join(os.homedir(), ".context-workspace", "backend.json");
+  if (content === lastDiscoveryContent && fileMtimeMs(filePath) === lastDiscoveryMtimeMs) return;
   try {
-    const directory = path.join(os.homedir(), ".context-workspace");
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
-      path.join(directory, "backend.json"),
-      JSON.stringify(
-        {
-          baseUrl: state.baseUrl,
-          port: state.port,
-          pid: backendProcess?.pid ?? null,
-          healthy: state.healthy,
-          running: state.running,
-          startedAt,
-          lastError: state.lastError,
-          updatedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
+      filePath,
+      JSON.stringify({ ...discovery, updatedAt: new Date().toISOString() }, null, 2),
       "utf8",
     );
+    lastDiscoveryContent = content;
+    lastDiscoveryMtimeMs = fileMtimeMs(filePath);
   } catch {
     // Discovery is best-effort; the in-app backend state remains authoritative.
+  }
+}
+
+function fileMtimeMs(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return null;
   }
 }

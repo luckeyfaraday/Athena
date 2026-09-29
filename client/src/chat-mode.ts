@@ -13,6 +13,43 @@ export type SentPromptBlock = {
 
 const sentPromptHistoryBySession = new Map<string, SentPromptBlock[]>();
 
+/**
+ * Prompt markers are offsets in a per-session "chat stream" coordinate system
+ * that survives chat-view remounts and main-process buffer trimming. The
+ * anchor is the last known stream offset plus the raw output just before it;
+ * a fresh buffer (attach snapshot, getEmbeddedTerminalBuffer) is mapped into
+ * that system by locating the anchor text in it.
+ */
+export const CHAT_STREAM_ANCHOR_CHARS = 256;
+
+type ChatStreamAnchor = { end: number; tail: string };
+
+const chatStreamAnchorBySession = new Map<string, ChatStreamAnchor>();
+
+/**
+ * Stream offset of the end of `buffer`, the terminal's currently retained
+ * output (ending "now"). Also re-anchors the session on that buffer. Use it
+ * for prompt markers taken from a buffer and as the parser base on attach
+ * (`end - buffer.length`).
+ */
+export function chatStreamEndForBuffer(sessionId: string, buffer: string): number {
+  const anchor = chatStreamAnchorBySession.get(sessionId);
+  let end = buffer.length;
+  if (anchor) {
+    const at = anchor.tail ? buffer.lastIndexOf(anchor.tail) : -1;
+    // Anchor text found: everything after it is new. Not found: it scrolled
+    // out of the buffer (or the stream restarted), so the whole buffer is new.
+    end = anchor.end + (at >= 0 ? buffer.length - (at + anchor.tail.length) : buffer.length);
+  }
+  chatStreamAnchorBySession.set(sessionId, { end, tail: buffer.slice(-CHAT_STREAM_ANCHOR_CHARS) });
+  return end;
+}
+
+/** Record that the stream is at `end`, with `tail` the raw output just before it. */
+export function updateChatStreamAnchor(sessionId: string, end: number, tail: string): void {
+  chatStreamAnchorBySession.set(sessionId, { end, tail: tail.slice(-CHAT_STREAM_ANCHOR_CHARS) });
+}
+
 export function promptWritesForKind(kind: EmbeddedTerminalKind, prompt: string): string[] {
   return kind === "codex" || kind === "grok" ? [prompt, "\r"] : [`${prompt}\r`];
 }

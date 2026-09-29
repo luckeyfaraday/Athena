@@ -14,40 +14,7 @@ except ImportError:  # Preserve direct `python mcp_server/server.py` launches.
     import tools
 
 
-TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
-    name: getattr(tools, name)
-    for name in (
-        "context_workspace_health",
-        "context_workspace_hermes_status",
-        "context_workspace_query_memory",
-        "context_workspace_query_project_memory",
-        "context_workspace_create_context_bundle",
-        "context_workspace_get_context_bundle",
-        "context_workspace_ask_hermes",
-        "context_workspace_store_memory",
-        "context_workspace_delete_memory",
-        "context_workspace_recent_memory",
-        "context_workspace_list_agent_sessions",
-        "context_workspace_summarize_agent_sessions",
-        "context_workspace_open_workspace",
-        "context_workspace_spawn_agent",
-        "context_workspace_spawn_terminal",
-        "context_workspace_spawn_terminals_batch",
-        "context_workspace_list_live_terminals",
-        "context_workspace_kill_terminal",
-        "context_workspace_close_workspace",
-        "context_workspace_inject_terminal_input",
-        "context_workspace_list_runs",
-        "context_workspace_get_run",
-        "context_workspace_cancel_run",
-        "context_workspace_read_artifact",
-        "context_workspace_read_agent_session",
-        "context_workspace_wait_for_run",
-        "context_workspace_write_recall_cache",
-        "context_workspace_read_recall_cache",
-        "context_workspace_clear_recall_cache",
-    )
-}
+TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {tool.__name__: tool for tool in tools.TOOLS}
 
 
 def main() -> None:

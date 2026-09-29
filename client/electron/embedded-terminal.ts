@@ -58,6 +58,7 @@ import {
   openCodeDatabaseCandidates,
   openCodeSessionExists,
   openCodeSessionIdForWorkspace,
+  readLeadingLines,
   savedResumeSessionId,
   selectDiscoveredSessionId,
   selectEmbeddedTerminalRestoreEntries,
@@ -66,7 +67,6 @@ import {
   type SessionFileCandidate,
 } from "./terminal-restore-policy.js";
 import { sanitizedTerminalEnv } from "./terminal-env.js";
-import { readFilePrefix } from "./file-prefix.js";
 import { rawInputPreview } from "./terminal-input.js";
 import {
   clearTerminalActivity,
@@ -81,6 +81,7 @@ import {
   terminalOutputCleanupDecision,
 } from "./terminal-output-cleanup.js";
 import {
+  TerminalFlowController,
   TerminalOutputStreamHub,
   type TerminalStreamAttachSnapshot,
   type TerminalStreamDelivery,
@@ -125,11 +126,6 @@ export type EmbeddedTerminalSpawnOptions = {
   contextText?: string;
   model?: string;
   controlSource?: string;
-};
-
-type ImmersiveContextBundle = {
-  bundle_id: string;
-  context_path: string;
 };
 
 export type SendAgentMessageRequest = {
@@ -194,25 +190,33 @@ export function hasPendingEmbeddedTerminalRestoreAttempts(): boolean {
 const terminals = new Map<string, ManagedTerminal>();
 const MAX_BUFFER_CHARS = 200_000;
 const RENDERER_REPLAY_MAX_CHARS = 64 * 1024;
+// One renderer delivery carries at most this much live output (always at
+// least one sequence), so a consumer catching up parses bounded batches
+// instead of one huge write that could outlive its ACK timeout.
+const RENDERER_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_FLUSH_INTERVAL_MS = 16;
 const EVENT_LOOP_SAMPLE_INTERVAL_MS = 1000;
-const CLAUDE_SESSION_DISCOVERY_ATTEMPTS = 20;
-const CLAUDE_SESSION_DISCOVERY_INTERVAL_MS = 750;
-const CODEX_SESSION_DISCOVERY_ATTEMPTS = 20;
-const CODEX_SESSION_DISCOVERY_INTERVAL_MS = 750;
-const OPENCODE_SESSION_DISCOVERY_ATTEMPTS = 20;
-const OPENCODE_SESSION_DISCOVERY_INTERVAL_MS = 750;
+// Provider session-id discovery polls with exponential backoff (~30s total,
+// 8 probes) instead of 20 fixed 750ms probes; each OpenCode probe is a SQLite
+// query and each Codex probe a session-directory scan.
+const SESSION_DISCOVERY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000];
+// Agent process diagnostics enumerate every system process; cache briefly so
+// repeated/concurrent Settings polls share one sample.
+const AGENT_PROCESS_CACHE_TTL_MS = 10_000;
 // Grok stamps the session dir at creation; allow a little slack so a dir written
 // just before our spawn timestamp (clock skew / startup latency) still matches.
 const GROK_SESSION_DISCOVERY_SLACK_MS = 5_000;
 const outputStream = new TerminalOutputStreamHub({ maxSnapshotChars: MAX_BUFFER_CHARS });
-const terminalAttention = new TerminalAttentionTracker();
-type RendererOutputSubscription = {
-  sender: WebContents;
-  allTerminals: boolean;
-  terminalIds: Set<string>;
-};
-const rendererOutputSubscriptions = new Map<number, RendererOutputSubscription>();
+// PTY backpressure: pause reading a terminal's PTY while a live consumer is
+// far behind, instead of letting its backlog overflow into reset snapshots.
+const terminalFlow = new TerminalFlowController({
+  setPaused: (id, paused) => ptyHost.setFlowPaused(id, paused),
+});
+const terminalAttention = new TerminalAttentionTracker((id, kind) => {
+  emit("embedded-terminal:attention", { id, kind });
+});
+// Renderer WebContents that own `renderer:<id>` stream consumers.
+const rendererOutputSenders = new Map<number, WebContents>();
 type ControlOutputConsumer = {
   terminalId: string;
   onDelivery: (delivery: TerminalStreamDelivery) => boolean;
@@ -231,8 +235,7 @@ const perfCounters = {
   ptyBytes: 0,
   ipcBatches: 0,
   ipcBytes: 0,
-  hiddenRawIpcBytes: 0,
-  lastBatchAt: null as string | null,
+  lastBatchAt: null as number | null,
   sampleStartedAt: Date.now(),
   rates: {
     ptyChunksPerSecond: 0,
@@ -255,9 +258,10 @@ export type PerformanceDiagnostics = {
   maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
   rendererTerminalSubscribers: number;
-  hiddenRawIpcBytes: number;
   terminalOutputRetries: number;
   terminalOutputResets: number;
+  terminalOutputFlowPauses: number;
+  terminalOutputFlowForcedResumes: number;
   terminalOutputDroppedChars: number;
   terminalOutputDeliveredChars: number;
   terminalOutputAcknowledgedChars: number;
@@ -294,16 +298,17 @@ export function getEmbeddedTerminalBuffer(id: string): string {
   return outputStream.getBuffer(id);
 }
 
-export function attachEmbeddedTerminalBuffer(id: string): string {
-  return getEmbeddedTerminalBuffer(id);
-}
+const RENDERER_STREAM_OPTIONS = {
+  replayMaxChars: RENDERER_REPLAY_MAX_CHARS,
+  maxBatchChars: RENDERER_BATCH_MAX_CHARS,
+};
 
 export function attachEmbeddedTerminalStream(id: string, sender: WebContents): TerminalStreamAttachSnapshot {
-  const subscription = ensureRendererOutputSubscription(sender);
-  subscription.terminalIds.add(id);
-  return outputStream.attach(id, rendererConsumerId(sender.id), {
-    replayMaxChars: RENDERER_REPLAY_MAX_CHARS,
-  });
+  registerRendererOutputSender(sender);
+  const snapshot = outputStream.attach(id, rendererConsumerId(sender.id), RENDERER_STREAM_OPTIONS);
+  // A rebase drops this consumer's backlog; lift any backpressure it caused.
+  updateTerminalFlow(id);
+  return snapshot;
 }
 
 export type EmbeddedTerminalControlStream = {
@@ -341,51 +346,46 @@ export function attachEmbeddedTerminalControlStream(
       closed = true;
       controlOutputConsumers.delete(consumerId);
       outputStream.detach(id, consumerId);
+      updateTerminalFlow(id);
       if (!outputStream.hasPendingDeliveries()) clearOutputFlushTimer();
     },
   };
 }
 
 export function subscribeEmbeddedTerminalOutput(id: string, sender: WebContents): void {
-  const subscription = ensureRendererOutputSubscription(sender);
-  subscription.terminalIds.add(id);
-  outputStream.subscribe(id, rendererConsumerId(sender.id));
+  registerRendererOutputSender(sender);
+  outputStream.subscribe(id, rendererConsumerId(sender.id), RENDERER_STREAM_OPTIONS);
 }
 
 export function unsubscribeEmbeddedTerminalOutput(id: string, senderId: number): void {
-  const subscription = rendererOutputSubscriptions.get(senderId);
-  if (!subscription) return;
-  subscription.terminalIds.delete(id);
-  if (!subscription.allTerminals) outputStream.detach(id, rendererConsumerId(senderId));
+  if (!rendererOutputSenders.has(senderId)) return;
+  outputStream.detach(id, rendererConsumerId(senderId));
+  updateTerminalFlow(id);
 }
 
-export function subscribeAllEmbeddedTerminalOutput(sender: WebContents): void {
-  const subscription = ensureRendererOutputSubscription(sender);
-  subscription.allTerminals = true;
-  for (const id of outputStream.terminalIds()) {
-    outputStream.subscribe(id, rendererConsumerId(sender.id));
-  }
-}
-
-export function unsubscribeAllEmbeddedTerminalOutput(senderId: number): void {
-  const subscription = rendererOutputSubscriptions.get(senderId);
-  if (!subscription) return;
-  subscription.allTerminals = false;
-  for (const id of outputStream.terminalIds()) {
-    if (!subscription.terminalIds.has(id)) outputStream.detach(id, rendererConsumerId(senderId));
-  }
-}
-
-function ensureRendererOutputSubscription(sender: WebContents): RendererOutputSubscription {
-  let subscription = rendererOutputSubscriptions.get(sender.id);
-  if (subscription) return subscription;
-  subscription = { sender, allTerminals: false, terminalIds: new Set() };
-  rendererOutputSubscriptions.set(sender.id, subscription);
+function registerRendererOutputSender(sender: WebContents): void {
+  const senderId = sender.id;
+  if (rendererOutputSenders.has(senderId)) return;
+  rendererOutputSenders.set(senderId, sender);
+  // A reloaded or crashed page never ACKs its old consumers; their stuck
+  // gates would keep counting backlog (and pausing busy PTYs). Drop them once
+  // the main frame commits a new document or the renderer process dies; the
+  // new page resubscribes and reattaches from a snapshot. `did-navigate` (not
+  // `did-start-navigation`) so a cancelled navigation keeps its live views.
+  const dropConsumers = () => detachRendererConsumer(senderId);
+  sender.on("did-navigate", dropConsumers);
+  sender.on("render-process-gone", dropConsumers);
   sender.once("destroyed", () => {
-    rendererOutputSubscriptions.delete(sender.id);
-    outputStream.detachConsumer(rendererConsumerId(sender.id));
+    sender.removeListener("did-navigate", dropConsumers);
+    sender.removeListener("render-process-gone", dropConsumers);
+    rendererOutputSenders.delete(senderId);
+    detachRendererConsumer(senderId);
   });
-  return subscription;
+}
+
+function detachRendererConsumer(senderId: number): void {
+  outputStream.detachConsumer(rendererConsumerId(senderId));
+  updatePausedTerminalFlows();
 }
 
 function rendererConsumerId(senderId: number): string {
@@ -393,13 +393,21 @@ function rendererConsumerId(senderId: number): string {
 }
 
 function rendererTerminalSubscriberCount(): number {
-  let count = 0;
-  for (const terminalId of outputStream.terminalIds()) {
-    for (const consumerId of outputStream.terminalConsumerIds(terminalId)) {
-      if (consumerId.startsWith("renderer:")) count += 1;
-    }
+  return outputStream.countConsumers((consumerId) => consumerId.startsWith("renderer:"));
+}
+
+function updateTerminalFlow(id: string): void {
+  // Exited terminals keep their output state for a grace period while views
+  // drain it, but there is no PTY left to pause.
+  if (!terminals.has(id)) {
+    terminalFlow.forget(id);
+    return;
   }
-  return count;
+  terminalFlow.update(id, outputStream.backlogChars(id));
+}
+
+function updatePausedTerminalFlows(): void {
+  for (const id of terminalFlow.pausedTerminalIds()) updateTerminalFlow(id);
 }
 
 export function findEmbeddedTerminal(target: string): EmbeddedTerminalSession | null {
@@ -557,6 +565,7 @@ export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostic
   const pendingOutputBytes = outputStream.pendingChars();
   const bufferedTerminalChars = outputStream.bufferedChars();
   const streamDiagnostics = outputStream.diagnostics();
+  const flowDiagnostics = terminalFlow.diagnostics();
   const agentProcesses = await detectAgentProcesses();
   return {
     activeTerminals: terminals.size,
@@ -569,11 +578,12 @@ export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostic
     ipcBytesPerSecond: perfCounters.rates.ipcBytesPerSecond,
     eventLoopLagMs,
     maxEventLoopLagMs,
-    lastOutputBatchAt: perfCounters.lastBatchAt,
+    lastOutputBatchAt: perfCounters.lastBatchAt == null ? null : new Date(perfCounters.lastBatchAt).toISOString(),
     rendererTerminalSubscribers: rendererTerminalSubscriberCount(),
-    hiddenRawIpcBytes: perfCounters.hiddenRawIpcBytes,
     terminalOutputRetries: streamDiagnostics.retries,
     terminalOutputResets: streamDiagnostics.resets,
+    terminalOutputFlowPauses: flowDiagnostics.pauses,
+    terminalOutputFlowForcedResumes: flowDiagnostics.forcedResumes,
     terminalOutputDroppedChars: streamDiagnostics.droppedOrTruncatedChars,
     terminalOutputDeliveredChars: streamDiagnostics.deliveredChars,
     terminalOutputAcknowledgedChars: streamDiagnostics.acknowledgedChars,
@@ -587,32 +597,33 @@ export async function getPerformanceDiagnostics(): Promise<PerformanceDiagnostic
   };
 }
 
-async function detectAgentProcesses(): Promise<AgentProcessDiagnostic[]> {
-  const managed = Array.from(terminals.values()).map((entry) => ({
-    pid: entry.session.pid,
-    id: entry.session.id,
-    title: entry.session.title,
-    workspace: entry.session.workspace,
-  })).filter((entry): entry is { pid: number; id: string; title: string; workspace: string } => entry.pid != null);
-  const processList = await listSystemProcesses();
-  const managedByPid = new Map(managed.map((entry) => [entry.pid, entry]));
+type ManagedProcessOwner = { id: string; title: string; workspace: string };
 
-  return processList
-    .map((processInfo) => {
-      const agent = classifyAgentProcess(processInfo.command);
-      if (!agent) return null;
-      const owner = findManagedOwner(processInfo.pid, processList, managedByPid);
-      return {
-        pid: processInfo.pid,
-        ppid: processInfo.ppid,
-        agent,
-        command: processInfo.command,
-        managedTerminalId: owner?.id ?? null,
-        managedTerminalTitle: owner?.title ?? null,
-        workspace: owner?.workspace ?? extractWorkspaceFromCommand(processInfo.command),
-      };
-    })
-    .filter((item): item is AgentProcessDiagnostic => Boolean(item))
+async function detectAgentProcesses(): Promise<AgentProcessDiagnostic[]> {
+  const snapshot = await systemProcessSnapshot();
+  if (snapshot.processes.length === 0) return [];
+  const managedByPid = new Map<number, ManagedProcessOwner>();
+  for (const entry of terminals.values()) {
+    const { pid, id, title, workspace } = entry.session;
+    if (pid != null) managedByPid.set(pid, { id, title, workspace });
+  }
+
+  const agents: AgentProcessDiagnostic[] = [];
+  for (const processInfo of snapshot.processes) {
+    const agent = classifyAgentProcess(processInfo.command);
+    if (!agent) continue;
+    const owner = findManagedOwner(processInfo.pid, snapshot.byPid, managedByPid);
+    agents.push({
+      pid: processInfo.pid,
+      ppid: processInfo.ppid,
+      agent,
+      command: processInfo.command,
+      managedTerminalId: owner?.id ?? null,
+      managedTerminalTitle: owner?.title ?? null,
+      workspace: owner?.workspace ?? extractWorkspaceFromCommand(processInfo.command),
+    });
+  }
+  return agents
     .sort((left, right) => Number(Boolean(left.managedTerminalId)) - Number(Boolean(right.managedTerminalId)) || left.pid - right.pid)
     .slice(0, 80);
 }
@@ -623,8 +634,32 @@ type ProcessInfo = {
   command: string;
 };
 
+type ProcessSnapshot = {
+  processes: ProcessInfo[];
+  byPid: Map<number, ProcessInfo>;
+};
+
+let processSnapshotCache: { sampledAt: number; snapshot: Promise<ProcessSnapshot> } | null = null;
+
+/** One system process sample (list + PID index), shared for a short TTL. */
+function systemProcessSnapshot(): Promise<ProcessSnapshot> {
+  const now = Date.now();
+  if (processSnapshotCache && now - processSnapshotCache.sampledAt < AGENT_PROCESS_CACHE_TTL_MS) {
+    return processSnapshotCache.snapshot;
+  }
+  const snapshot = listSystemProcesses().then((processes) => ({
+    processes,
+    byPid: new Map(processes.map((entry) => [entry.pid, entry])),
+  }));
+  processSnapshotCache = { sampledAt: now, snapshot };
+  return snapshot;
+}
+
 async function listSystemProcesses(): Promise<ProcessInfo[]> {
   if (process.platform === "linux") return listLinuxProcesses();
+  // Windows has no `ps`; spawning it only ever failed. Enumerating via WMI or
+  // PowerShell costs far more than this optional diagnostic is worth.
+  if (process.platform === "win32") return [];
   return listPsProcesses();
 }
 
@@ -643,21 +678,22 @@ async function listLinuxProcesses(): Promise<ProcessInfo[]> {
 
 async function readLinuxProcess(pid: number): Promise<ProcessInfo | null> {
   try {
-    const [status, cmdline] = await Promise.all([
-      fs.promises.readFile(`/proc/${pid}/status`, "utf8"),
-      fs.promises.readFile(`/proc/${pid}/cmdline`, "utf8"),
-    ]);
-    const ppidMatch = status.match(/^PPid:\s+(\d+)/m);
+    const cmdline = await fs.promises.readFile(`/proc/${pid}/cmdline`, "utf8");
     const command = cmdline.replace(/\0/g, " ").trim();
+    // Kernel threads have no command line; skip their second read entirely.
     if (!command) return null;
-    return {
-      pid,
-      ppid: ppidMatch ? Number(ppidMatch[1]) : null,
-      command,
-    };
+    const stat = await fs.promises.readFile(`/proc/${pid}/stat`, "utf8");
+    return { pid, ppid: parseLinuxStatPpid(stat), command };
   } catch {
     return null;
   }
+}
+
+/** `/proc/<pid>/stat` is "pid (comm) state ppid ..."; comm may contain ") ". */
+function parseLinuxStatPpid(stat: string): number | null {
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ", 2);
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) ? ppid : null;
 }
 
 async function listPsProcesses(): Promise<ProcessInfo[]> {
@@ -690,10 +726,9 @@ function classifyAgentProcess(command: string): EmbeddedTerminalKind | null {
 
 function findManagedOwner(
   pid: number,
-  processes: ProcessInfo[],
-  managedByPid: Map<number, { pid: number; id: string; title: string; workspace: string }>,
-) {
-  const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+  byPid: Map<number, ProcessInfo>,
+  managedByPid: Map<number, ManagedProcessOwner>,
+): ManagedProcessOwner | null {
   const seen = new Set<number>();
   let current: number | null = pid;
   while (current && !seen.has(current)) {
@@ -728,16 +763,6 @@ export async function spawnEmbeddedTerminal(
   const contextMode = resolveAgentContextMode(options.contextMode, options.task, options.contextText);
   const backendUrl = getBackendState().baseUrl;
   const controlUrl = getControlState().baseUrl;
-  const immersiveBundle = isImmersiveContextMode(contextMode) && isAgentKind(kind) && !options.resumeSessionId
-    ? await createImmersiveContextBundle(
-        backendUrl,
-        cwd,
-        kind,
-        contextMode,
-        options.task,
-        options.contextText,
-      )
-    : null;
   const promptPath = kind === "shell" || kind === "hermes" || options.resumeSessionId || contextMode === "none"
     ? null
     : writeAgentContextPrompt(
@@ -747,7 +772,6 @@ export async function spawnEmbeddedTerminal(
         options.title,
         options.task,
         options.contextText,
-        immersiveBundle,
       );
   const mcpWiring = resolveAgentMcpWiring(kind, backendUrl, controlUrl);
   // Fresh Claude panes get their session id assigned up front (claude
@@ -960,24 +984,41 @@ async function deliverAgentMessage(entry: ManagedTerminal, message: AgentMessage
 // visibly instead of sitting "queued" forever.
 const QUEUE_DRAIN_DEBOUNCE_MS = 1200;
 const QUEUE_MESSAGE_MAX_AGE_MS = 120_000;
-const queueDrainTimers = new Map<string, NodeJS.Timeout>();
+type QueueDrainTimer = { timer: NodeJS.Timeout; dueAt: number };
+const queueDrainTimers = new Map<string, QueueDrainTimer>();
 const terminalsWithQueuedMessages = new Set<string>();
 const drainInFlight = new Set<string>();
 
+// Called for every output batch of a terminal with queued messages, so the
+// debounce only moves a deadline; the armed timer re-arms itself for the
+// remainder instead of clearing/creating a timer per PTY batch.
 function scheduleQueueDrain(terminalId: string): void {
+  const dueAt = Date.now() + QUEUE_DRAIN_DEBOUNCE_MS;
   const existing = queueDrainTimers.get(terminalId);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(() => {
+  if (existing) {
+    existing.dueAt = dueAt;
+    return;
+  }
+  const entry: QueueDrainTimer = { dueAt, timer: undefined as unknown as NodeJS.Timeout };
+  const fire = () => {
+    if (queueDrainTimers.get(terminalId) !== entry) return;
+    const remainingMs = entry.dueAt - Date.now();
+    if (remainingMs > 0) {
+      entry.timer = setTimeout(fire, remainingMs);
+      entry.timer.unref?.();
+      return;
+    }
     queueDrainTimers.delete(terminalId);
     void drainQueuedAgentMessages(terminalId);
-  }, QUEUE_DRAIN_DEBOUNCE_MS);
-  timer.unref?.();
-  queueDrainTimers.set(terminalId, timer);
+  };
+  entry.timer = setTimeout(fire, QUEUE_DRAIN_DEBOUNCE_MS);
+  entry.timer.unref?.();
+  queueDrainTimers.set(terminalId, entry);
 }
 
 function clearQueueDrain(terminalId: string): void {
-  const timer = queueDrainTimers.get(terminalId);
-  if (timer) clearTimeout(timer);
+  const entry = queueDrainTimers.get(terminalId);
+  if (entry) clearTimeout(entry.timer);
   queueDrainTimers.delete(terminalId);
   terminalsWithQueuedMessages.delete(terminalId);
 }
@@ -1049,6 +1090,7 @@ export async function resizeEmbeddedTerminal(id: string, cols: number, rows: num
 export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminalSession> {
   const entry = requireTerminal(id);
   await ptyHost.kill(id);
+  terminalFlow.forget(id);
   entry.session = { ...entry.session, status: "exited", exitCode: null };
   failQueuedAgentMessages(id, "Target terminal was stopped before delivery.");
   clearQueueDrain(id);
@@ -1063,13 +1105,15 @@ export async function killEmbeddedTerminal(id: string): Promise<EmbeddedTerminal
 function installPtyHostListeners(): void {
   if (ptyHostListenersInstalled) return;
   ptyHostListenersInstalled = true;
+  // Hot path: runs for every PTY batch of every terminal, visible or not.
+  // Terminals without a mounted consumer only append to their ring buffer.
   ptyHost.on("data", ({ id, data }) => {
     recordTerminalOutput(id);
     recordTerminalOutputActivity(id);
     markTerminalOutputForMessages(id);
     queueOutput(id, data);
-    const attention = terminalAttention.classify(id, data);
-    if (attention) emit("embedded-terminal:attention", { id, kind: attention });
+    // Throttled per terminal; emits embedded-terminal:attention when a cue hits.
+    terminalAttention.observe(id, data);
     // Output usually means the agent finished a turn; retry queued delivery
     // once it settles back to an idle prompt.
     if (terminalsWithQueuedMessages.has(id)) scheduleQueueDrain(id);
@@ -1077,13 +1121,17 @@ function installPtyHostListeners(): void {
   ptyHost.on("exit", ({ id, exitCode }) => {
     flushOutput(id);
     const entry = terminals.get(id);
-    if (!entry) return;
+    if (!entry) {
+      terminalFlow.forget(id);
+      return;
+    }
     entry.session = { ...entry.session, status: "exited", exitCode };
     recordTerminalExited(id, exitCode);
     failQueuedAgentMessages(id, "Target terminal exited before delivery.");
     clearQueueDrain(id);
     emitTerminalExit(id, exitCode);
     terminals.delete(id);
+    terminalFlow.forget(id);
     clearTerminalActivity(id);
     if (!appQuitting) removeRestoreEntry(id);
     scheduleTerminalOutputStateCleanup(id);
@@ -1113,7 +1161,10 @@ function installPtyHostListeners(): void {
     for (const id of ids) {
       flushOutput(id);
       const entry = terminals.get(id);
-      if (!entry) continue;
+      if (!entry) {
+        terminalFlow.forget(id);
+        continue;
+      }
       entry.session = { ...entry.session, status: "failed", error };
       recordSpawnFailed({
         terminalId: entry.session.id,
@@ -1128,6 +1179,7 @@ function installPtyHostListeners(): void {
       emit("embedded-terminal:session", entry.session);
       emitTerminalExit(id, null);
       terminals.delete(id);
+      terminalFlow.forget(id);
       clearTerminalActivity(id);
       if (!appQuitting) removeRestoreEntry(id);
       scheduleTerminalOutputStateCleanup(id);
@@ -1142,9 +1194,7 @@ function clearTerminalOutputState(id: string): void {
   outputCleanupDeadlines.delete(id);
   outputStream.clearTerminal(id);
   terminalAttention.clear(id);
-  for (const subscription of rendererOutputSubscriptions.values()) {
-    subscription.terminalIds.delete(id);
-  }
+  terminalFlow.forget(id);
   for (const [consumerId, consumer] of controlOutputConsumers) {
     if (consumer.terminalId === id) controlOutputConsumers.delete(consumerId);
   }
@@ -1363,11 +1413,18 @@ function queueOutput(id: string, data: string): void {
   updatePerformanceRates();
   perfCounters.ptyChunks += 1;
   perfCounters.ptyBytes += Buffer.byteLength(data);
-  for (const [senderId, subscription] of rendererOutputSubscriptions) {
-    if (subscription.allTerminals) outputStream.subscribe(id, rendererConsumerId(senderId));
-  }
+  const now = Date.now();
+  // Always retained in the terminal's bounded ring buffer (for later attach
+  // replay). Only mounted consumers receive live output, so a terminal with no
+  // pane open costs no IPC and schedules no flush.
   outputStream.append(id, data);
-  if (outputStream.terminalConsumerIds(id).length > 0) scheduleOutputFlush(PTY_FLUSH_INTERVAL_MS);
+  if (outputStream.consumerCount(id) > 0) {
+    // A consumer awaiting an ACK is woken by that ACK or its retry timer.
+    if (outputStream.hasSendableConsumer(id, now)) scheduleOutputFlush(PTY_FLUSH_INTERVAL_MS, now);
+    updateTerminalFlow(id);
+  } else if (terminalFlow.isPaused(id)) {
+    updateTerminalFlow(id);
+  }
 }
 
 function clearOutputFlushTimer(): void {
@@ -1376,9 +1433,9 @@ function clearOutputFlushTimer(): void {
   outputFlushTimerDueAt = 0;
 }
 
-function scheduleOutputFlush(delayMs: number): void {
+function scheduleOutputFlush(delayMs: number, now: number = Date.now()): void {
   const delay = Math.max(0, Math.floor(delayMs));
-  const dueAt = Date.now() + delay;
+  const dueAt = now + delay;
   if (outputFlushTimer && outputFlushTimerDueAt <= dueAt) return;
   clearOutputFlushTimer();
   outputFlushTimerDueAt = dueAt;
@@ -1394,13 +1451,20 @@ function flushOutput(id?: string): void {
   for (const delivery of deliveries) {
     if (!sendTerminalDelivery(delivery)) continue;
     perfCounters.ipcBatches += 1;
-    perfCounters.ipcBytes += Buffer.byteLength(delivery.data);
-    perfCounters.lastBatchAt = new Date().toISOString();
+    // Structured-clone IPC carries UTF-16 code units, so the string length is
+    // the honest (and O(1)) measure; the UTF-8 byte count is taken once, at
+    // PTY ingress.
+    perfCounters.ipcBytes += delivery.data.length;
+    perfCounters.lastBatchAt = now;
   }
 
-  if (outputStream.hasPendingDeliveries()) {
-    scheduleOutputFlush(outputStream.nextRetryDelayMs(now) ?? PTY_FLUSH_INTERVAL_MS);
-  }
+  // Delivered/acknowledged batches shrink consumer backlogs: lift PTY
+  // backpressure as soon as a consumer is back under the low-water mark.
+  if (id) updateTerminalFlow(id);
+  else updatePausedTerminalFlows();
+
+  const nextDelay = outputStream.nextFlushDelayMs(now, PTY_FLUSH_INTERVAL_MS);
+  if (nextDelay != null) scheduleOutputFlush(nextDelay, now);
 }
 
 function sendTerminalDelivery(delivery: TerminalStreamDelivery): boolean {
@@ -1426,17 +1490,15 @@ function sendTerminalDelivery(delivery: TerminalStreamDelivery): boolean {
     return false;
   }
   const senderId = Number(delivery.consumerId.slice("renderer:".length));
-  const subscription = rendererOutputSubscriptions.get(senderId);
-  if (!subscription || subscription.sender.isDestroyed()) {
-    rendererOutputSubscriptions.delete(senderId);
+  const sender = rendererOutputSenders.get(senderId);
+  if (!sender || sender.isDestroyed()) {
+    rendererOutputSenders.delete(senderId);
     outputStream.detachConsumer(delivery.consumerId);
     return false;
   }
   try {
-    if (subscription.allTerminals && !subscription.terminalIds.has(delivery.id)) {
-      perfCounters.hiddenRawIpcBytes += Buffer.byteLength(delivery.data);
-    }
-    subscription.sender.send("embedded-terminal:data", {
+    // Renderer protocol payload: keep this shape stable.
+    sender.send("embedded-terminal:data", {
       id: delivery.id,
       epoch: delivery.epoch,
       fromSequence: delivery.fromSequence,
@@ -1446,7 +1508,7 @@ function sendTerminalDelivery(delivery: TerminalStreamDelivery): boolean {
     });
     return true;
   } catch {
-    rendererOutputSubscriptions.delete(senderId);
+    rendererOutputSenders.delete(senderId);
     outputStream.detachConsumer(delivery.consumerId);
     return false;
   }
@@ -1596,7 +1658,6 @@ function writeAgentContextPrompt(
   title?: string,
   task?: string,
   contextText?: string,
-  immersiveBundle?: ImmersiveContextBundle | null,
 ): string {
   const directory = tempWorkspaceDirectory();
   const promptPath = path.join(directory, `athena-agent-context-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
@@ -1607,51 +1668,10 @@ function writeAgentContextPrompt(
     title,
     task,
     contextText,
-    bundleId: immersiveBundle?.bundle_id,
-    contextPath: immersiveBundle?.context_path,
   });
   if (!prompt) throw new Error("Agent context prompt cannot be empty.");
   fs.writeFileSync(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
   return promptPath;
-}
-
-function isImmersiveContextMode(mode: AgentContextMode): mode is "immersive" | "immersive_curated" {
-  return mode === "immersive" || mode === "immersive_curated";
-}
-
-async function createImmersiveContextBundle(
-  backendUrl: string | null,
-  workspace: string,
-  kind: EmbeddedTerminalKind,
-  mode: "immersive" | "immersive_curated",
-  task?: string,
-  contextText?: string,
-): Promise<ImmersiveContextBundle> {
-  if (!backendUrl) {
-    throw new Error("Athena immersive mode requires the backend to be available.");
-  }
-  const response = await fetch(`${backendUrl}/context/bundles`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      project_dir: workspace,
-      mode,
-      agent: agentConfig(kind).label,
-      task: task?.trim() ?? "",
-      context: contextText?.trim() ?? "",
-    }),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Athena immersive context creation failed with HTTP ${response.status}.${detail ? ` ${detail}` : ""}`);
-  }
-  const payload = await response.json() as { bundle?: Partial<ImmersiveContextBundle> };
-  const bundleId = payload.bundle?.bundle_id;
-  const contextPath = payload.bundle?.context_path;
-  if (!bundleId || !contextPath) {
-    throw new Error("Athena immersive context creation returned an invalid bundle.");
-  }
-  return { bundle_id: bundleId, context_path: contextPath };
 }
 
 function defaultTitle(kind: EmbeddedTerminalKind): string {
@@ -1668,6 +1688,11 @@ function defaultSessionLabel(kind: EmbeddedTerminalKind, resumeSessionId?: strin
   if (kind === "shell") return null;
   if (kind === "hermes") return resumeSessionId ? resumeSessionId : null;
   return resumeSessionId ? resumeSessionId : "New";
+}
+
+/** Backoff before discovery probe `attempt + 1`, or null once exhausted. */
+function sessionDiscoveryDelayMs(attempt: number): number | null {
+  return attempt < SESSION_DISCOVERY_DELAYS_MS.length ? SESSION_DISCOVERY_DELAYS_MS[attempt] : null;
 }
 
 function maybeDiscoverProviderSessionId(terminalId: string, workspace: string, createdAt: string): void {
@@ -1688,7 +1713,7 @@ async function discoverGrokSessionId(terminalId: string, workspace: string, crea
   const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
   const sessionsDir = path.join(os.homedir(), ".grok", "sessions", encodeURIComponent(path.resolve(workspace)));
 
-  for (let attempt = 0; attempt < CODEX_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     const entry = terminals.get(terminalId);
     if (!entry || entry.session.kind !== "grok" || entry.session.providerSessionId || entry.session.status !== "running") return;
     const sessionId = grokSessionIdForWorkspace(sessionsDir, spawnedAtMs, attachedProviderSessionIds(terminalId));
@@ -1696,7 +1721,9 @@ async function discoverGrokSessionId(terminalId: string, workspace: string, crea
       attachProviderSessionId(terminalId, sessionId);
       return;
     }
-    await delay(CODEX_SESSION_DISCOVERY_INTERVAL_MS);
+    const waitMs = sessionDiscoveryDelayMs(attempt);
+    if (waitMs == null) return;
+    await delay(waitMs);
   }
 }
 
@@ -1730,7 +1757,7 @@ async function discoverOpenCodeSessionId(terminalId: string, workspace: string, 
   const startedAtMs = Date.parse(createdAt);
   const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
 
-  for (let attempt = 0; attempt < OPENCODE_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     const entry = terminals.get(terminalId);
     if (!entry || !isOpenCodeKind(entry.session.kind) || entry.session.providerSessionId || entry.session.status !== "running") return;
     const sessionId = await openCodeSessionIdForWorkspace(openCodeDatabaseCandidates(), workspace, spawnedAtMs, attachedProviderSessionIds(terminalId));
@@ -1738,7 +1765,9 @@ async function discoverOpenCodeSessionId(terminalId: string, workspace: string, 
       attachProviderSessionId(terminalId, sessionId);
       return;
     }
-    await delay(OPENCODE_SESSION_DISCOVERY_INTERVAL_MS);
+    const waitMs = sessionDiscoveryDelayMs(attempt);
+    if (waitMs == null) return;
+    await delay(waitMs);
   }
 }
 
@@ -1747,7 +1776,7 @@ async function discoverCodexSessionId(terminalId: string, workspace: string, cre
   const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
   const sessionsDir = path.join(os.homedir(), ".codex", "sessions");
 
-  for (let attempt = 0; attempt < CODEX_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     const entry = terminals.get(terminalId);
     if (!entry || entry.session.kind !== "codex" || entry.session.providerSessionId || entry.session.status !== "running") return;
     const sessionId = await codexSessionIdForWorkspace(sessionsDir, workspace, spawnedAtMs, attachedProviderSessionIds(terminalId));
@@ -1755,7 +1784,9 @@ async function discoverCodexSessionId(terminalId: string, workspace: string, cre
       attachProviderSessionId(terminalId, sessionId);
       return;
     }
-    await delay(CODEX_SESSION_DISCOVERY_INTERVAL_MS);
+    const waitMs = sessionDiscoveryDelayMs(attempt);
+    if (waitMs == null) return;
+    await delay(waitMs);
   }
 }
 
@@ -1766,7 +1797,7 @@ async function discoverClaudeSessionId(terminalId: string, workspace: string, cr
   const startedAtMs = Date.parse(createdAt);
   const spawnedAtMs = Number.isFinite(startedAtMs) ? startedAtMs : Date.now();
 
-  for (let attempt = 0; attempt < CLAUDE_SESSION_DISCOVERY_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     const entry = terminals.get(terminalId);
     if (!entry || entry.session.kind !== "claude" || entry.session.providerSessionId || entry.session.status !== "running") return;
     const sessionId = await claudeSessionIdForWorkspace(workspace, spawnedAtMs, attachedProviderSessionIds(terminalId));
@@ -1774,7 +1805,9 @@ async function discoverClaudeSessionId(terminalId: string, workspace: string, cr
       attachProviderSessionId(terminalId, sessionId);
       return;
     }
-    await delay(CLAUDE_SESSION_DISCOVERY_INTERVAL_MS);
+    const waitMs = sessionDiscoveryDelayMs(attempt);
+    if (waitMs == null) return;
+    await delay(waitMs);
   }
 }
 
@@ -1823,7 +1856,15 @@ async function claudeSessionIdForWorkspace(
 
 async function claudeSessionIdFromFile(filePath: string, fallback: string): Promise<string | null> {
   try {
-    const lines = (await readFilePrefix(filePath)).split("\n").filter(Boolean).slice(0, 20);
+    // The sessionId sits in the first few lines; read progressively (32 KiB
+    // first) and stop as soon as one is found instead of a 512 KB prefix.
+    const { lines } = await readLeadingLines(filePath, {
+      maxBytes: 512_000,
+      maxLines: 20,
+      separator: "\n",
+      dropEmpty: true,
+      enough: (read) => read.some((line) => Boolean(stringProperty(parseJsonObject(line), "sessionId"))),
+    });
     for (const line of lines) {
       const entry = parseJsonObject(line);
       const sessionId = stringProperty(entry, "sessionId");

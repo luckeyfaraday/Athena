@@ -1,15 +1,57 @@
 import * as pty from "node-pty";
-import type { PtyHostMessage, PtyHostRequest, PtyHostSpawnRequest } from "./pty-host-protocol.js";
-import { DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS, appendBoundedTerminalOutput } from "./terminal-buffer.js";
+import {
+  PtyFlowGate,
+  afterOutputQuiet,
+  type PtyHostInbound,
+  type PtyHostMessage,
+  type PtyHostSpawnRequest,
+} from "./pty-host-protocol.js";
+import { DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS, TerminalOutputBatcher } from "./terminal-buffer.js";
 import { PTY_WRITE_CHUNK_DELAY_MS, PTY_WRITE_CHUNK_SIZE, chunkPtyWrite } from "./pty-write.js";
 
 const terminals = new Map<string, pty.IPty>();
-const pendingOutput = new Map<string, string>();
 // Tail of the in-flight write for each terminal, so chunked Windows writes
 // never interleave with a later write to the same PTY (see enqueueWrite).
 const writeChains = new Map<string, Promise<void>>();
 const FLUSH_INTERVAL_MS = 16;
-const MAX_BATCH_CHARS = DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS;
+// Output is coalesced for up to FLUSH_INTERVAL_MS, but a batch is sent early
+// as soon as the next chunk would exceed the cap. Nothing is ever truncated.
+const output = new TerminalOutputBatcher(
+  (id, data) => send({ type: "data", id, data }),
+  DEFAULT_PENDING_TERMINAL_OUTPUT_MAX_CHARS,
+);
+// Backpressure requested by main when a consumer of this terminal's output is
+// far behind (POSIX only; the gate ignores pause requests on Windows). Pausing
+// stops reading the PTY, so the child blocks on its own writes instead of main
+// dropping output. While paused, process liveness is polled so a child that
+// exits mid-pause is resumed before node-pty destroys the unread socket.
+const flow = new PtyFlowGate({
+  pause: (id) => {
+    const terminal = terminals.get(id);
+    if (!terminal) return false;
+    terminal.pause();
+    return true;
+  },
+  resume: (id) => {
+    try {
+      terminals.get(id)?.resume();
+    } catch {
+      // A socket already torn down has nothing left to read.
+    }
+  },
+  isAlive: (id) => {
+    const terminal = terminals.get(id);
+    if (!terminal) return false;
+    try {
+      process.kill(terminal.pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  },
+});
+// Terminals released from a pause and awaiting kill/shutdown: last output time.
+const drainingOutputAt = new Map<string, number>();
 let flushTimer: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 
@@ -47,7 +89,8 @@ function spawnTerminal(payload: PtyHostSpawnRequest): number {
   terminals.set(payload.id, terminal);
   terminal.onData((data) => queueOutput(payload.id, data));
   terminal.onExit(({ exitCode }) => {
-    flushOutput(payload.id);
+    flow.release(payload.id);
+    output.flush(payload.id);
     terminals.delete(payload.id);
     writeChains.delete(payload.id);
     send({ type: "exit", id: payload.id, exitCode });
@@ -56,34 +99,54 @@ function spawnTerminal(payload: PtyHostSpawnRequest): number {
 }
 
 function queueOutput(id: string, data: string): void {
-  const next = appendBoundedTerminalOutput(pendingOutput.get(id) ?? "", data, MAX_BATCH_CHARS);
-  if (next.length >= MAX_BATCH_CHARS) {
-    pendingOutput.set(id, next);
-    flushOutput(id);
+  if (drainingOutputAt.has(id)) drainingOutputAt.set(id, Date.now());
+  if (output.push(id, data)) scheduleFlush();
+}
+
+/**
+ * Release a paused PTY and wait for its buffered output to drain (no output
+ * for ~50ms, capped at ~300ms) before `done`, so a kill never discards the
+ * backlog that built up while paused. Immediate when nothing was paused, which
+ * is always the case on Windows.
+ */
+function releaseAndDrain(ids: string[], done: () => void): void {
+  const paused = ids.filter((id) => flow.isPaused(id));
+  if (paused.length === 0) {
+    done();
     return;
   }
-  pendingOutput.set(id, next);
-  scheduleFlush();
+  const startedAt = Date.now();
+  for (const id of paused) {
+    drainingOutputAt.set(id, startedAt);
+    flow.release(id);
+  }
+  afterOutputQuiet(
+    () => Math.max(...paused.map((id) => drainingOutputAt.get(id) ?? startedAt)),
+    () => {
+      for (const id of paused) drainingOutputAt.delete(id);
+      done();
+    },
+  );
+}
+
+function killTerminal(id: string, terminal: pty.IPty): void {
+  output.flush(id);
+  flow.release(id);
+  // The child may have exited on its own while its output drained.
+  if (terminals.get(id) === terminal) {
+    terminal.kill();
+    terminals.delete(id);
+    writeChains.delete(id);
+  }
 }
 
 function scheduleFlush(): void {
   if (flushTimer) return;
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    flushAllOutput();
+    output.flushAll();
   }, FLUSH_INTERVAL_MS);
   flushTimer.unref?.();
-}
-
-function flushOutput(id: string): void {
-  const data = pendingOutput.get(id);
-  if (!data) return;
-  pendingOutput.delete(id);
-  send({ type: "data", id, data });
-}
-
-function flushAllOutput(): void {
-  for (const id of Array.from(pendingOutput.keys())) flushOutput(id);
 }
 
 function requireTerminal(id: string): pty.IPty {
@@ -133,8 +196,17 @@ function enqueueWrite(id: string, data: string): Promise<void> {
   return result;
 }
 
-process.on("message", (message: PtyHostRequest) => {
+process.on("message", (message: PtyHostInbound) => {
   if (!message || typeof message !== "object" || !("type" in message)) return;
+  if (message.type === "flow") {
+    try {
+      if (typeof message.id === "string") flow.apply(message.id, message.paused === true);
+    } catch {
+      // A PTY torn down between main's decision and this message is harmless;
+      // flow control is advisory and never worth failing the host over.
+    }
+    return;
+  }
   try {
     if (message.type === "spawn") {
       response(message.requestId, true, spawnTerminal(message.payload));
@@ -158,11 +230,19 @@ process.on("message", (message: PtyHostRequest) => {
       return;
     }
     if (message.type === "kill") {
-      flushOutput(message.id);
-      requireTerminal(message.id).kill();
-      terminals.delete(message.id);
-      writeChains.delete(message.id);
-      response(message.requestId, true, null);
+      const { requestId, id } = message;
+      const terminal = requireTerminal(id);
+      // Never kill a paused PTY: resume it and let the backlog drain first.
+      releaseAndDrain([id], () => {
+        try {
+          killTerminal(id, terminal);
+          response(requestId, true, null);
+        } catch (error) {
+          const detail = String(error);
+          send({ type: "error", id, error: detail });
+          response(requestId, false, detail);
+        }
+      });
       return;
     }
     if (message.type === "shutdown") {
@@ -180,16 +260,27 @@ process.on("message", (message: PtyHostRequest) => {
 function shutdown(exitCode: number): void {
   if (shuttingDown) return;
   shuttingDown = true;
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
-  flushAllOutput();
-  for (const terminal of terminals.values()) terminal.kill();
-  terminals.clear();
-  pendingOutput.clear();
-  writeChains.clear();
-  setTimeout(() => process.exit(exitCode), 0).unref?.();
+  const finish = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    output.flushAll();
+    try {
+      flow.releaseAll();
+    } catch {
+      // Best effort: every PTY is killed next regardless.
+    }
+    for (const terminal of terminals.values()) terminal.kill();
+    terminals.clear();
+    output.clear();
+    writeChains.clear();
+    setTimeout(() => process.exit(exitCode), 0).unref?.();
+  };
+  // With main still connected, give paused PTYs their bounded drain first;
+  // otherwise there is nobody left to receive the output.
+  if (process.connected) releaseAndDrain(flow.pausedIds(), finish);
+  else finish();
 }
 
 process.on("disconnect", () => {

@@ -1,7 +1,9 @@
 import json
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,7 +143,7 @@ def test_ask_runs_hermes_oneshot_in_project_dir(
         (
             "Answer the user question directly and concisely.\n\n"
             "If Athena context is provided below, use it as optional background context.\n\n"
-            "Do not start an interactive chat. Do not try to rediscover Athena session recall when Athena has already provided it.\n\n"
+            "Do not start an interactive chat.\n\n"
             "User question:\n\n"
             "Say test ok.\n\n"
             "Athena context:\n\n"
@@ -416,3 +418,185 @@ def test_windows_cmd_invocation_transports_prompt_outside_shell_source(
     assert child_env is not None
     assert child_env["ATHENA_HERMES_COMMAND"] == "C:/Hermes Runtime/hermes.cmd"
     assert json.loads(child_env["ATHENA_HERMES_ARGS_JSON"]) == ["--oneshot", prompt]
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def _cached_status_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[HermesManager, Path, _FakeClock, list[str], list[str]]:
+    """An installed Hermes whose executable is a real file (so it can be fingerprinted)."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("model: test\n", encoding="utf-8")
+    executable = tmp_path / "bin" / "hermes"
+    executable.parent.mkdir()
+    executable.write_text("v1", encoding="utf-8")
+    monkeypatch.setattr(hermes_module.platform, "system", lambda: "Linux")
+
+    lookups: list[str] = []
+
+    def fake_which(command: str) -> str | None:
+        lookups.append(command)
+        return str(executable) if command == "hermes" else None
+
+    probes: list[str] = []
+
+    def fake_version(command: str) -> str:
+        probes.append(command)
+        return f"hermes {len(probes)}"
+
+    clock = _FakeClock()
+    monkeypatch.setattr(hermes_module.shutil, "which", fake_which)
+    monkeypatch.setattr(hermes_module, "_hermes_version", fake_version)
+    monkeypatch.setattr(hermes_module, "time", SimpleNamespace(monotonic=clock.monotonic))
+    return HermesManager(hermes_home=hermes_home), executable, clock, lookups, probes
+
+
+def test_status_reuses_version_until_executable_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, executable, clock, _lookups, probes = _cached_status_manager(tmp_path, monkeypatch)
+
+    first = manager.status()
+    # Past the status TTL and the path-resolution TTL: status is recomputed and
+    # PATH is walked again, but the unchanged executable is not re-probed.
+    clock.now += hermes_module.COMMAND_RESOLUTION_TTL_SECONDS + 1
+    second = manager.status()
+
+    assert len(probes) == 1
+    assert first.version == second.version == "hermes 1"
+
+    executable.write_text("v2 is a different build", encoding="utf-8")
+    clock.now += hermes_module.STATUS_CACHE_TTL_SECONDS + 1
+    third = manager.status()
+
+    assert len(probes) == 2
+    assert third.version == "hermes 2"
+
+
+def test_status_caches_path_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, _executable, clock, lookups, _probes = _cached_status_manager(tmp_path, monkeypatch)
+
+    manager.status()
+    resolved_lookups = len(lookups)
+    clock.now += hermes_module.STATUS_CACHE_TTL_SECONDS + 1
+    manager.status()
+
+    assert len(lookups) == resolved_lookups
+
+    clock.now += hermes_module.COMMAND_RESOLUTION_TTL_SECONDS
+    manager.status()
+
+    assert len(lookups) == 2 * resolved_lookups
+
+
+def test_status_refresh_bypasses_every_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, _executable, _clock, lookups, probes = _cached_status_manager(tmp_path, monkeypatch)
+
+    manager.status()
+    manager.status()
+    resolved_lookups = len(lookups)
+    manager.status(refresh=True)
+
+    assert len(probes) == 2
+    assert len(lookups) == 2 * resolved_lookups
+
+
+def test_status_ttl_starts_after_slow_probe_completes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, _executable, clock, _lookups, probes = _cached_status_manager(tmp_path, monkeypatch)
+
+    def slow_version(command: str) -> str:
+        probes.append(command)
+        clock.now += 50  # a cold venv can take a long time to answer --version
+        return "hermes slow"
+
+    monkeypatch.setattr(hermes_module, "_hermes_version", slow_version)
+
+    manager.status()
+    clock.now += 20  # 70s after the miss began, but only 20s after it finished
+    manager.status()
+
+    assert len(probes) == 1
+
+
+def test_failed_version_probe_is_retried_after_backoff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, _executable, clock, _lookups, probes = _cached_status_manager(tmp_path, monkeypatch)
+
+    def failing_version(command: str) -> None:
+        probes.append(command)
+        return None
+
+    monkeypatch.setattr(hermes_module, "_hermes_version", failing_version)
+
+    manager.status()
+    clock.now += hermes_module.STATUS_CACHE_TTL_SECONDS + 1
+    manager.status()
+    assert len(probes) == 1
+
+    clock.now += hermes_module.FAILED_VERSION_RETRY_SECONDS
+    manager.status()
+    assert len(probes) == 2
+
+
+def test_concurrent_status_misses_share_one_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setattr(hermes_module.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        hermes_module.shutil,
+        "which",
+        lambda command: f"/usr/bin/{command}" if command == "hermes" else None,
+    )
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    probes: list[str] = []
+
+    def blocking_version(command: str) -> str:
+        probes.append(command)
+        probe_started.set()
+        assert release_probe.wait(timeout=5)
+        return "hermes 0.12.0"
+
+    monkeypatch.setattr(hermes_module, "_hermes_version", blocking_version)
+    manager = HermesManager(hermes_home=hermes_home)
+    results: list[object] = []
+
+    first = threading.Thread(target=lambda: results.append(manager.status()))
+    first.start()
+    assert probe_started.wait(timeout=5)
+    second = threading.Thread(target=lambda: results.append(manager.status()))
+    second.start()
+    release_probe.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert len(probes) == 1
+    assert len(results) == 2
+    assert results[0] is results[1]
+
+
+def test_install_invalidates_cached_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager, _executable, _clock, _lookups, probes = _cached_status_manager(tmp_path, monkeypatch)
+    fake_which = hermes_module.shutil.which
+
+    def which_with_installer_tools(command: str) -> str | None:
+        return f"/usr/bin/{command}" if command in {"bash", "curl"} else fake_which(command)
+
+    monkeypatch.setattr(hermes_module.shutil, "which", which_with_installer_tools)
+    monkeypatch.setattr(
+        hermes_module.subprocess,
+        "run",
+        lambda *args, **kwargs: hermes_module.subprocess.CompletedProcess(args[0], 0, "installed", ""),
+    )
+
+    manager.status()
+    result = manager.install()
+
+    assert len(probes) == 2
+    assert result.status.version == "hermes 2"

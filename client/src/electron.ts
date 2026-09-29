@@ -1,37 +1,7 @@
 import type { BackendStatus, ElectronControlStatus } from "./api";
 
-export type CodexTerminalStatus = {
-  running: boolean;
-  workspace: string | null;
-  pid: number | null;
-  lastError: string | null;
-};
-
-export type NativeTerminalResult = {
-  ok: boolean;
-  command: string | null;
-  pid: number | null;
-  session: NativeTerminalSession | null;
-  error: string | null;
-};
-
-export type NativeTerminalSession = {
-  id: string;
-  workspace: string;
-  pid: number | null;
-  command: string;
-  promptPath: string | null;
-  scriptPath: string | null;
-  mode: "single" | "grid";
-  panes: number;
-  createdAt: string;
-  status: "launched" | "failed";
-  error: string | null;
-};
-
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena" | "grok";
 export type AgentSessionProvider = "codex" | "opencode" | "athena" | "claude" | "hermes" | "grok";
-export type AgentContextMode = "none" | "task" | "curated" | "immersive" | "immersive_curated";
 export type WorkspacePath = {
   nativePath: string;
   wslPath: string | null;
@@ -102,8 +72,6 @@ export type EmbeddedTerminalSpawnOptions = {
   resumeSessionId?: string;
   sessionLabel?: string;
   providerSessionId?: string;
-  contextMode?: AgentContextMode;
-  contextText?: string;
 };
 
 export type AgentSession = {
@@ -136,9 +104,10 @@ export type PerformanceDiagnostics = {
   maxEventLoopLagMs: number;
   lastOutputBatchAt: string | null;
   rendererTerminalSubscribers: number;
-  hiddenRawIpcBytes: number;
   terminalOutputRetries: number;
   terminalOutputResets: number;
+  terminalOutputFlowPauses: number;
+  terminalOutputFlowForcedResumes: number;
   terminalOutputDroppedChars: number;
   terminalOutputDeliveredChars: number;
   terminalOutputAcknowledgedChars: number;
@@ -201,42 +170,6 @@ export type TerminalControlState = {
   attentionReason: string | null;
 };
 
-export type AgentMessage = {
-  id: string;
-  threadId: string;
-  at: string;
-  updatedAt: string;
-  workspace: string;
-  from: string;
-  fromTerminalId: string | null;
-  to: string;
-  toTerminalId: string | null;
-  toKind: string | null;
-  text: string;
-  preview: string;
-  status: string;
-  replyRequested: boolean;
-  hopCount: number;
-  source: string;
-  error: string | null;
-};
-
-export type SendAgentMessageRequest = {
-  to: string;
-  text: string;
-  workspace?: string | null;
-  fromTerminalId?: string | null;
-  threadId?: string | null;
-  replyRequested?: boolean;
-  hopCount?: number;
-};
-
-export type SendAgentMessageResult = {
-  message: AgentMessage;
-  terminal: EmbeddedTerminalSession | null;
-  queued: boolean;
-};
-
 export type AthenaLaunchState = {
   pid: number;
   startedAt: string;
@@ -261,13 +194,6 @@ type WorkspaceApi = {
   setGraphicsPreference: (value: GraphicsPreference) => Promise<GraphicsRuntimeStatus>;
   getDefaultWorkspace: () => Promise<WorkspacePath>;
   toWorkspacePath: (workspace: string) => Promise<WorkspacePath>;
-  getCodexTerminalState: () => Promise<CodexTerminalStatus>;
-  startCodexTerminal: (workspace: string) => Promise<CodexTerminalStatus>;
-  writeCodexTerminal: (data: string) => Promise<CodexTerminalStatus>;
-  stopCodexTerminal: () => Promise<CodexTerminalStatus>;
-  openNativeCodexTerminal: (workspace: string) => Promise<NativeTerminalResult>;
-  openNativeCodexGrid: (workspace: string, panes?: number) => Promise<NativeTerminalResult>;
-  getNativeTerminalSessions: () => Promise<NativeTerminalSession[]>;
   listEmbeddedTerminals: () => Promise<EmbeddedTerminalSession[]>;
   restoreEmbeddedTerminals: (allowedWorkspaces?: string[]) => Promise<EmbeddedTerminalSession[]>;
   spawnEmbeddedTerminal: (workspace: string, options?: EmbeddedTerminalSpawnOptions) => Promise<EmbeddedTerminalSession>;
@@ -275,12 +201,9 @@ type WorkspaceApi = {
   writeEmbeddedTerminal: (id: string, data: string) => Promise<EmbeddedTerminalSession>;
   renameEmbeddedTerminal: (id: string, title: string) => Promise<EmbeddedTerminalSession>;
   resizeEmbeddedTerminal: (id: string, cols: number, rows: number) => Promise<EmbeddedTerminalSession>;
-  attachEmbeddedTerminalBuffer: (id: string) => Promise<string>;
   attachEmbeddedTerminalStream: (id: string) => Promise<EmbeddedTerminalStreamSnapshot>;
   ackEmbeddedTerminalData: (id: string, epoch: string, sequence: number) => void;
   getEmbeddedTerminalBuffer: (id: string) => Promise<string>;
-  listAgentMessages: (workspace?: string, limit?: number) => Promise<AgentMessage[]>;
-  sendAgentMessage: (request: SendAgentMessageRequest) => Promise<SendAgentMessageResult>;
   getPerformanceDiagnostics: () => Promise<PerformanceDiagnostics>;
   killEmbeddedTerminal: (id: string) => Promise<EmbeddedTerminalSession>;
   listAgentSessions: (workspace: string) => Promise<AgentSession[]>;
@@ -290,7 +213,6 @@ type WorkspaceApi = {
   playAttentionSound: () => Promise<void>;
   onWorkspaceOpen: (callback: (payload: { workspace: WorkspacePath; select: boolean }) => void) => () => void;
   onWorkspaceClose: (callback: (payload: { workspace: WorkspacePath }) => void) => () => void;
-  onEmbeddedTerminalData: (callback: (payload: EmbeddedTerminalDataPayload) => void) => () => void;
   onEmbeddedTerminalDataFor: (
     id: string,
     callback: (payload: EmbeddedTerminalDataPayload) => void,
@@ -299,8 +221,6 @@ type WorkspaceApi = {
   onEmbeddedTerminalAttention: (callback: (payload: { id: string; kind: "action" | "update" }) => void) => () => void;
   onEmbeddedTerminalExit: (callback: (payload: EmbeddedTerminalExitPayload) => void) => () => void;
   onEmbeddedTerminalSession: (callback: (session: EmbeddedTerminalSession) => void) => () => void;
-  onCodexTerminalData: (callback: (data: string) => void) => () => void;
-  onCodexTerminalState: (callback: (state: CodexTerminalStatus) => void) => () => void;
   selectWorkspace: () => Promise<WorkspacePath | null>;
   createWorkspaceFolder: () => Promise<WorkspacePath | null>;
   minimizeWindow: () => Promise<void>;
@@ -313,6 +233,8 @@ declare global {
     contextWorkspace?: WorkspaceApi;
   }
 }
+
+let previewTerminalCounter = 0;
 
 const browserFallback: WorkspaceApi = {
   async getBackendState() { return fallbackBackendState(); },
@@ -349,18 +271,11 @@ const browserFallback: WorkspaceApi = {
   async setGraphicsPreference() { return this.getGraphicsStatus(); },
   async getDefaultWorkspace() { return fallbackWorkspacePath(); },
   async toWorkspacePath(workspace: string) { return toFallbackWorkspacePath(workspace); },
-  async getCodexTerminalState() { return { running: false, workspace: null, pid: null, lastError: null }; },
-  async startCodexTerminal(workspace: string) { return { running: true, workspace, pid: null, lastError: null }; },
-  async writeCodexTerminal() { return { running: false, workspace: null, pid: null, lastError: null }; },
-  async stopCodexTerminal() { return { running: false, workspace: null, pid: null, lastError: null }; },
-  async openNativeCodexTerminal(workspace: string) { return fallbackTerminalResult(workspace, "single", 1); },
-  async openNativeCodexGrid(workspace: string, panes = 4) { return fallbackTerminalResult(workspace, "grid", panes); },
-  async getNativeTerminalSessions() { return []; },
   async listEmbeddedTerminals() { return []; },
   async restoreEmbeddedTerminals() { return []; },
   async spawnEmbeddedTerminal(workspace: string, options = {}) {
     return {
-      id: `preview-${Date.now()}`,
+      id: `preview-${Date.now()}-${++previewTerminalCounter}`,
       title: options.title ?? fallbackTerminalTitle(options.kind ?? "shell"),
       kind: options.kind ?? "shell",
       workspace,
@@ -385,7 +300,6 @@ const browserFallback: WorkspaceApi = {
     return { ...(await this.spawnEmbeddedTerminal("/preview")), id, title };
   },
   async resizeEmbeddedTerminal() { return this.spawnEmbeddedTerminal("/preview"); },
-  async attachEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
   async attachEmbeddedTerminalStream(id: string) {
     return {
       id,
@@ -396,29 +310,6 @@ const browserFallback: WorkspaceApi = {
   },
   ackEmbeddedTerminalData() {},
   async getEmbeddedTerminalBuffer() { return "[preview terminal buffer]\\r\\n$ "; },
-  async listAgentMessages() { return []; },
-  async sendAgentMessage(request: SendAgentMessageRequest) {
-    const message: AgentMessage = {
-      id: `preview-message-${Date.now()}`,
-      threadId: request.threadId ?? "preview-thread",
-      at: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      workspace: "/preview",
-      from: "human",
-      fromTerminalId: request.fromTerminalId ?? null,
-      to: request.to,
-      toTerminalId: null,
-      toKind: null,
-      text: request.text,
-      preview: request.text.replace(/\s+/g, " ").trim().slice(0, 180),
-      status: "queued",
-      replyRequested: Boolean(request.replyRequested),
-      hopCount: request.hopCount ?? 0,
-      source: "preview",
-      error: null,
-    };
-    return { message, terminal: null, queued: true };
-  },
   async getPerformanceDiagnostics() {
     return {
       activeTerminals: 0,
@@ -433,9 +324,10 @@ const browserFallback: WorkspaceApi = {
       maxEventLoopLagMs: 0,
       lastOutputBatchAt: null,
       rendererTerminalSubscribers: 0,
-      hiddenRawIpcBytes: 0,
       terminalOutputRetries: 0,
       terminalOutputResets: 0,
+      terminalOutputFlowPauses: 0,
+      terminalOutputFlowForcedResumes: 0,
       terminalOutputDroppedChars: 0,
       terminalOutputDeliveredChars: 0,
       terminalOutputAcknowledgedChars: 0,
@@ -480,13 +372,10 @@ const browserFallback: WorkspaceApi = {
   async playAttentionSound() {},
   onWorkspaceOpen() { return () => undefined; },
   onWorkspaceClose() { return () => undefined; },
-  onEmbeddedTerminalData() { return () => undefined; },
   onEmbeddedTerminalDataFor() { return () => undefined; },
   onEmbeddedTerminalAttention() { return () => undefined; },
   onEmbeddedTerminalExit() { return () => undefined; },
   onEmbeddedTerminalSession() { return () => undefined; },
-  onCodexTerminalData() { return () => undefined; },
-  onCodexTerminalState() { return () => undefined; },
   async selectWorkspace() { return fallbackWorkspacePath(); },
   async createWorkspaceFolder() { return null; },
   async minimizeWindow() { return undefined; },
@@ -511,23 +400,6 @@ function fallbackControlState(): ElectronControlStatus {
     port: null,
     lastError: "Electron preload is unavailable in browser preview. Run the desktop app for Electron control.",
   };
-}
-
-function fallbackTerminalResult(workspace: string, mode: "single" | "grid", panes: number): NativeTerminalResult {
-  const session: NativeTerminalSession = {
-    id: `preview-${Date.now()}`,
-    workspace,
-    pid: null,
-    command: "preview-only",
-    promptPath: null,
-    scriptPath: null,
-    mode,
-    panes,
-    createdAt: new Date().toISOString(),
-    status: "launched",
-    error: null,
-  };
-  return { ok: true, command: session.command, pid: null, session, error: null };
 }
 
 export const desktop = window.contextWorkspace ?? browserFallback;

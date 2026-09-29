@@ -37,6 +37,7 @@ import {
 } from "./terminal-buffer.js";
 import { parseRawTerminalInputRequest, rawInputPreview } from "./terminal-input.js";
 import { toWorkspacePath, type WorkspacePath } from "./platform.js";
+import type { AgentContextMode } from "./agent-context.js";
 
 type ControlState = {
   baseUrl: string | null;
@@ -112,6 +113,12 @@ const SUPPORTED_TERMINAL_KINDS = new Set<EmbeddedTerminalKind>(["shell", "hermes
 const MAX_TERMINAL_SPAWN_COUNT = 8;
 const CONTROL_WATCHDOG_INTERVAL_MS = 10_000;
 const CONTROL_HEALTH_FAILURE_THRESHOLD = 3;
+/**
+ * The watchdog already probes /health every CONTROL_WATCHDOG_INTERVAL_MS, so a
+ * renderer status poll reuses a probe at least this fresh instead of issuing
+ * another loopback request.
+ */
+export const CONTROL_HEALTH_CACHE_MS = CONTROL_WATCHDOG_INTERVAL_MS;
 
 // The control server can spawn processes, inject input into live PTYs, and read
 // terminal buffers, so every non-/health endpoint requires a per-launch secret.
@@ -126,6 +133,11 @@ const controlSockets = new Set<net.Socket>();
 let watchdog: NodeJS.Timeout | null = null;
 let watchdogRestartInFlight = false;
 let healthFailureCount = 0;
+let lastHealthCheckAt = 0;
+let healthCheckInFlight: Promise<ControlState> | null = null;
+/** Serialized discovery content last written, excluding the timestamp. */
+let lastDiscoveryContent: string | null = null;
+let lastDiscoveryMtimeMs: number | null = null;
 let state: ControlState = {
   baseUrl: null,
   port: null,
@@ -139,10 +151,28 @@ export function getControlState(): ControlState {
   return { ...state };
 }
 
-export async function checkControlHealth(): Promise<ControlState> {
-  if (!state.baseUrl || !state.running) return getControlState();
+/**
+ * Probe the control server's /health endpoint. `maxAgeMs` lets pollers reuse a
+ * probe that completed recently (e.g. by the watchdog); concurrent callers
+ * share one in-flight probe.
+ */
+export function checkControlHealth(options: { maxAgeMs?: number } = {}): Promise<ControlState> {
+  if (!state.baseUrl || !state.running) return Promise.resolve(getControlState());
+  const maxAgeMs = options.maxAgeMs ?? 0;
+  if (maxAgeMs > 0 && lastHealthCheckAt > 0 && Date.now() - lastHealthCheckAt < maxAgeMs) {
+    return Promise.resolve(getControlState());
+  }
+  healthCheckInFlight ??= probeControlHealth(state.baseUrl).finally(() => {
+    healthCheckInFlight = null;
+  });
+  return healthCheckInFlight;
+}
+
+async function probeControlHealth(baseUrl: string): Promise<ControlState> {
   try {
-    const statusCode = await fetchControlHealthStatus(state.baseUrl);
+    const statusCode = await fetchControlHealthStatus(baseUrl);
+    // A restart while the probe was in flight makes this result stale.
+    if (state.baseUrl !== baseUrl) return getControlState();
     const healthy = statusCode >= 200 && statusCode < 300;
     healthFailureCount = healthy ? 0 : healthFailureCount + 1;
     state = {
@@ -153,13 +183,15 @@ export async function checkControlHealth(): Promise<ControlState> {
         : `Electron control health returned HTTP ${statusCode} (${healthFailureCount}/${CONTROL_HEALTH_FAILURE_THRESHOLD}).`,
     };
   } catch (error) {
+    if (state.baseUrl !== baseUrl) return getControlState();
     healthFailureCount += 1;
     state = {
       ...state,
       running: healthFailureCount < CONTROL_HEALTH_FAILURE_THRESHOLD,
-      lastError: `Electron control server is unavailable at ${state.baseUrl} (${healthFailureCount}/${CONTROL_HEALTH_FAILURE_THRESHOLD}): ${String(error)}`,
+      lastError: `Electron control server is unavailable at ${baseUrl} (${healthFailureCount}/${CONTROL_HEALTH_FAILURE_THRESHOLD}): ${String(error)}`,
     };
   }
+  lastHealthCheckAt = Date.now();
   writeControlDiscovery();
   return getControlState();
 }
@@ -202,6 +234,7 @@ export async function startControlServer(): Promise<ControlState> {
     lastError: null,
   };
   healthFailureCount = 0;
+  lastHealthCheckAt = 0;
   writeControlDiscovery();
   startControlWatchdog();
   return { ...state };
@@ -509,7 +542,7 @@ function parseSpawnTerminalRequest(body: unknown): {
   task?: string;
   resumeSessionId?: string;
   sessionLabel?: string;
-  contextMode?: "none" | "task" | "curated" | "immersive" | "immersive_curated";
+  contextMode?: AgentContextMode;
   contextText?: string;
   model?: string;
   cols?: number;
@@ -659,17 +692,13 @@ function booleanValue(value: unknown, defaultValue = false): boolean {
   return defaultValue;
 }
 
-function contextModeValue(value: unknown): "none" | "task" | "curated" | "immersive" | "immersive_curated" | undefined {
+// Unknown or retired modes (such as the removed "immersive" recall bundles)
+// are ignored, so the launch falls back to the default task/none resolution.
+function contextModeValue(value: unknown): AgentContextMode | undefined {
   if (value == null) return undefined;
   const mode = String(value).trim().toLowerCase();
-  if (
-    mode === "none"
-    || mode === "task"
-    || mode === "curated"
-    || mode === "immersive"
-    || mode === "immersive_curated"
-  ) return mode;
-  throw new Error(`Unsupported context_mode: ${value}`);
+  if (mode === "none" || mode === "task" || mode === "curated") return mode;
+  return undefined;
 }
 
 function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -857,30 +886,41 @@ function fetchControlHealthStatus(baseUrl: string): Promise<number> {
   });
 }
 
+// Health checks run every few seconds; rewrite electron-control.json only when
+// its content (ignoring the timestamp) changes, or when another writer replaced
+// or removed it -- detected with a cheap stat.
 function writeControlDiscovery(): void {
+  const discovery = {
+    baseUrl: state.baseUrl,
+    port: state.port,
+    pid: process.pid,
+    running: state.running,
+    lastError: state.lastError,
+    token: controlToken,
+  };
+  const content = JSON.stringify(discovery);
+  const filePath = path.join(os.homedir(), ".context-workspace", "electron-control.json");
+  if (content === lastDiscoveryContent && fileMtimeMs(filePath) === lastDiscoveryMtimeMs) return;
   try {
-    const directory = path.join(os.homedir(), ".context-workspace");
-    fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(
-      path.join(directory, "electron-control.json"),
-      JSON.stringify(
-        {
-          baseUrl: state.baseUrl,
-          port: state.port,
-          pid: process.pid,
-          running: state.running,
-          lastError: state.lastError,
-          token: controlToken,
-          updatedAt: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
+      filePath,
+      JSON.stringify({ ...discovery, updatedAt: new Date().toISOString() }, null, 2),
       // 0600: the token authorizes process spawning, so keep it readable only
       // by the owning user even on shared machines.
       { encoding: "utf8", mode: 0o600 },
     );
+    lastDiscoveryContent = content;
+    lastDiscoveryMtimeMs = fileMtimeMs(filePath);
   } catch {
     // Discovery is best-effort; the in-app control server remains authoritative.
+  }
+}
+
+function fileMtimeMs(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return null;
   }
 }

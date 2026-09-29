@@ -7,16 +7,14 @@ data and, when you act, it *suspends itself*, execs the real agent binary
 (``codex``, ``claude``, ...) directly in your terminal, and resumes when the
 agent exits.
 
-Tabs:
-  Sessions  resumable native sessions (Enter = resume in this terminal)
-  Runs      headless backend runs (Enter = follow logs live)
+The single view lists resumable native sessions grouped by project (Enter
+opens a project, then Enter resumes a session in this terminal).
 
-Keys: ↑/↓ or j/k move · Tab/1/2 switch · Enter act · n new launch
-      r refresh · / filter · q quit
+Keys: ↑/↓ or j/k move · Enter act · n new launch · r refresh · / filter · q quit
 
 "n" (launch) opens in-TUI pickers: choose a workspace (type to filter the list,
 or pick "type a different path…" to spawn into a workspace with no sessions
-yet), then the agent, then interactive/headless. Esc backs out at any step.
+yet), then the agent. Esc backs out at any step.
 """
 
 from __future__ import annotations
@@ -26,7 +24,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from typing import Any
 
 from . import splash
@@ -40,8 +37,6 @@ LAUNCH_COMMANDS = {
     "athena": "athena-code .",
     "hermes": "hermes",
 }
-TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
-TABS = ("Sessions", "Runs")
 
 
 class AthenaTUI:
@@ -49,27 +44,23 @@ class AthenaTUI:
         self.scr = stdscr
         self.backend = backend
         self.project = project_dir
-        self.tab = 0
-        self.sel = [0, 0]          # selected row per tab
-        self.top = [0, 0]          # scroll offset per tab
+        self.sel = 0               # selected row
+        self.top = 0               # scroll offset
         self.filter = ""
         self.status = "Welcome to Athena. Sessions are grouped by project — Enter to open one, ? for help."
         self.summary: dict[str, Any] = {}
         self.sessions: list[dict[str, Any]] = []     # sessions across all projects
         self.projects: list[dict[str, Any]] = []     # grouped by workspace
         self.drill: str | None = None                # workspace we've drilled into
-        self.runs: list[dict[str, Any]] = []
 
     # -- data ------------------------------------------------------------- #
     def refresh(self) -> None:
         self.summary = self._safe(lambda: {
             "health": self.backend.get("/health").get("status"),
             "hermes": self.backend.get("/hermes/status").get("hermes", {}),
-            "recall": self.backend.get("/hermes/recall/status", project_dir=self.project).get("recall", {}),
         }, {})
         self.sessions = self._load_sessions()
         self._build_projects()
-        self.runs = self._safe(lambda: self.backend.get("/agents/runs").get("runs", []), [])
 
     def _load_sessions(self) -> list[dict[str, Any]]:
         """Cross-project listing, falling back to the cwd project on older
@@ -110,9 +101,7 @@ class AthenaTUI:
             return default
 
     def rows(self) -> list[dict[str, Any]]:
-        if self.tab == 1:
-            items, key = self.runs, "task"
-        elif self.drill is None:
+        if self.drill is None:
             items, key = self.projects, "workspace"
         else:
             drilled = next((p for p in self.projects if p["workspace"] == self.drill), None)
@@ -138,12 +127,10 @@ class AthenaTUI:
     def _draw_header(self, w: int) -> None:
         s = self.summary
         hermes = s.get("hermes", {}) if isinstance(s, dict) else {}
-        recall = s.get("recall", {}) if isinstance(s, dict) else {}
         up = s.get("health") == "ok"
         bits = [
             f"backend {'UP' if up else 'DOWN'}",
             f"hermes {'ok' if hermes.get('installed') else 'no'}",
-            f"recall {recall.get('status', '?')}",
             self.backend.base_url,
         ]
         self._line(0, 0, "  ATHENA — command room", w, curses.A_BOLD | curses.color_pair(1))
@@ -152,13 +139,10 @@ class AthenaTUI:
 
     def _draw_tabs(self, w: int) -> None:
         x = 2
-        for i, name in enumerate(TABS):
-            count = len(self.projects if i == 0 else self.runs)
-            label = f" {name} ({count}) " if i == 0 else f" {name} ({len(self.runs)}) "
-            attr = curses.A_REVERSE | curses.A_BOLD if i == self.tab else curses.color_pair(3)
-            self.scr.addnstr(4, x, label, w - x - 1, attr)
-            x += len(label) + 1
-        if self.tab == 0 and self.drill:
+        label = f" Sessions ({len(self.projects)}) "
+        self.scr.addnstr(4, x, label, w - x - 1, curses.A_REVERSE | curses.A_BOLD)
+        x += len(label) + 1
+        if self.drill:
             crumb = f"  ▸ {self.drill}"
             self.scr.addnstr(4, x + 1, crumb, w - x - 2, curses.color_pair(1) | curses.A_BOLD)
             x += len(crumb) + 1
@@ -173,15 +157,10 @@ class AthenaTUI:
         if not rows:
             self._line(top_y, 2, "(nothing here — press r to refresh, n to launch)", w, curses.color_pair(3))
             return
-        if self.tab == 1:
-            render = self._run_row
-        elif self.drill is None:
-            render = self._project_row
-        else:
-            render = self._session_row
-        for idx in range(self.top[self.tab], min(len(rows), self.top[self.tab] + height)):
-            y = top_y + (idx - self.top[self.tab])
-            attr = curses.A_REVERSE if idx == self.sel[self.tab] else 0
+        render = self._project_row if self.drill is None else self._session_row
+        for idx in range(self.top, min(len(rows), self.top + height)):
+            y = top_y + (idx - self.top)
+            attr = curses.A_REVERSE if idx == self.sel else 0
             self._line(y, 0, "  " + render(rows[idx]), w, attr)
 
     def _project_row(self, p: dict[str, Any]) -> str:
@@ -199,32 +178,20 @@ class AthenaTUI:
         title = " ".join(str(s.get("title", "")).split())
         return f"{prov:<8} {when:<17} {branch:<15} {title}"
 
-    def _run_row(self, r: dict[str, Any]) -> str:
-        rid = str(r.get("run_id", ""))[:20]
-        st = str(r.get("status", ""))[:10]
-        agent = str(r.get("agent_id", ""))[:10]
-        task = " ".join(str(r.get("task", "")).split())
-        return f"{st:<10} {agent:<11} {rid:<21} {task}"
-
     def _draw_footer(self, h: int, w: int) -> None:
-        if self.tab == 1:
-            action = "Enter logs"
-        elif self.drill is None:
-            action = "Enter open project"
-        else:
-            action = "Enter resume · ←/Esc back"
-        keys = f"↑↓ move · Tab switch · {action} · n launch · r refresh · / filter · q quit"
+        action = "Enter open project" if self.drill is None else "Enter resume · ←/Esc back"
+        keys = f"↑↓ move · {action} · n launch · r refresh · / filter · q quit"
         self._line(h - 2, 0, "  " + self.status, w, curses.color_pair(2))
         self._line(h - 1, 0, "  " + keys, w, curses.A_DIM)
 
     def _clamp(self, rows: list[Any], height: int) -> None:
-        self.sel[self.tab] = max(0, min(self.sel[self.tab], len(rows) - 1)) if rows else 0
-        if self.sel[self.tab] < self.top[self.tab]:
-            self.top[self.tab] = self.sel[self.tab]
-        elif self.sel[self.tab] >= self.top[self.tab] + height:
-            self.top[self.tab] = self.sel[self.tab] - height + 1
+        self.sel = max(0, min(self.sel, len(rows) - 1)) if rows else 0
+        if self.sel < self.top:
+            self.top = self.sel
+        elif self.sel >= self.top + height:
+            self.top = self.sel - height + 1
 
-    # -- terminal handoff ------------------------------------------------- #
+    # -- terminal suspend ------------------------------------------------- #
     def _suspend(self, run):  # noqa: ANN001, ANN202
         """Drop out of curses, run `run()` against the real terminal, return."""
         curses.def_prog_mode()
@@ -246,7 +213,7 @@ class AthenaTUI:
         A provider-fallback group (e.g. "hermes") is not a real directory, so
         launches fall back to the cwd project there.
         """
-        if self.tab == 0 and self.drill and os.path.isabs(self.drill):
+        if self.drill and os.path.isabs(self.drill):
             return self.drill
         return self.project
 
@@ -258,13 +225,11 @@ class AthenaTUI:
         rows = self.rows()
         if not rows:
             return
-        item = rows[self.sel[self.tab]]
-        if self.tab == 1:
-            self._follow_run(str(item.get("run_id", "")))
-        elif self.drill is None:
+        item = rows[self.sel]
+        if self.drill is None:
             self.drill = item["workspace"]            # drill into the project
             self.filter = ""
-            self.sel[0] = self.top[0] = 0
+            self.sel = self.top = 0
         else:
             cmd = item.get("resume_command")
             if not cmd:
@@ -275,38 +240,12 @@ class AthenaTUI:
 
     def back(self) -> bool:
         """Pop out of a drilled-in project. Returns False if nothing to pop."""
-        if self.tab == 0 and self.drill is not None:
+        if self.drill is not None:
             self.drill = None
             self.filter = ""
-            self.sel[0] = self.top[0] = 0
+            self.sel = self.top = 0
             return True
         return False
-
-    def _follow_run(self, run_id: str) -> None:
-        def stream() -> None:
-            print(f"--- following run {run_id} (Ctrl-C to stop) ---\n")
-            printed = 0
-            try:
-                while True:
-                    try:
-                        text = self.backend.get(
-                            f"/agents/runs/{run_id}/artifacts/stdout", max_bytes=1048576, tail="false"
-                        )
-                    except Exception:  # noqa: BLE001
-                        text = ""
-                    if isinstance(text, str) and len(text) > printed:
-                        sys.stdout.write(text[printed:])
-                        sys.stdout.flush()
-                        printed = len(text)
-                    status = self.backend.get(f"/agents/runs/{run_id}").get("run", {}).get("status")
-                    if status in TERMINAL_STATUSES:
-                        print(f"\n--- run {status} ---")
-                        return
-                    time.sleep(1.5)
-            except KeyboardInterrupt:
-                print("\n--- stopped following ---")
-
-        self._suspend(stream)
 
     def _launch_targets(self) -> list[dict[str, str]]:
         """Workspaces offered as quick-picks when launching: the active project
@@ -405,33 +344,9 @@ class AthenaTUI:
         if not agent:
             self.status = "Launch cancelled."
             return
-        mode = self._overlay_pick(
-            f"Launch {agent} in {_short_path(target)} — how?",
-            [("interactive — runs in this terminal", "i"), ("headless — background run", "h")],
-        )
-        if not mode:
-            self.status = "Launch cancelled."
-            return
-        where = _short_path(target)
-        if mode == "h":
-            task = self._read_line("task: ")
-            if not task:
-                self.status = "Headless launch needs a task."
-                return
-            try:
-                payload = self.backend.post(
-                    "/agents/spawn",
-                    {"agent_type": agent, "project_dir": target, "task": task},
-                )
-                self.refresh()
-                self.tab = 1
-                self.status = f"Started headless run {payload.get('run', {}).get('run_id')} in {where}."
-            except Exception as exc:  # noqa: BLE001
-                self.status = f"Launch failed: {_short_err(exc)}"
-        else:
-            self.status = f"Launching {agent} in {where}…"
-            self._exec(LAUNCH_COMMANDS[agent], cwd=target)
-            self.refresh()
+        self.status = f"Launching {agent} in {_short_path(target)}…"
+        self._exec(LAUNCH_COMMANDS[agent], cwd=target)
+        self.refresh()
 
     def _first_refresh_with_splash(self) -> None:
         """Load the initial data behind the branded splash instead of a black
@@ -468,15 +383,11 @@ class AthenaTUI:
             elif ch in (curses.KEY_LEFT, ord("h"), curses.KEY_BACKSPACE, 127, 8):
                 self.back()
             elif ch in (curses.KEY_DOWN, ord("j")):
-                self.sel[self.tab] += 1
+                self.sel += 1
             elif ch in (curses.KEY_UP, ord("k")):
-                self.sel[self.tab] = max(0, self.sel[self.tab] - 1)
+                self.sel = max(0, self.sel - 1)
             elif ch in (curses.KEY_RIGHT, ord("l")):
                 self.act()
-            elif ch in (9, curses.KEY_BTAB):
-                self.tab = (self.tab + 1) % len(TABS)
-            elif ch in (ord("1"), ord("2")):
-                self.tab = ch - ord("1")
             elif ch in (curses.KEY_ENTER, 10, 13):
                 self.act()
             elif ch == ord("n"):
@@ -488,8 +399,8 @@ class AthenaTUI:
                 self.status = "Refreshed."
             elif ch == ord("/"):
                 self.filter = self._read_filter()
-                self.sel[self.tab] = 0
-                self.top[self.tab] = 0
+                self.sel = 0
+                self.top = 0
             elif ch == ord("?"):
                 self.status = "Projects→Enter opens · Enter resumes · ←/Esc back · n launch · r refresh · / filter · q quit"
 
@@ -522,16 +433,6 @@ def _group_key(session: dict[str, Any]) -> str:
 def _short_path(path: str) -> str:
     """Last path segment, for compact status messages."""
     return path.rstrip("/").rsplit("/", 1)[-1] or path
-
-
-def _short_err(exc: Exception) -> str:
-    response = getattr(exc, "response", None)
-    if response is not None:
-        try:
-            return f"HTTP {response.status_code}: {response.json().get('detail')}"
-        except Exception:  # noqa: BLE001
-            return f"HTTP {response.status_code}"
-    return str(exc)
 
 
 def run_tui(backend_url: str | None, project_dir: str) -> int:

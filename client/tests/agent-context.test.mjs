@@ -69,31 +69,18 @@ test("curated mode can launch directly from handoff context without a separate t
   assert.doesNotMatch(prompt, /Task:/);
 });
 
-test("immersive mode points at an immutable context bundle", () => {
+test("retired immersive modes fall back to the default task/none resolution", () => {
+  assert.equal(resolveAgentContextMode("immersive", "Investigate auth"), "task");
+  assert.equal(resolveAgentContextMode("immersive_curated"), "none");
+
   const prompt = buildAgentContextPrompt({
     mode: "immersive",
     workspace: "/repo",
     agentLabel: "Codex",
     task: "Investigate auth",
-    bundleId: "ctx_123",
-    contextPath: "/repo/.context-workspace/context/ctx_123/context.md",
   });
 
-  assert.match(prompt, /^# Athena Immersive Launch/);
-  assert.match(prompt, /Context bundle: ctx_123/);
-  assert.match(prompt, /Read the context file before working on the task/);
-  assert.doesNotMatch(prompt, /## Curated Context/);
-});
-
-test("immersive mode without a task waits after reading startup context", () => {
-  const prompt = buildAgentContextPrompt({
-    mode: "immersive",
-    workspace: "/repo",
-    agentLabel: "Codex",
-    bundleId: "ctx_123",
-    contextPath: "/repo/.context-workspace/context/ctx_123/context.md",
-  });
-
-  assert.match(prompt, /Read the context file as startup context, then wait/);
-  assert.doesNotMatch(prompt, /Task:/);
+  assert.match(prompt, /^# Athena Task/);
+  assert.match(prompt, /Task: Investigate auth/);
+  assert.doesNotMatch(prompt, /Immersive|Context bundle|Context file/);
 });

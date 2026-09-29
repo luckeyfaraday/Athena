@@ -1,10 +1,12 @@
-import { app, BrowserWindow, Menu, dialog, shell, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
+import { app, BrowserWindow, Menu, dialog, powerMonitor, shell, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
 import isDev from "electron-is-dev";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
-import { registerIpcHandlers } from "./ipc-handlers.js";
+import { flushAgentMessages } from "./agent-messages.js";
+import { flushIpcBreadcrumbs, registerIpcHandlers } from "./ipc-handlers.js";
 import {
   confirmEmbeddedTerminalRestoreShutdown,
   hasPendingEmbeddedTerminalRestoreAttempts,
@@ -68,14 +70,29 @@ if (!singleInstanceLock) {
   app.quit();
 }
 
+const CHROMIUM_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
 function enableChromiumLogging(): void {
   try {
     const logPath = path.join(os.homedir(), ".context-workspace", "athena-chromium.log");
+    rotateChromiumLog(logPath);
     app.commandLine.appendSwitch("enable-logging", "file");
     app.commandLine.appendSwitch("log-file", logPath);
-    app.commandLine.appendSwitch("log-level", "0");
+    // INFO-level (0) Chromium logging is very chatty and the file is appended
+    // across launches. Keep warnings and above unless verbose logs are requested.
+    app.commandLine.appendSwitch("log-level", process.env.CONTEXT_WORKSPACE_VERBOSE_LOGS === "1" ? "0" : "1");
   } catch {
     // Logging setup is best-effort; never block startup over diagnostics.
+  }
+}
+
+function rotateChromiumLog(logPath: string): void {
+  try {
+    if (fs.statSync(logPath).size <= CHROMIUM_LOG_MAX_BYTES) return;
+    fs.rmSync(`${logPath}.1`, { force: true });
+    fs.renameSync(logPath, `${logPath}.1`);
+  } catch {
+    // Missing log or a locked file: keep appending rather than blocking startup.
   }
 }
 
@@ -197,6 +214,8 @@ async function createWindow(): Promise<void> {
   });
   installContextMenu(mainWindow);
   installExternalLinkHandler(mainWindow);
+  // Windows skips before-quit on logoff/shutdown/restart.
+  mainWindow.on("session-end", () => persistStateForSessionEnd("session-end"));
 
   if (inDev) {
     await mainWindow.loadURL("http://127.0.0.1:5173");
@@ -207,6 +226,16 @@ async function createWindow(): Promise<void> {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// The OS is ending the session (logoff/shutdown/restart) and before-quit may
+// never run. Persist debounced state synchronously and record the graphics
+// launch as orderly: an OS-initiated end is not a GPU crash.
+function persistStateForSessionEnd(reason: string): void {
+  if (!singleInstanceLock) return;
+  markGraphicsLaunchClean();
+  flushAgentMessages();
+  flushIpcBreadcrumbs(reason);
 }
 
 function installExternalLinkHandler(window: BrowserWindow): void {
@@ -221,10 +250,12 @@ function installExternalLinkHandler(window: BrowserWindow): void {
   });
 }
 
-// Healthy Linux machines start accelerated so xterm/Chromium painting does not
-// permanently saturate the software compositor. A marker written before GPU
-// startup and GPU-process crash events quarantine the next launch into safe
-// mode, preventing the native crash loops that motivated the old global flip.
+// Every platform starts accelerated by default so xterm/Chromium painting does
+// not saturate the software compositor. On Linux only, GPU-process crash events
+// (and a run of unclean accelerated exits, tracked by a marker written before
+// GPU startup) quarantine subsequent launches into safe mode until the
+// quarantine expires, preventing the native crash loops that motivated the old
+// global flip.
 app.commandLine.appendSwitch("no-sandbox");
 const forceGpu = process.env.CONTEXT_WORKSPACE_ENABLE_GPU === "1";
 const graphicsPreference = parseGraphicsPreference(getPreferences()[GRAPHICS_PREFERENCE_KEY]);
@@ -292,6 +323,8 @@ if (singleInstanceLock) {
       console.error("Failed to install Athena CLI shim:", error);
     }
     installApplicationMenu();
+    // Linux/macOS system shutdown; Windows uses the window's session-end.
+    powerMonitor.on("shutdown", () => persistStateForSessionEnd("shutdown"));
     registerIpcHandlers(appRoot);
     void startControlServer().catch((error) => {
       console.error("Electron control server failed to start:", error);
@@ -398,6 +431,8 @@ app.on("before-quit", (event) => {
     // Reaching this point proves the Electron/graphics process itself exited
     // normally, even if an owned helper failed its cleanup deadline.
     markGraphicsLaunchClean();
+    flushAgentMessages();
+    flushIpcBreadcrumbs("quit");
     if (cleanShutdown) markAthenaCleanExit();
     else console.error("Athena shutdown did not confirm cleanup of every owned process; leaving launch state unclean.");
     shutdownComplete = true;

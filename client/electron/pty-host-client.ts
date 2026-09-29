@@ -2,7 +2,12 @@ import { EventEmitter } from "node:events";
 import * as path from "node:path";
 import { fork, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import type { PtyHostMessage, PtyHostRequest, PtyHostSpawnRequest } from "./pty-host-protocol.js";
+import type {
+  PtyHostFlowControl,
+  PtyHostMessage,
+  PtyHostRequest,
+  PtyHostSpawnRequest,
+} from "./pty-host-protocol.js";
 
 type PendingRequest = {
   resolve: (value: number | null) => void;
@@ -65,6 +70,23 @@ export class PtyHostClient extends TypedEventEmitter {
       if (!String(error).includes("PTY not found")) throw error;
     });
     this.terminalIds.delete(id);
+  }
+
+  /**
+   * Ask the host to pause/resume reading a PTY's output (backpressure). Fire
+   * and forget: never spawns a host, never throws, and a send failure is not
+   * treated as a host crash. Idempotent on the host side.
+   */
+  setFlowPaused(id: string, paused: boolean): void {
+    const child = this.child;
+    if (!child || child.killed || !child.connected || this.stopping) return;
+    const message: PtyHostFlowControl = { type: "flow", id, paused };
+    try {
+      // A callback keeps a failed send from surfacing as a child 'error' event.
+      child.send?.(message, () => undefined);
+    } catch {
+      // Advisory only; the host's own failsafe resumes a stuck pause.
+    }
   }
 
   shutdown(): Promise<void> {
@@ -152,6 +174,11 @@ export class PtyHostClient extends TypedEventEmitter {
         ELECTRON_RUN_AS_NODE: "1",
       },
       stdio: ["ignore", "pipe", "pipe", "ipc"],
+      // Every message is a plain object of strings/numbers. Structured-clone
+      // framing copies terminal output as-is instead of JSON-escaping each
+      // ESC/control byte (\u001b) and re-parsing it: ~2x less main-process
+      // CPU for 16-64KB ANSI-heavy batches, break-even around 2KB.
+      serialization: "advanced",
     });
     this.child = child;
     this.stopping = false;

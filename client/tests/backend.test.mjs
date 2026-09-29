@@ -2,11 +2,30 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 
+import fs from "node:fs";
+import os from "node:os";
+
 import {
-  defaultHermesRefreshCommand,
   formatBackendExitError,
   resolveBackendLaunch,
+  stopBackend,
 } from "../dist-electron/backend.js";
+
+async function withTemporaryHome(callback) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "athena-backend-home-"));
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    await callback(home);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
 
 function withoutPythonOverride(callback) {
   const previous = process.env.CONTEXT_WORKSPACE_PYTHON;
@@ -48,15 +67,29 @@ test("an explicit Python override takes precedence over the packaged runtime", (
   }
 });
 
-test("packaged recall refreshes run through the bundled runtime", () => {
+test("backend launches no longer carry the retired recall refresh script", () => {
   withoutPythonOverride(() => {
     const appRoot = path.join(path.parse(process.cwd()).root, "opt", "ATHENA", "resources", "app.asar");
     const launch = resolveBackendLaunch(appRoot, 43210);
+    assert.equal(launch.args.some((arg) => /refresh-recall/.test(arg)), false);
+  });
+});
 
-    assert.equal(
-      defaultHermesRefreshCommand(appRoot, launch),
-      `"${launch.command}" --refresh-recall-script "${path.join(path.dirname(appRoot), "scripts", "hermes-refresh-recall.py")}"`,
-    );
+test("backend discovery is rewritten only when its content changes or it goes missing", async () => {
+  await withTemporaryHome(async (home) => {
+    const discoveryPath = path.join(home, ".context-workspace", "backend.json");
+    await stopBackend();
+    const first = JSON.parse(fs.readFileSync(discoveryPath, "utf8"));
+    assert.equal(first.running, false);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await stopBackend();
+    assert.equal(JSON.parse(fs.readFileSync(discoveryPath, "utf8")).updatedAt, first.updatedAt);
+
+    // Another writer removed it (e.g. `athena serve` cleanup): self-heal.
+    fs.rmSync(discoveryPath);
+    await stopBackend();
+    assert.equal(fs.existsSync(discoveryPath), true);
   });
 });
 

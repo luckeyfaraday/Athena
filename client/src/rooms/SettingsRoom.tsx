@@ -1,10 +1,16 @@
 import { Copy, Download, Maximize2, MessageSquare, FolderOpen, RefreshCw, TerminalSquare } from "lucide-react";
-import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus } from "../api";
-import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, recallStatusView, StatusPill } from "../components/status";
+import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus } from "../api";
+import { adapterInstallStatusView, backendStatusView, electronControlStatusView, hermesStatusView, StatusPill } from "../components/status";
 import type { AthenaLaunchState, GraphicsPreference, GraphicsRuntimeStatus, PerformanceDiagnostics } from "../electron";
-import { formatAge, recallAuditLines } from "../session-utils";
+import type { UiTheme } from "../ui-preferences";
 
-type UiTheme = "classic" | "monolith" | "press" | "mono-light" | "mono-dark";
+const themeOptions: Array<{ id: UiTheme; label: string }> = [
+  { id: "classic", label: "Classic" },
+  { id: "monolith", label: "Monolith" },
+  { id: "press", label: "Press" },
+  { id: "mono-light", label: "Mono Light" },
+  { id: "mono-dark", label: "Mono Dark" },
+];
 
 const HERMES_BRIDGE_SNIPPET = `mcp_servers:
   context_workspace:
@@ -25,10 +31,8 @@ export function SettingsRoom({
   backend,
   electronControl,
   hermes,
-  recall,
   adapters,
   busy,
-  refreshing,
   installingHermes,
   interfaceMode,
   uiTheme,
@@ -41,7 +45,7 @@ export function SettingsRoom({
   onRestartControl,
   onClearTerminalRestorePause,
   onInstallHermes,
-  onRefreshRecall,
+  onRefreshDiagnostics,
   onInterfaceModeChange,
   onThemeChange,
   onTerminalFocusChange,
@@ -51,10 +55,8 @@ export function SettingsRoom({
   backend: BackendStatus | null;
   electronControl: ElectronControlStatus | null;
   hermes: HermesStatus | null;
-  recall: RecallStatus | null;
   adapters: Record<string, AdapterStatus>;
   busy: boolean;
-  refreshing: boolean;
   installingHermes: boolean;
   interfaceMode: "terminal" | "chat";
   uiTheme: UiTheme;
@@ -67,7 +69,7 @@ export function SettingsRoom({
   onRestartControl: () => Promise<void>;
   onClearTerminalRestorePause: () => Promise<void>;
   onInstallHermes: () => Promise<void>;
-  onRefreshRecall: () => void;
+  onRefreshDiagnostics: () => Promise<void>;
   onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   onThemeChange: (theme: UiTheme) => void;
   onTerminalFocusChange: (focused: boolean) => void;
@@ -76,7 +78,6 @@ export function SettingsRoom({
   const backendStatus = backendStatusView(backend);
   const electronControlStatus = electronControlStatusView(electronControl);
   const hermesStatus = hermesStatusView(hermes);
-  const recallStatus = recallStatusView(recall);
   const adapterList = Object.values(adapters);
   const adapterStatus = adapterInstallStatusView(adapterList);
   const adapterSummary = adapterList.length
@@ -87,8 +88,8 @@ export function SettingsRoom({
     <section className="roomPanel settingsRoom">
       <div className="roomPanelHeader">
         <div>
-          <span className="eyebrow">Workspace Settings</span>
-          <h3>Real controls for the active environment</h3>
+          <span className="eyebrow">Settings</span>
+          <h3>Workspace, runtime, and appearance</h3>
         </div>
       </div>
       <div className="settingsGrid">
@@ -184,41 +185,16 @@ export function SettingsRoom({
             <span>{themeDescription(uiTheme)}</span>
           </div>
           <div className="segmentedControl themeSegmentedControl" role="group" aria-label="Theme">
-            <button
-              type="button"
-              className={uiTheme === "classic" ? "active" : ""}
-              onClick={() => onThemeChange("classic")}
-            >
-              Classic
-            </button>
-            <button
-              type="button"
-              className={uiTheme === "monolith" ? "active" : ""}
-              onClick={() => onThemeChange("monolith")}
-            >
-              Monolith
-            </button>
-            <button
-              type="button"
-              className={uiTheme === "press" ? "active" : ""}
-              onClick={() => onThemeChange("press")}
-            >
-              Press
-            </button>
-            <button
-              type="button"
-              className={uiTheme === "mono-light" ? "active" : ""}
-              onClick={() => onThemeChange("mono-light")}
-            >
-              Mono Light
-            </button>
-            <button
-              type="button"
-              className={uiTheme === "mono-dark" ? "active" : ""}
-              onClick={() => onThemeChange("mono-dark")}
-            >
-              Mono Dark
-            </button>
+            {themeOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={uiTheme === option.id ? "active" : ""}
+                onClick={() => onThemeChange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
           </div>
         </article>
         <article className="settingsSection">
@@ -284,25 +260,6 @@ export function SettingsRoom({
             </button>
           ) : null}
         </article>
-        <article className="settingsSection">
-          <div>
-            <strong>Recall</strong>
-            <span>
-              {recall
-                ? [
-                    `Cache: ${recall.path}`,
-                    `Age: ${recall.age_seconds == null ? "not refreshed" : formatAge(recall.age_seconds)}`,
-                    `Refresh command: ${recall.refresh_configured ? "configured" : "not configured"}`,
-                    ...recallAuditLines(recall),
-                  ].filter(Boolean).join("\n")
-                : "No recall status"}
-            </span>
-          </div>
-          <StatusPill tone={recallStatus.tone}>{recallStatus.label}</StatusPill>
-          <button className="ghostButton" type="button" onClick={onRefreshRecall} disabled={refreshing || !recall?.refresh_configured}>
-            <RefreshCw size={14} /> {refreshing ? "Refreshing" : "Refresh"}
-          </button>
-        </article>
         <article className="settingsSection wide">
           <div>
             <strong>Agent adapters</strong>
@@ -318,6 +275,9 @@ export function SettingsRoom({
             </span>
           </div>
           <StatusPill tone={performance?.pendingOutputBytes ? "warn" : "ok"}>{performance ? `${performance.activeTerminals} terminals` : "Unavailable"}</StatusPill>
+          <button className="ghostButton" type="button" onClick={() => void onRefreshDiagnostics()}>
+            <RefreshCw size={14} /> Sample
+          </button>
         </article>
         <article className="settingsSection wide">
           <div>
@@ -360,8 +320,8 @@ function performanceSummary(performance: PerformanceDiagnostics): string {
     `Pending renderer output: ${formatBytes(performance.pendingOutputBytes)}`,
     `Per-terminal cap: ${formatBytes(performance.maxBufferChars)} chars`,
     `Visible renderer consumers: ${performance.rendererTerminalSubscribers}`,
-    `Hidden raw renderer IPC: ${formatBytes(performance.hiddenRawIpcBytes)}`,
     `Output recovery: ${performance.terminalOutputRetries} retries, ${performance.terminalOutputResets} resets`,
+    `Flow control: ${performance.terminalOutputFlowPauses} PTY pauses, ${performance.terminalOutputFlowForcedResumes} forced resumes`,
     `Explicitly truncated: ${formatBytes(performance.terminalOutputDroppedChars)} chars`,
     `Delivered / acknowledged: ${formatBytes(performance.terminalOutputDeliveredChars)} / ${formatBytes(performance.terminalOutputAcknowledgedChars)} chars`,
     `Attach replay: ${performance.terminalReplayCount} snapshots, ${formatBytes(performance.terminalReplayBytes)}, ${performance.terminalReplayDurationMs.toFixed(2)} ms total (${performance.terminalReplayMaxDurationMs.toFixed(2)} ms max)`,

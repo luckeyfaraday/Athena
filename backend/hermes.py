@@ -11,6 +11,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,16 @@ INSTALL_COMMAND = (
 HERMES_BIN_ENV = "HERMES_BIN"
 HERMES_ASK_MODEL_ENV = "HERMES_ASK_MODEL"
 HERMES_ASK_PROVIDER_ENV = "HERMES_ASK_PROVIDER"
+# The assembled status is cheap once the pieces below are cached, but it still
+# stats a handful of files; keep it briefly so bursts of callers share it.
+STATUS_CACHE_TTL_SECONDS = 60.0
+# Executable resolution walks PATH x PATHEXT (a stat storm on Windows), so it is
+# reused for a few minutes. `status(refresh=True)` and install() bypass it.
+COMMAND_RESOLUTION_TTL_SECONDS = 300.0
+# A failed `--version` probe (for example a cold venv that exceeded the probe
+# timeout) is retried after this long; a successful probe is kept until the
+# executable itself changes.
+FAILED_VERSION_RETRY_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -123,21 +134,81 @@ def _same_or_descendant(candidate: str, project: str) -> bool:
 class HermesManager:
     def __init__(self, *, hermes_home: Path | None = None) -> None:
         self.hermes_home = (hermes_home or _default_hermes_home()).expanduser()
+        # One lock serializes cache misses so concurrent callers share a single
+        # PATH walk and `hermes --version` spawn instead of each starting one.
+        self._status_lock = threading.Lock()
         self._cached_status: HermesStatus | None = None
         self._cached_at = 0.0
+        # (environment key, resolved_at, command_path, install_supported)
+        self._resolution_cache: tuple[tuple[str, ...], float, str | None, bool] | None = None
+        # (executable fingerprint, version, probed_at)
+        self._version_cache: tuple[tuple[str, int, int], str | None, float] | None = None
 
-    def status(self) -> HermesStatus:
-        now = time.monotonic()
-        if self._cached_status is not None and now - self._cached_at < 60:
-            return self._cached_status
+    def status(self, *, refresh: bool = False) -> HermesStatus:
+        if not refresh:
+            cached = self._fresh_cached_status()
+            if cached is not None:
+                return cached
 
+        with self._status_lock:
+            if refresh:
+                self._clear_caches()
+            else:
+                # Another caller may have finished the same miss while this one
+                # waited for the lock.
+                cached = self._fresh_cached_status()
+                if cached is not None:
+                    return cached
+            status = self._compute_status()
+            self._cached_status = status
+            # Stamp after the slow work so the TTL measures data age, not the
+            # moment the probe started.
+            self._cached_at = time.monotonic()
+            return status
+
+    def _fresh_cached_status(self) -> HermesStatus | None:
+        status = self._cached_status
+        if status is not None and time.monotonic() - self._cached_at < STATUS_CACHE_TTL_SECONDS:
+            return status
+        return None
+
+    def _clear_caches(self) -> None:
+        self._cached_status = None
+        self._cached_at = 0.0
+        self._resolution_cache = None
+        self._version_cache = None
+
+    def _resolve_command(self, hermes_home: Path) -> tuple[str | None, bool]:
+        key = _command_resolution_key()
+        cached = self._resolution_cache
+        if cached is not None and cached[0] == key and time.monotonic() - cached[1] < COMMAND_RESOLUTION_TTL_SECONDS:
+            return cached[2], cached[3]
+        command_path = _resolve_hermes_command(hermes_home)
+        install_supported = (
+            not _is_native_windows() and shutil.which("bash") is not None and shutil.which("curl") is not None
+        )
+        self._resolution_cache = (key, time.monotonic(), command_path, install_supported)
+        return command_path, install_supported
+
+    def _version(self, command_path: str) -> str | None:
+        fingerprint = _executable_fingerprint(command_path)
+        cached = self._version_cache
+        if fingerprint is not None and cached is not None and cached[0] == fingerprint:
+            version, probed_at = cached[1], cached[2]
+            if version is not None or time.monotonic() - probed_at < FAILED_VERSION_RETRY_SECONDS:
+                return version
+        version = _hermes_version(command_path)
+        if fingerprint is not None:
+            self._version_cache = (fingerprint, version, time.monotonic())
+        return version
+
+    def _compute_status(self) -> HermesStatus:
         native_windows = _is_native_windows()
         hermes_home = self.hermes_home
-        command_path = _resolve_hermes_command(hermes_home)
-        version = _hermes_version(command_path) if command_path else None
+        command_path, install_supported = self._resolve_command(hermes_home)
+        version = self._version(command_path) if command_path else None
         config_exists = (hermes_home / "config.yaml").exists()
         memory_path = self._memory_path(hermes_home)
-        install_supported = not native_windows and shutil.which("bash") is not None and shutil.which("curl") is not None
         installed = command_path is not None and hermes_home.exists()
         setup_required = installed and not config_exists
 
@@ -155,7 +226,7 @@ class HermesManager:
         else:
             message = "Hermes Agent is not installed."
 
-        status = HermesStatus(
+        return HermesStatus(
             installed=installed,
             command_path=command_path,
             version=version,
@@ -167,9 +238,6 @@ class HermesManager:
             setup_required=setup_required,
             message=message,
         )
-        self._cached_status = status
-        self._cached_at = now
-        return status
 
     def install(self, *, timeout_seconds: float = 600) -> HermesInstallResult:
         before = self.status()
@@ -185,13 +253,13 @@ class HermesManager:
             timeout=timeout_seconds,
             check=False,
         )
-        self._cached_status = None
-        self._cached_at = 0.0
         return HermesInstallResult(
             returncode=completed.returncode,
             stdout=completed.stdout,
             stderr=completed.stderr,
-            status=self.status(),
+            # The install changes PATH contents and the executable itself, so
+            # every cached piece of status is stale.
+            status=self.status(refresh=True),
         )
 
     def ask(
@@ -380,7 +448,7 @@ def _ask_prompt(question: str, context: str | None = None) -> str:
         [
             "Answer the user question directly and concisely.",
             "If Athena context is provided below, use it as optional background context.",
-            "Do not start an interactive chat. Do not try to rediscover Athena session recall when Athena has already provided it.",
+            "Do not start an interactive chat.",
             "User question:",
             cleaned_question,
         ]
@@ -388,6 +456,25 @@ def _ask_prompt(question: str, context: str | None = None) -> str:
     if not cleaned_context:
         return base
     return "\n\n".join([base, "Athena context:", cleaned_context])
+
+
+def _command_resolution_key() -> tuple[str, ...]:
+    """Environment inputs that change which executable resolution would pick."""
+    return (
+        os.environ.get(HERMES_BIN_ENV, ""),
+        os.environ.get("PATH", ""),
+        os.environ.get("PATHEXT", ""),
+    )
+
+
+def _executable_fingerprint(command_path: str) -> tuple[str, int, int] | None:
+    """Identify an executable build by its real path, mtime, and size."""
+    try:
+        real_path = os.path.realpath(command_path)
+        stat = os.stat(real_path)
+    except OSError:
+        return None
+    return (real_path, stat.st_mtime_ns, stat.st_size)
 
 
 def _hermes_version(command_path: str) -> str | None:

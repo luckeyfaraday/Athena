@@ -2,13 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  emptyLoadState,
-  sameAgentMessages,
   sameAgentSessions,
   sameBackendStatus,
   sameElectronControlStatus,
   sameJsonValue,
-  sameLoadState,
   samePerformanceDiagnostics,
   sameStringArray,
 } from "../src/app-state.ts";
@@ -55,32 +52,6 @@ test("sameAgentSessions compares large session lists without serializing the who
   assert.equal(sameAgentSessions([session], [structuredClone(session)]), true);
   assert.equal(sameAgentSessions([session], [{ ...session, title: "Renamed" }]), false);
   assert.equal(sameAgentSessions([session], [{ ...session, metadata: { source: "changed" } }]), false);
-});
-
-test("sameAgentMessages preserves unchanged swarm inbox state", () => {
-  const message = {
-    id: "message-1",
-    threadId: "thread-1",
-    at: "2026-06-28T15:00:00Z",
-    updatedAt: "2026-06-28T15:00:01Z",
-    workspace: "/workspace",
-    from: "human",
-    fromTerminalId: "terminal-1",
-    to: "codex#1",
-    toTerminalId: "terminal-2",
-    toKind: "codex",
-    text: "please review",
-    preview: "please review",
-    status: "queued",
-    replyRequested: true,
-    hopCount: 0,
-    source: "ui",
-    error: null,
-  };
-
-  assert.equal(sameAgentMessages([message], [structuredClone(message)]), true);
-  assert.equal(sameAgentMessages([message], [{ ...message, status: "delivered" }]), false);
-  assert.equal(sameAgentMessages([message], []), false);
 });
 
 test("samePerformanceDiagnostics preserves unchanged diagnostics state", () => {
@@ -144,53 +115,4 @@ test("samePerformanceDiagnostics preserves unchanged diagnostics state", () => {
     ...diagnostics,
     terminalControl: [{ ...diagnostics.terminalControl[0], attentionReason: "approval" }],
   }), false);
-});
-
-test("sameLoadState keeps no-op refreshes from replacing app state", () => {
-  const current = {
-    ...emptyLoadState,
-    hermes: {
-      installed: true,
-      command_path: "/usr/local/bin/hermes",
-      version: "1.0.0",
-      hermes_home: "/tmp/hermes",
-      config_exists: true,
-      memory_path: "/tmp/memory.jsonl",
-      native_windows: false,
-      install_supported: true,
-      setup_required: false,
-      message: "ok",
-    },
-    recall: {
-      project_dir: "/workspace",
-      exists: true,
-      status: "fresh",
-      stale: false,
-      path: "/tmp/recall.md",
-      metadata_path: "/tmp/recall.json",
-      bytes: 123,
-      refreshed_at: "2026-06-28T15:00:00Z",
-      age_seconds: 60,
-      stale_after_seconds: 3600,
-      source: "test",
-      source_count: 2,
-      source_titles: ["A", "B"],
-      schema_version: 2,
-      handoff_id: "handoff-1",
-      confidence: "high",
-      source_workspaces: ["/workspace"],
-      source_sessions: [],
-      used_for_launch_at: null,
-      last_launch_agent: null,
-      refresh_configured: true,
-    },
-    adapters: {
-      codex: { name: "codex", available: true, detail: "ready" },
-    },
-    memory: ["one", "two"],
-  };
-
-  assert.equal(sameLoadState(current, structuredClone(current)), true);
-  assert.equal(sameLoadState(current, { ...current, memory: ["one", "changed"] }), false);
-  assert.equal(sameLoadState(current, { ...current, adapters: { ...current.adapters, codex: { ...current.adapters.codex, available: false } } }), false);
 });

@@ -41,9 +41,20 @@ export type TerminalControlState = {
   attentionReason: string | null;
 };
 
+// Internal records keep epoch-millisecond timestamps. recordTerminalOutput()
+// runs for every PTY batch of every terminal (hidden ones included), so it
+// mutates in place and never formats dates; ISO strings are produced only
+// when diagnostics are read.
+type TimestampKey = "lastSpawnAt" | "lastInjectedAt" | "lastPtyWriteAt" | "lastOutputAt";
+type TerminalControlRecord = Omit<TerminalControlState, TimestampKey> & {
+  [K in TimestampKey]: number | null;
+};
+type ControlEventRecord = Omit<ControlEvent, "at"> & { at: number };
+
 const MAX_CONTROL_EVENTS = 120;
-const events: ControlEvent[] = [];
-const terminalStates = new Map<string, TerminalControlState>();
+const WAITING_FOR_OUTPUT_REASON = "waiting for output after injected input";
+const events: ControlEventRecord[] = [];
+const terminalStates = new Map<string, TerminalControlRecord>();
 
 export function recordSpawnRequested(args: {
   terminalId: string;
@@ -55,7 +66,7 @@ export function recordSpawnRequested(args: {
   detail?: string | null;
   preview?: string | null;
 }): void {
-  const at = now();
+  const at = Date.now();
   const existing = terminalStates.get(args.terminalId);
   terminalStates.set(args.terminalId, {
     terminalId: args.terminalId,
@@ -96,7 +107,7 @@ export function recordSpawnSucceeded(args: {
   pid: number | null;
   detail?: string | null;
 }): void {
-  const at = now();
+  const at = Date.now();
   const existing = terminalStates.get(args.terminalId);
   terminalStates.set(args.terminalId, {
     terminalId: args.terminalId,
@@ -136,7 +147,7 @@ export function recordSpawnFailed(args: {
   source?: string;
   error: string;
 }): void {
-  const at = now();
+  const at = Date.now();
   const existing = terminalStates.get(args.terminalId);
   terminalStates.set(args.terminalId, {
     terminalId: args.terminalId,
@@ -175,7 +186,7 @@ export function recordControlFailure(args: {
   preview?: string | null;
 }): void {
   appendEvent({
-    at: now(),
+    at: Date.now(),
     kind: args.kind,
     source: args.source ?? "electron-control",
     terminalId: null,
@@ -191,17 +202,17 @@ export function recordInputRequested(args: {
   source?: string;
   preview: string;
 }): void {
-  updateTerminal(args.terminalId, (state, at) => ({
-    ...state,
-    lastInjectedAt: at,
-    lastInjectedBy: args.source ?? "electron-control",
-    lastInjectTextPreview: previewText(args.preview),
-    lastInjectResult: "requested",
-    attentionReason: "input requested",
-  }));
+  const at = Date.now();
   const state = terminalStates.get(args.terminalId);
+  if (state) {
+    state.lastInjectedAt = at;
+    state.lastInjectedBy = args.source ?? "electron-control";
+    state.lastInjectTextPreview = previewText(args.preview);
+    state.lastInjectResult = "requested";
+    state.attentionReason = "input requested";
+  }
   appendEvent({
-    at: now(),
+    at,
     kind: "input.requested",
     source: args.source ?? "electron-control",
     terminalId: args.terminalId,
@@ -217,18 +228,18 @@ export function recordInputWritten(args: {
   source?: string;
   preview: string;
 }): void {
-  updateTerminal(args.terminalId, (state, at) => ({
-    ...state,
-    lastInjectedAt: state.lastInjectedAt ?? at,
-    lastInjectedBy: state.lastInjectedBy ?? args.source ?? "electron-control",
-    lastInjectTextPreview: state.lastInjectTextPreview ?? previewText(args.preview),
-    lastInjectResult: "written",
-    lastPtyWriteAt: at,
-    attentionReason: "waiting for output after injected input",
-  }));
+  const at = Date.now();
   const state = terminalStates.get(args.terminalId);
+  if (state) {
+    state.lastInjectedAt = state.lastInjectedAt ?? at;
+    state.lastInjectedBy = state.lastInjectedBy ?? args.source ?? "electron-control";
+    state.lastInjectTextPreview = state.lastInjectTextPreview ?? previewText(args.preview);
+    state.lastInjectResult = "written";
+    state.lastPtyWriteAt = at;
+    state.attentionReason = WAITING_FOR_OUTPUT_REASON;
+  }
   appendEvent({
-    at: now(),
+    at,
     kind: "input.written",
     source: args.source ?? "electron-control",
     terminalId: args.terminalId,
@@ -245,19 +256,17 @@ export function recordInputFailed(args: {
   preview: string;
   error: string;
 }): void {
-  if (args.terminalId) {
-    updateTerminal(args.terminalId, (state, at) => ({
-      ...state,
-      lastInjectedAt: at,
-      lastInjectedBy: args.source ?? "electron-control",
-      lastInjectTextPreview: previewText(args.preview),
-      lastInjectResult: "failed",
-      attentionReason: args.error,
-    }));
+  const at = Date.now();
+  const state = args.terminalId ? terminalStates.get(args.terminalId) : undefined;
+  if (state) {
+    state.lastInjectedAt = at;
+    state.lastInjectedBy = args.source ?? "electron-control";
+    state.lastInjectTextPreview = previewText(args.preview);
+    state.lastInjectResult = "failed";
+    state.attentionReason = args.error;
   }
-  const state = args.terminalId ? terminalStates.get(args.terminalId) : null;
   appendEvent({
-    at: now(),
+    at,
     kind: "input.failed",
     source: args.source ?? "electron-control",
     terminalId: args.terminalId,
@@ -268,20 +277,19 @@ export function recordInputFailed(args: {
   });
 }
 
+/** Hot path: called for every PTY output batch. No allocation in steady state. */
 export function recordTerminalOutput(terminalId: string): void {
   const state = terminalStates.get(terminalId);
   if (!state) return;
+  const at = Date.now();
   const shouldLog = state.lastInjectResult === "written"
     && state.lastInjectedAt != null
     && (state.lastOutputAt == null || state.lastOutputAt < state.lastInjectedAt);
-  updateTerminal(terminalId, (current, at) => ({
-    ...current,
-    lastOutputAt: at,
-    attentionReason: current.attentionReason === "waiting for output after injected input" ? null : current.attentionReason,
-  }));
+  state.lastOutputAt = at;
+  if (state.attentionReason === WAITING_FOR_OUTPUT_REASON) state.attentionReason = null;
   if (!shouldLog) return;
   appendEvent({
-    at: now(),
+    at,
     kind: "terminal.output",
     source: "pty",
     terminalId,
@@ -293,40 +301,47 @@ export function recordTerminalOutput(terminalId: string): void {
 }
 
 export function recordTerminalExited(terminalId: string, exitCode: number | null): void {
-  updateTerminal(terminalId, (state) => ({
-    ...state,
-    status: "exited",
-    attentionReason: exitCode == null ? "terminal exited" : `terminal exited with code ${exitCode}`,
-  }));
+  const reason = exitCode == null ? "terminal exited" : `terminal exited with code ${exitCode}`;
   const state = terminalStates.get(terminalId);
+  if (state) {
+    state.status = "exited";
+    state.attentionReason = reason;
+  }
   appendEvent({
-    at: now(),
+    at: Date.now(),
     kind: "terminal.exited",
     source: "pty",
     terminalId,
     terminalTitle: state?.title ?? null,
     terminalKind: state?.kind ?? null,
-    detail: exitCode == null ? "terminal exited" : `terminal exited with code ${exitCode}`,
+    detail: reason,
     preview: null,
   });
 }
 
 export function recentControlEvents(): ControlEvent[] {
-  return [...events].reverse();
+  const result: ControlEvent[] = [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    result.push({ ...event, at: isoTimestamp(event.at) });
+  }
+  return result;
 }
 
 export function terminalControlStates(): TerminalControlState[] {
-  return Array.from(terminalStates.values()).sort((a, b) => b.terminalId.localeCompare(a.terminalId));
+  return Array.from(terminalStates.values())
+    .sort((a, b) => b.terminalId.localeCompare(a.terminalId))
+    .map((state) => ({
+      ...state,
+      lastSpawnAt: isoTimestampOrNull(state.lastSpawnAt),
+      lastInjectedAt: isoTimestampOrNull(state.lastInjectedAt),
+      lastPtyWriteAt: isoTimestampOrNull(state.lastPtyWriteAt),
+      lastOutputAt: isoTimestampOrNull(state.lastOutputAt),
+    }));
 }
 
-function updateTerminal(terminalId: string, update: (state: TerminalControlState, at: string) => TerminalControlState): void {
-  const state = terminalStates.get(terminalId);
-  if (!state) return;
-  terminalStates.set(terminalId, update(state, now()));
-}
-
-function appendEvent(event: Omit<ControlEvent, "id">): void {
-  events.push({ ...event, id: `${Date.now()}-${Math.random().toString(16).slice(2)}` });
+function appendEvent(event: Omit<ControlEventRecord, "id">): void {
+  events.push({ ...event, id: `${event.at}-${Math.random().toString(16).slice(2)}` });
   if (events.length > MAX_CONTROL_EVENTS) events.splice(0, events.length - MAX_CONTROL_EVENTS);
 }
 
@@ -335,6 +350,10 @@ function previewText(text: string): string {
   return singleLine.length > 180 ? `${singleLine.slice(0, 177)}...` : singleLine;
 }
 
-function now(): string {
-  return new Date().toISOString();
+function isoTimestamp(ms: number): string {
+  return new Date(ms).toISOString();
+}
+
+function isoTimestampOrNull(ms: number | null): string | null {
+  return ms == null ? null : isoTimestamp(ms);
 }

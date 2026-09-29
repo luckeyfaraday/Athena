@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +9,13 @@ import {
 } from "./agent-sessions.js";
 import type { BackendState } from "./backend.js";
 import { checkBackendHealth, getBackendState, restartBackend } from "./backend.js";
-import { checkControlHealth, getControlState, restartControlServer, type ControlState } from "./control-server.js";
-import type { CodexTerminalState } from "./codex-terminal.js";
+import {
+  checkControlHealth,
+  CONTROL_HEALTH_CACHE_MS,
+  getControlState,
+  restartControlServer,
+  type ControlState,
+} from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import {
   clearGraphicsQuarantine,
@@ -33,45 +38,25 @@ import { formatBytes } from "./memory-guard.js";
 import { getDefaultWorkspace, toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { getPreferences, removePreference, setPreference } from "./preferences.js";
 import {
-  getCodexTerminalState,
-  getNativeTerminalSessions,
-  openNativeCodexGrid,
-  openNativeCodexTerminal,
-  startCodexTerminal,
-  stopCodexTerminal,
-  writeCodexTerminal,
-  type NativeTerminalResult,
-  type NativeTerminalSession,
-} from "./codex-terminal.js";
-import {
   acknowledgeEmbeddedTerminalOutput,
-  attachEmbeddedTerminalBuffer,
   attachEmbeddedTerminalStream,
   clearSavedEmbeddedTerminalRestores,
   getEmbeddedTerminalBuffer,
   getPerformanceDiagnostics,
   initEmbeddedTerminals,
   killEmbeddedTerminal,
-  listEmbeddedAgentMessages,
   listEmbeddedTerminals,
   renameEmbeddedTerminal,
   resizeEmbeddedTerminal,
-  sendAgentMessage,
   restoreEmbeddedTerminals,
   spawnEmbeddedTerminal,
-  subscribeAllEmbeddedTerminalOutput,
   subscribeEmbeddedTerminalOutput,
-  unsubscribeAllEmbeddedTerminalOutput,
   unsubscribeEmbeddedTerminalOutput,
   writeEmbeddedTerminal,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
   type EmbeddedTerminalSpawnOptions,
-  type PerformanceDiagnostics,
-  type SendAgentMessageRequest,
-  type SendAgentMessageResult,
 } from "./embedded-terminal.js";
-import type { AgentMessage } from "./agent-messages.js";
 
 // Heavyweight agents (Claude/Codex/Athena Code/OpenCode/Grok) each pull hundreds
 // of MiB plus their own MCP server; launching one onto a memory-starved machine
@@ -169,18 +154,21 @@ export function registerIpcHandlers(appRoot: string): void {
   ipcMain.on("embeddedTerminal:unsubscribe", (event, id: string) => {
     if (typeof id === "string" && id) unsubscribeEmbeddedTerminalOutput(id, event.sender.id);
   });
-  ipcMain.on("embeddedTerminal:subscribeAll", (event) => subscribeAllEmbeddedTerminalOutput(event.sender));
-  ipcMain.on("embeddedTerminal:unsubscribeAll", (event) => unsubscribeAllEmbeddedTerminalOutput(event.sender.id));
+  installIpcBreadcrumbCrashFlush();
   const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
     ipcMain.handle(channel, async (event, ...args) => {
-      recordIpcBreadcrumb(channel, "start", args);
+      const breadcrumb = recordIpcBreadcrumb(channel, args);
       try {
         const result = await listener(event, ...args);
-        recordIpcBreadcrumb(channel, "ok", args);
+        breadcrumb.phase = "ok";
         return result;
       } catch (error) {
-        recordIpcBreadcrumb(channel, "error", args, String(error));
+        breadcrumb.phase = "error";
+        breadcrumb.error = String(error).slice(0, 500);
         throw error;
+      } finally {
+        // Completion is diagnostic context only; persist it lazily.
+        scheduleIpcBreadcrumbFlush();
       }
     });
   };
@@ -227,7 +215,8 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("backend:checkHealth", (): Promise<BackendState> => checkBackendHealth());
   handle("backend:restart", (): Promise<BackendState> => restartBackend(appRoot));
   handle("control:getState", (): ControlState => getControlState());
-  handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth());
+  // The control watchdog probes /health continuously; reuse its recent result.
+  handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth({ maxAgeMs: CONTROL_HEALTH_CACHE_MS }));
   handle("control:restart", (): Promise<ControlState> => restartControlServer());
   handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
   handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => {
@@ -249,35 +238,12 @@ export function registerIpcHandlers(appRoot: string): void {
     if (preference === "accelerated") clearGraphicsQuarantine();
     return getGraphicsRuntimeStatus(preference);
   });
-  handle("codexTerminal:getState", (): CodexTerminalState => getCodexTerminalState());
-  handle("codexTerminal:start", (event, workspace: string): Promise<CodexTerminalState> => {
-    const window = BrowserWindow.fromWebContents(event.sender);
-    if (!window) {
-      return Promise.resolve({
-        running: false,
-        workspace: null,
-        pid: null,
-        lastError: "Unable to find Electron window for Codex terminal.",
-      });
-    }
-    return startCodexTerminal(workspace, window);
-  });
-  handle("codexTerminal:write", (_event, data: string): CodexTerminalState => writeCodexTerminal(data));
-  handle("codexTerminal:stop", (): Promise<CodexTerminalState> => stopCodexTerminal());
-  handle("codexTerminal:openNative", (_event, workspace: string): Promise<NativeTerminalResult> => openNativeCodexTerminal(workspace));
-  handle("codexTerminal:openGrid", (_event, workspace: string, panes?: number): Promise<NativeTerminalResult> =>
-    openNativeCodexGrid(workspace, panes),
-  );
-  handle("codexTerminal:nativeSessions", (): NativeTerminalSession[] => getNativeTerminalSessions());
   handle("embeddedTerminal:list", (): EmbeddedTerminalSession[] => listEmbeddedTerminals());
   handle("embeddedTerminal:restore", (_event, allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> =>
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
-  handle("embeddedTerminal:attachBuffer", (_event, id: string): string => attachEmbeddedTerminalBuffer(id));
   handle("embeddedTerminal:attachStream", (event, id: string) => attachEmbeddedTerminalStream(id, event.sender));
   handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
-  handle("agentMessages:list", (_event, workspace?: string, limit?: number): AgentMessage[] => listEmbeddedAgentMessages(workspace, limit));
-  handle("agentMessages:send", (_event, request: SendAgentMessageRequest): Promise<SendAgentMessageResult> => sendAgentMessage({ ...request, source: "ui" }));
   handle("performance:diagnostics", async () => ({
     ...await getPerformanceDiagnostics(),
     sessionIndex: getAgentSessionScanDiagnostics(),
@@ -362,26 +328,153 @@ export function registerIpcHandlers(appRoot: string): void {
   });
 }
 
-function recordIpcBreadcrumb(channel: string, phase: "start" | "ok" | "error", args: unknown[], error?: string): void {
+// IPC crash breadcrumbs. Every ipcMain.handle call used to rewrite a file
+// synchronously -- including embeddedTerminal:write on every keystroke. The
+// most recent calls now live in a fixed in-memory ring. Rare, risky channels
+// (spawn, restore, window/shell/dialog, graphics and preference changes,
+// backend/control restarts) still persist the ring synchronously *before*
+// their handler runs, so a native crash of the main process inside one of them
+// leaves its `start` record on disk. Hot channels (keystrokes, resize, lists,
+// health/status polls) only schedule a debounced async write. The ring is also
+// flushed synchronously when a renderer or child process dies and at quit.
+type IpcBreadcrumb = {
+  at: number;
+  channel: string;
+  phase: "start" | "ok" | "error";
+  args: unknown[];
+  error: string | null;
+};
+
+const IPC_BREADCRUMB_CAPACITY = 64;
+const IPC_BREADCRUMB_FLUSH_DELAY_MS = 5_000;
+// Terminal input is user keystrokes (possibly secrets); record only its size.
+const IPC_REDACTED_STRING_CHANNELS = new Set(["embeddedTerminal:write"]);
+// Per-keystroke, per-resize, list and polling channels. Everything else is
+// written through synchronously before its handler runs.
+const IPC_HOT_CHANNELS = new Set([
+  "embeddedTerminal:write",
+  "embeddedTerminal:resize",
+  "embeddedTerminal:list",
+  "embeddedTerminal:buffer",
+  "agentSessions:list",
+  "backend:getState",
+  "backend:checkHealth",
+  "control:getState",
+  "control:checkHealth",
+  "launchState:get",
+  "preferences:get",
+  "graphics:getStatus",
+  "performance:diagnostics",
+  "workspace:getDefault",
+  "workspace:toPath",
+]);
+const ipcBreadcrumbs: IpcBreadcrumb[] = [];
+let ipcBreadcrumbNext = 0;
+let ipcBreadcrumbTimer: NodeJS.Timeout | null = null;
+let ipcBreadcrumbCrashFlushInstalled = false;
+// Bumped by every synchronous flush; a background write that started earlier
+// holds an older snapshot and must not replace the newer file.
+let ipcBreadcrumbSyncFlushes = 0;
+
+function recordIpcBreadcrumb(channel: string, args: unknown[]): IpcBreadcrumb {
+  const breadcrumb: IpcBreadcrumb = {
+    at: Date.now(),
+    channel,
+    phase: "start",
+    args: summarizeIpcArgs(args, IPC_REDACTED_STRING_CHANNELS.has(channel)),
+    error: null,
+  };
+  if (ipcBreadcrumbs.length < IPC_BREADCRUMB_CAPACITY) {
+    ipcBreadcrumbs.push(breadcrumb);
+  } else {
+    ipcBreadcrumbs[ipcBreadcrumbNext] = breadcrumb;
+  }
+  ipcBreadcrumbNext = (ipcBreadcrumbNext + 1) % IPC_BREADCRUMB_CAPACITY;
+  if (IPC_HOT_CHANNELS.has(channel)) scheduleIpcBreadcrumbFlush();
+  else flushIpcBreadcrumbs(`before:${channel}`);
+  return breadcrumb;
+}
+
+function scheduleIpcBreadcrumbFlush(): void {
+  if (ipcBreadcrumbTimer) return;
+  ipcBreadcrumbTimer = setTimeout(() => {
+    ipcBreadcrumbTimer = null;
+    const filePath = ipcBreadcrumbPath();
+    const temporary = `${filePath}.${process.pid}.tmp`;
+    const content = serializeIpcBreadcrumbs("periodic");
+    const syncFlushesAtStart = ipcBreadcrumbSyncFlushes;
+    void fs.promises.mkdir(path.dirname(filePath), { recursive: true })
+      .then(() => fs.promises.writeFile(temporary, content, "utf8"))
+      .then(() => {
+        // Renamed on the main thread, ordered against synchronous flushes.
+        if (ipcBreadcrumbSyncFlushes === syncFlushesAtStart) fs.renameSync(temporary, filePath);
+        else fs.rmSync(temporary, { force: true });
+      })
+      .catch(() => {
+        // Crash breadcrumbs are best-effort and must never affect IPC handling.
+        try {
+          fs.rmSync(temporary, { force: true });
+        } catch {
+          // Ignore.
+        }
+      });
+  }, IPC_BREADCRUMB_FLUSH_DELAY_MS);
+  ipcBreadcrumbTimer.unref?.();
+}
+
+/** Synchronously persist the IPC breadcrumb ring (crash, renderer loss, quit). */
+export function flushIpcBreadcrumbs(reason: string): void {
+  if (ipcBreadcrumbTimer) {
+    clearTimeout(ipcBreadcrumbTimer);
+    ipcBreadcrumbTimer = null;
+  }
+  if (ipcBreadcrumbs.length === 0) return;
+  ipcBreadcrumbSyncFlushes += 1;
   try {
-    const directory = path.join(os.homedir(), ".context-workspace");
-    fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(path.join(directory, "ipc-breadcrumb.json"), JSON.stringify({
-      at: new Date().toISOString(),
-      pid: process.pid,
-      channel,
-      phase,
-      args: summarizeIpcArgs(args),
-      error: error?.slice(0, 500) ?? null,
-    }, null, 2), "utf8");
+    const filePath = ipcBreadcrumbPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, serializeIpcBreadcrumbs(reason), "utf8");
   } catch {
     // Crash breadcrumbs are best-effort and must never affect IPC handling.
   }
 }
 
-function summarizeIpcArgs(args: unknown[]): unknown[] {
+function installIpcBreadcrumbCrashFlush(): void {
+  if (ipcBreadcrumbCrashFlushInstalled) return;
+  ipcBreadcrumbCrashFlushInstalled = true;
+  app.on("render-process-gone", (_event, _webContents, details) => {
+    flushIpcBreadcrumbs(`render-process-gone:${details.reason}`);
+  });
+  app.on("child-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit") return;
+    flushIpcBreadcrumbs(`child-process-gone:${details.type}:${details.reason}`);
+  });
+}
+
+function ipcBreadcrumbPath(): string {
+  return path.join(os.homedir(), ".context-workspace", "ipc-breadcrumb.json");
+}
+
+function serializeIpcBreadcrumbs(reason: string): string {
+  const ordered = ipcBreadcrumbs.length < IPC_BREADCRUMB_CAPACITY
+    ? ipcBreadcrumbs
+    : [...ipcBreadcrumbs.slice(ipcBreadcrumbNext), ...ipcBreadcrumbs.slice(0, ipcBreadcrumbNext)];
+  return JSON.stringify({
+    pid: process.pid,
+    flushedAt: new Date().toISOString(),
+    reason,
+    // Oldest first; the last entry is the most recent IPC call.
+    calls: ordered.map((entry) => ({ ...entry, at: new Date(entry.at).toISOString() })),
+  });
+}
+
+function summarizeIpcArgs(args: unknown[], redactStrings = false): unknown[] {
   return args.map((arg) => {
-    if (typeof arg === "string") return { type: "string", length: arg.length, preview: arg.slice(0, 80) };
+    if (typeof arg === "string") {
+      return redactStrings
+        ? { type: "string", length: arg.length }
+        : { type: "string", length: arg.length, preview: arg.slice(0, 80) };
+    }
     if (typeof arg === "number" || typeof arg === "boolean" || arg == null) return arg;
     if (Array.isArray(arg)) return { type: "array", length: arg.length };
     if (typeof arg === "object") return { type: "object", keys: Object.keys(arg).slice(0, 20) };

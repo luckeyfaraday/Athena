@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import runpy
 from collections.abc import Sequence
 
 import uvicorn
@@ -26,11 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run Athena's bundled stdio MCP server instead of the HTTP server.",
     )
-    parser.add_argument(
-        "--refresh-recall-script",
-        metavar="PATH",
-        help="Run Athena's bundled recall refresh script instead of the HTTP server.",
-    )
     return parser
 
 
@@ -40,9 +34,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         from mcp_server.server import main as run_mcp_server
 
         run_mcp_server()
-        return 0
-    if args.refresh_recall_script:
-        runpy.run_path(args.refresh_recall_script, run_name="__main__")
         return 0
 
     uvicorn.run(

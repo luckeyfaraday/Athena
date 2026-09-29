@@ -1,26 +1,11 @@
-import type { AdapterStatus, BackendStatus, ElectronControlStatus, HermesStatus, RecallStatus } from "./api";
+import type { BackendStatus, ElectronControlStatus } from "./api";
 import type {
-  AgentMessage,
   AgentProcessDiagnostic,
   AgentSession,
   ControlEvent,
   PerformanceDiagnostics,
   TerminalControlState,
 } from "./electron";
-
-export type LoadState = {
-  hermes: HermesStatus | null;
-  recall: RecallStatus | null;
-  adapters: Record<string, AdapterStatus>;
-  memory: string[];
-};
-
-export const emptyLoadState: LoadState = {
-  hermes: null,
-  recall: null,
-  adapters: {},
-  memory: [],
-};
 
 export function sameStringArray(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((item, index) => item === b[index]);
@@ -50,11 +35,6 @@ export function sameAgentSessions(a: AgentSession[], b: AgentSession[]): boolean
   return a.every((session, index) => sameAgentSession(session, b[index]!));
 }
 
-export function sameAgentMessages(a: AgentMessage[], b: AgentMessage[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((message, index) => sameAgentMessage(message, b[index]!));
-}
-
 export function samePerformanceDiagnostics(a: PerformanceDiagnostics | null, b: PerformanceDiagnostics | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -70,9 +50,10 @@ export function samePerformanceDiagnostics(a: PerformanceDiagnostics | null, b: 
     && a.maxEventLoopLagMs === b.maxEventLoopLagMs
     && a.lastOutputBatchAt === b.lastOutputBatchAt
     && a.rendererTerminalSubscribers === b.rendererTerminalSubscribers
-    && a.hiddenRawIpcBytes === b.hiddenRawIpcBytes
     && a.terminalOutputRetries === b.terminalOutputRetries
     && a.terminalOutputResets === b.terminalOutputResets
+    && a.terminalOutputFlowPauses === b.terminalOutputFlowPauses
+    && a.terminalOutputFlowForcedResumes === b.terminalOutputFlowForcedResumes
     && a.terminalOutputDroppedChars === b.terminalOutputDroppedChars
     && a.terminalOutputDeliveredChars === b.terminalOutputDeliveredChars
     && a.terminalOutputAcknowledgedChars === b.terminalOutputAcknowledgedChars
@@ -84,13 +65,6 @@ export function samePerformanceDiagnostics(a: PerformanceDiagnostics | null, b: 
     && sameControlEvents(a.controlEvents, b.controlEvents)
     && sameTerminalControlStates(a.terminalControl, b.terminalControl)
     && sameAgentProcessDiagnostics(a.agentProcesses, b.agentProcesses);
-}
-
-export function sameLoadState(a: LoadState, b: LoadState): boolean {
-  return sameJsonValue(a.hermes, b.hermes)
-    && sameJsonValue(a.recall, b.recall)
-    && sameJsonValue(a.adapters, b.adapters)
-    && sameStringArray(a.memory, b.memory);
 }
 
 function sameAgentSession(a: AgentSession, b: AgentSession): boolean {
@@ -108,26 +82,6 @@ function sameAgentSession(a: AgentSession, b: AgentSession): boolean {
     && a.pid === b.pid
     && a.resumeCommand === b.resumeCommand
     && sameJsonValue(a.metadata, b.metadata);
-}
-
-function sameAgentMessage(a: AgentMessage, b: AgentMessage): boolean {
-  return a.id === b.id
-    && a.threadId === b.threadId
-    && a.at === b.at
-    && a.updatedAt === b.updatedAt
-    && a.workspace === b.workspace
-    && a.from === b.from
-    && a.fromTerminalId === b.fromTerminalId
-    && a.to === b.to
-    && a.toTerminalId === b.toTerminalId
-    && a.toKind === b.toKind
-    && a.text === b.text
-    && a.preview === b.preview
-    && a.status === b.status
-    && a.replyRequested === b.replyRequested
-    && a.hopCount === b.hopCount
-    && a.source === b.source
-    && a.error === b.error;
 }
 
 function sameControlEvents(a: ControlEvent[], b: ControlEvent[]): boolean {

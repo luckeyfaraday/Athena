@@ -2,19 +2,17 @@ import { type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactN
 import {
   ChevronDown,
   Code2,
-  FileText,
   Maximize2,
   Minimize2,
   Pencil,
   Play,
   RefreshCw,
-  ScrollText,
   Send,
   TerminalSquare,
   Trash2,
 } from "lucide-react";
 import { AthenaIcon, ClaudeIcon, GrokIcon, HermesIcon, OpenAIIcon, OpenCodeIcon } from "../components/BrandIcons";
-import type { AgentContextMode, AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
+import type { AgentSession, EmbeddedTerminalKind, EmbeddedTerminalSession } from "../electron";
 import { EmbeddedChatTerminal } from "../components/EmbeddedChatTerminal";
 import { EmbeddedTerminal } from "../components/EmbeddedTerminal";
 import {
@@ -47,7 +45,6 @@ export function CommandRoom({
   agentSessions,
   busy,
   focused,
-  recallAvailable,
   layoutResetNonce,
   interfaceMode,
   onFocusChange,
@@ -55,11 +52,9 @@ export function CommandRoom({
   onClose,
   onBroadcastPrompt,
   onResumeSession,
-  onInspectEmbeddedSession,
   onRenameEmbeddedSession,
-  onInspectAgentSession,
   onRenameAgentSession,
-  onViewAgentTranscript,
+  onRefreshAgentSessions,
   emptyMark,
 }: {
   workspace: string;
@@ -67,25 +62,20 @@ export function CommandRoom({
   agentSessions: AgentSession[];
   busy: boolean;
   focused: boolean;
-  recallAvailable: boolean;
   layoutResetNonce: number;
   interfaceMode: "terminal" | "chat";
   onFocusChange: (focused: boolean) => void;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number, contextMode?: AgentContextMode) => Promise<void>;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
   onBroadcastPrompt: (prompt: string, sessionIds: string[]) => Promise<void>;
   onResumeSession: (session: AgentSession) => Promise<void>;
-  onInspectEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
-  onInspectAgentSession: (session: AgentSession) => void;
   onRenameAgentSession: (session: AgentSession) => void;
-  onViewAgentTranscript: (session: AgentSession) => Promise<string>;
+  onRefreshAgentSessions: (maxAgeMs?: number) => Promise<void>;
   emptyMark: ReactNode;
 }) {
   const [paneOrderByWorkspace, setPaneOrderByWorkspace] = useState<Record<string, string[]>>({});
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
-  const [broadcastPrompt, setBroadcastPrompt] = useState("");
-  const [broadcasting, setBroadcasting] = useState(false);
   const [activeTab, setActiveTab] = useState<"terminals" | "sessions">("terminals");
   const [activeSessionProvider, setActiveSessionProvider] = useState<SessionProviderFilter>("all");
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
@@ -158,10 +148,23 @@ export function CommandRoom({
   const filteredAgentSessions = activeSessionProvider === "all"
     ? visibleAgentSessions
     : visibleAgentSessions.filter((session) => session.provider === activeSessionProvider);
-  const shownCount = visibleSessions.length;
-  const promptTargets = visibleSessions.filter((session) => session.status === "running" && session.kind !== "shell");
-  const canBroadcast = promptTargets.length > 0 && broadcastPrompt.trim().length > 0 && !broadcasting;
+  const promptTargetIds = visibleSessions
+    .filter((session) => session.status === "running" && session.kind !== "shell")
+    .map((session) => session.id);
   const runningAgentSessions = visibleAgentSessions.filter((session) => session.status === "running").length;
+  const liveSessionSignature = sessions.map((session) => `${session.id}:${session.status}`).join("|");
+
+  // Native session history is only scanned while the Sessions tab is open.
+  // Opening the tab (or a live pane starting/exiting) refreshes anything older
+  // than a few seconds; while it stays open, refresh at most once a minute.
+  useEffect(() => {
+    if (activeTab !== "sessions" || !workspace) return undefined;
+    void onRefreshAgentSessions(5_000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void onRefreshAgentSessions();
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [activeTab, workspace, liveSessionSignature, onRefreshAgentSessions]);
 
   useEffect(() => {
     const previousSignature = paneSetSignatureByWorkspaceRef.current.get(workspaceOrderKey);
@@ -300,20 +303,29 @@ export function CommandRoom({
     dragStartRef.current = { id: sessionId, x: event.clientX, y: event.clientY };
     setDragState({ id: sessionId, deltaX: 0, deltaY: 0, targetId: null });
 
-    const move = (moveEvent: PointerEvent) => {
+    let moveFrame = 0;
+    let lastPointer = { x: event.clientX, y: event.clientY };
+    const commitMove = () => {
+      moveFrame = 0;
       const dragStart = dragStartRef.current;
       if (!dragStart) return;
-      const nextTargetId = nearestPaneDropTarget(moveEvent.clientX, moveEvent.clientY, dragStart.id);
+      const nextTargetId = nearestPaneDropTarget(lastPointer.x, lastPointer.y, dragStart.id);
       dragTargetRef.current = nextTargetId;
       setDragState({
         id: dragStart.id,
-        deltaX: moveEvent.clientX - dragStart.x,
-        deltaY: moveEvent.clientY - dragStart.y,
+        deltaX: lastPointer.x - dragStart.x,
+        deltaY: lastPointer.y - dragStart.y,
         targetId: nextTargetId,
       });
     };
+    const move = (moveEvent: PointerEvent) => {
+      lastPointer = { x: moveEvent.clientX, y: moveEvent.clientY };
+      if (!moveFrame) moveFrame = window.requestAnimationFrame(commitMove);
+    };
 
     const end = () => {
+      if (moveFrame) window.cancelAnimationFrame(moveFrame);
+      moveFrame = 0;
       const dragStart = dragStartRef.current;
       const targetId = dragTargetRef.current;
       dragStartRef.current = null;
@@ -373,21 +385,14 @@ export function CommandRoom({
     handle.addEventListener("pointercancel", end);
   }
 
-  async function submitBroadcastPrompt() {
-    const trimmed = broadcastPrompt.trim();
-    if (!trimmed || promptTargets.length === 0 || broadcasting) return;
-    setBroadcasting(true);
-    try {
-      await onBroadcastPrompt(trimmed, promptTargets.map((session) => session.id));
-      setBroadcastPrompt("");
-    } finally {
-      setBroadcasting(false);
-    }
-  }
-
   async function copySessionText(value: string | null) {
     if (!value) return;
     await navigator.clipboard?.writeText(value).catch(() => undefined);
+  }
+
+  async function resumeSession(session: AgentSession) {
+    await onResumeSession(session);
+    setActiveTab("terminals");
   }
 
   function deleteAgentSession(session: AgentSession) {
@@ -399,13 +404,28 @@ export function CommandRoom({
 
   return (
     <div className={focused ? "roomPanel commandRoom focused" : "roomPanel commandRoom"}>
-      <div className="roomPanelHeader">
-        <div>
-          <span className="tinyLabel">Embedded PTY control</span>
-          <h3>Real terminals inside the workspace</h3>
-          <span className="panelMeta">
-            {sessions.length ? `${shownCount} running sessions` : "No sessions running"}{interfaceMode === "chat" ? " · Chat view" : ""}
-          </span>
+      <div className="roomPanelHeader commandToolbar">
+        <div className="commandRoomTabs" role="tablist" aria-label="Command room views">
+          <button
+            type="button"
+            className={activeTab === "terminals" ? "active" : ""}
+            onClick={() => setActiveTab("terminals")}
+            role="tab"
+            aria-selected={activeTab === "terminals"}
+          >
+            <TerminalSquare size={14} /> Terminals
+            {visibleSessions.length > 0 && <span>{visibleSessions.length}</span>}
+          </button>
+          <button
+            type="button"
+            className={activeTab === "sessions" ? "active" : ""}
+            onClick={() => setActiveTab("sessions")}
+            role="tab"
+            aria-selected={activeTab === "sessions"}
+          >
+            <Code2 size={14} /> Sessions
+            {visibleAgentSessions.length > 0 && <span>{runningAgentSessions || visibleAgentSessions.length}</span>}
+          </button>
         </div>
         <div className="buttonRow">
           <button className="ghostButton" onClick={() => onFocusChange(!focused)} title={focused ? "Exit shell focus (Esc)" : "Enter shell focus"}>
@@ -418,33 +438,10 @@ export function CommandRoom({
             open={newMenuOpen}
             workspace={workspace}
             menuRef={newMenuRef}
-            recallAvailable={recallAvailable}
             onOpenChange={setNewMenuOpen}
             onLaunch={onLaunch}
           />
         </div>
-      </div>
-
-      <div className="commandRoomTabs" role="tablist" aria-label="Command room views">
-        <button
-          type="button"
-          className={activeTab === "terminals" ? "active" : ""}
-          onClick={() => setActiveTab("terminals")}
-          role="tab"
-          aria-selected={activeTab === "terminals"}
-        >
-          <TerminalSquare size={14} /> Terminals
-        </button>
-        <button
-          type="button"
-          className={activeTab === "sessions" ? "active" : ""}
-          onClick={() => setActiveTab("sessions")}
-          role="tab"
-          aria-selected={activeTab === "sessions"}
-        >
-          <Code2 size={14} /> Sessions
-          <span>{runningAgentSessions || visibleAgentSessions.length}</span>
-        </button>
       </div>
 
       {activeTab === "terminals" ? (
@@ -509,9 +506,6 @@ export function CommandRoom({
                   {session.title}
                 </strong>
                 <em>{terminalPaneMeta(session)}</em>
-                <button type="button" className="terminalChromeAction" onClick={() => onInspectEmbeddedSession(session)} title={`Inspect ${session.title}`}>
-                  <FileText size={13} />
-                </button>
                 <button type="button" className="terminalChromeAction" onClick={() => onRenameEmbeddedSession(session)} title={`Rename ${session.title}`}>
                   <Pencil size={13} />
                 </button>
@@ -592,17 +586,11 @@ export function CommandRoom({
                 <button type="button" onClick={() => void copySessionText(session.id)}>
                   <Code2 size={13} /> ID
                 </button>
-                <button type="button" onClick={() => onInspectAgentSession(session)}>
-                  <FileText size={13} /> Inspect
-                </button>
                 <button type="button" onClick={() => onRenameAgentSession(session)}>
                   <Pencil size={13} /> Rename
                 </button>
-                <button type="button" onClick={() => void onViewAgentTranscript(session)}>
-                  <ScrollText size={13} /> Transcript
-                </button>
                 {session.resumeCommand && (
-                  <button type="button" onClick={() => void onResumeSession(session)} disabled={busy}>
+                  <button type="button" onClick={() => void resumeSession(session)} disabled={busy}>
                     <RefreshCw size={13} /> Resume
                   </button>
                 )}
@@ -622,82 +610,90 @@ export function CommandRoom({
         </div>
       )}
 
-      <div className="sessionStrip embeddedSessionStrip">
-        {sessions.map((session) => (
-          <div key={session.id} className="sessionChip active">
-            <TerminalSquare size={15} />
-            <div>
-              <strong>{session.title}</strong>
-              <span>{session.kind} · {session.status}{session.promptPath ? " · Athena context" : ""}</span>
-            </div>
-          </div>
-        ))}
-        {sessions.length === 0 && <p>Embedded terminals replace the old pop-out launcher. This is the ATHENA surface.</p>}
-      </div>
-
-      <form
-        className="broadcastComposer"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submitBroadcastPrompt();
-        }}
-      >
-        <span>{promptTargets.length ? `${promptTargets.length} ready` : "No agents"}</span>
-        <input
-          value={broadcastPrompt}
-          onChange={(event) => setBroadcastPrompt(event.target.value)}
-          placeholder="Prompt all ready agents"
-          disabled={broadcasting || promptTargets.length === 0}
-        />
-        <button className="primaryButton" type="submit" disabled={!canBroadcast} title="Send prompt to all ready agents">
-          <Send size={14} /> Send
-        </button>
-      </form>
+      <BroadcastComposer targetIds={promptTargetIds} onBroadcast={onBroadcastPrompt} />
     </div>
   );
 }
+
+function BroadcastComposer({
+  targetIds,
+  onBroadcast,
+}: {
+  targetIds: string[];
+  onBroadcast: (prompt: string, sessionIds: string[]) => Promise<void>;
+}) {
+  // Local state keeps keystrokes from re-rendering the whole terminal grid.
+  const [prompt, setPrompt] = useState("");
+  const [sending, setSending] = useState(false);
+  const canSend = targetIds.length > 0 && prompt.trim().length > 0 && !sending;
+
+  async function submit() {
+    const trimmed = prompt.trim();
+    if (!trimmed || targetIds.length === 0 || sending) return;
+    setSending(true);
+    try {
+      await onBroadcast(trimmed, targetIds);
+      setPrompt("");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <form
+      className="broadcastComposer"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <span>{targetIds.length ? `${targetIds.length} ready` : "No agents"}</span>
+      <input
+        value={prompt}
+        onChange={(event) => setPrompt(event.target.value)}
+        placeholder="Prompt all ready agents"
+        disabled={sending || targetIds.length === 0}
+      />
+      <button className="primaryButton" type="submit" disabled={!canSend} title="Send prompt to all ready agents">
+        <Send size={14} /> Send
+      </button>
+    </form>
+  );
+}
+
+type LaunchAction = { label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number };
+
+const launchActions: LaunchAction[] = [
+  { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
+  { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
+  { label: "Athena Code", detail: "Spawn external Athena Code CLI", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
+  { label: "Athena Code Grid", detail: "Spawn four external CLI panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
+  { label: "Codex", detail: "Spawn one Codex agent", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1 },
+  { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <OpenAIIcon size={14} />, kind: "codex", count: 4 },
+  { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1 },
+  { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 4 },
+  { label: "Claude", detail: "Spawn one Claude agent", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1 },
+  { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ClaudeIcon size={14} />, kind: "claude", count: 4 },
+  { label: "Grok", detail: "Spawn external Grok Build CLI", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
+  { label: "Grok Grid", detail: "Spawn four external CLI panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
+];
 
 function NewLaunchMenu({
   open,
   workspace,
   menuRef,
-  recallAvailable,
   onOpenChange,
   onLaunch,
 }: {
   open: boolean;
   workspace: string;
   menuRef: RefObject<HTMLDivElement | null>;
-  recallAvailable: boolean;
   onOpenChange: (open: boolean) => void;
-  onLaunch: (kind: EmbeddedTerminalKind, count?: number, contextMode?: AgentContextMode) => Promise<void>;
+  onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
 }) {
-  const disabled = !workspace;
-  const actions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number; contextMode?: AgentContextMode; disabled?: boolean }> = [
-    { label: "Shell", detail: "Start one embedded terminal", icon: <TerminalSquare size={14} />, kind: "shell", count: 1 },
-    { label: "Hermes", detail: "Spawn Hermes", icon: <HermesIcon size={14} />, kind: "hermes", count: 1 },
-    { label: "Athena Code", detail: "Spawn external Athena Code CLI", icon: <AthenaIcon size={14} />, kind: "athena", count: 1 },
-    { label: "Athena Code Grid", detail: "Spawn four external CLI panes", icon: <AthenaIcon size={14} />, kind: "athena", count: 4 },
-    { label: "Codex", detail: "Spawn one Codex agent", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1 },
-    { label: "Codex Grid", detail: "Spawn four Codex panes", icon: <OpenAIIcon size={14} />, kind: "codex", count: 4 },
-    { label: "OpenCode", detail: "Spawn one OpenCode agent", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1 },
-    { label: "OpenCode Grid", detail: "Spawn four OpenCode panes", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 4 },
-    { label: "Claude", detail: "Spawn one Claude agent", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1 },
-    { label: "Claude Grid", detail: "Spawn four Claude panes", icon: <ClaudeIcon size={14} />, kind: "claude", count: 4 },
-    { label: "Grok", detail: "Spawn external Grok Build CLI", icon: <GrokIcon size={14} />, kind: "grok", count: 1 },
-    { label: "Grok Grid", detail: "Spawn four external CLI panes", icon: <GrokIcon size={14} />, kind: "grok", count: 4 },
-  ];
-  const recallActions: Array<{ label: string; detail: string; icon: ReactNode; kind: EmbeddedTerminalKind; count: number; contextMode: AgentContextMode; disabled?: boolean }> = [
-    { label: "Athena Code + Recall", detail: "Use workspace recall", icon: <AthenaIcon size={14} />, kind: "athena", count: 1, contextMode: "immersive", disabled: !recallAvailable },
-    { label: "Codex + Recall", detail: "Use workspace recall", icon: <OpenAIIcon size={14} />, kind: "codex", count: 1, contextMode: "immersive", disabled: !recallAvailable },
-    { label: "OpenCode + Recall", detail: "Use workspace recall", icon: <OpenCodeIcon size={14} />, kind: "opencode", count: 1, contextMode: "immersive", disabled: !recallAvailable },
-    { label: "Claude + Recall", detail: "Use workspace recall", icon: <ClaudeIcon size={14} />, kind: "claude", count: 1, contextMode: "immersive", disabled: !recallAvailable },
-    { label: "Grok + Recall", detail: "Use workspace recall", icon: <GrokIcon size={14} />, kind: "grok", count: 1, contextMode: "immersive", disabled: !recallAvailable },
-  ];
-
-  function launch(kind: EmbeddedTerminalKind, count: number, contextMode?: AgentContextMode) {
+  function launch(kind: EmbeddedTerminalKind, count: number) {
     onOpenChange(false);
-    void onLaunch(kind, count, contextMode);
+    void onLaunch(kind, count);
   }
 
   return (
@@ -707,30 +703,19 @@ function NewLaunchMenu({
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
-        disabled={disabled}
+        disabled={!workspace}
         onClick={() => onOpenChange(!open)}
       >
         <Play size={14} /> New <ChevronDown size={13} />
       </button>
       {open && (
         <div className="newMenuPanel" role="menu">
-          <span className="newMenuSection">Native terminals</span>
-          {actions.map((action) => (
-            <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count, action.contextMode)} disabled={action.disabled}>
+          {launchActions.map((action) => (
+            <button key={`${action.kind}-${action.count}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count)}>
               <span>{action.icon}</span>
               <span>
                 <strong>{action.label}</strong>
                 <small>{action.detail}</small>
-              </span>
-            </button>
-          ))}
-          <span className="newMenuSection">Recall launches</span>
-          {recallActions.map((action) => (
-            <button key={`${action.kind}-${action.count}-${action.label}`} type="button" role="menuitem" onClick={() => launch(action.kind, action.count, action.contextMode)} disabled={action.disabled}>
-              <span>{action.icon}</span>
-              <span>
-                <strong>{action.label}</strong>
-                <small>{action.disabled ? "No recall cache" : action.detail}</small>
               </span>
             </button>
           ))}

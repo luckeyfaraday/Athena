@@ -292,6 +292,13 @@ initializeOwnedGraphicsLaunch(singleInstanceLock, () => {
   // owner may hold or replace this log.
   enableChromiumLogging();
 
+  // Windows groups taskbar buttons, and picks their icon, by AppUserModelID. Use the one the installer gives the
+  // Start Menu shortcut (appId in electron-builder.yml), so the running window groups with the shortcut and pinned
+  // icon instead of showing as a separate Electron button. Dev runs keep their own id.
+  if (process.platform === "win32" && app.isPackaged) {
+    app.setAppUserModelId("app.athena.workspace");
+  }
+
   app.on("second-instance", () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (mainWindow.isMinimized()) mainWindow.restore();

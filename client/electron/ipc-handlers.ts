@@ -23,6 +23,15 @@ import {
 } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import {
+  getRemoteAccessState,
+  getRemoteAccessToken,
+  refreshRemoteAccessState,
+  regenerateRemoteAccessToken,
+  setRemoteAccessEnabled,
+  setRemoteAccessPort,
+  type RemoteAccessState,
+} from "./remote-control.js";
+import {
   clearGraphicsQuarantine,
   getGraphicsRuntimeStatus,
   GRAPHICS_PREFERENCE_KEY,
@@ -235,6 +244,12 @@ export function registerIpcHandlers(appRoot: string): void {
   // The control watchdog probes /health continuously; reuse its recent result.
   handle("control:checkHealth", (): Promise<ControlState> => checkControlHealth({ maxAgeMs: CONTROL_HEALTH_CACHE_MS }));
   handle("control:restart", (): Promise<ControlState> => restartControlServer());
+  handle("remoteAccess:getState", (): RemoteAccessState => getRemoteAccessState());
+  handle("remoteAccess:refresh", (): Promise<RemoteAccessState> => refreshRemoteAccessState());
+  handle("remoteAccess:setEnabled", (_event, enabled: unknown): Promise<RemoteAccessState> => setRemoteAccessEnabled(enabled === true));
+  handle("remoteAccess:setPort", (_event, port: unknown): Promise<RemoteAccessState> => setRemoteAccessPort(port));
+  handle("remoteAccess:regenerateToken", (): RemoteAccessState => regenerateRemoteAccessToken());
+  handle("remoteAccess:getToken", (): string => getRemoteAccessToken());
   handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
   handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => {
     clearSavedEmbeddedTerminalRestores();
@@ -397,6 +412,7 @@ const IPC_HOT_CHANNELS = new Set([
   "backend:checkHealth",
   "control:getState",
   "control:checkHealth",
+  "remoteAccess:getState",
   "launchState:get",
   "preferences:get",
   "graphics:getStatus",

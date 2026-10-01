@@ -600,6 +600,28 @@
 .settingsRow input:disabled,
 .settingsRow .segmentedControl button:disabled { cursor: default; opacity: .45; }
 
+/* ── REMOTE ACCESS ────────────────────────────────────────────────────────── */
+.settingsRowLabel > span .remoteAccessAddress {
+  margin: 4px 6px 0 0;
+  display: inline-block;
+}
+.settingsRowLabel > span .remoteAccessWarning {
+  margin-top: 4px;
+  display: block;
+  color: var(--warn);
+}
+.settingsGroupIntro.remoteAccessError {
+  padding-top: 0;
+  color: var(--danger);
+}
+.textInput.remoteAccessPort {
+  width: 88px;
+  height: 30px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.textInput.remoteAccessPort[aria-invalid="true"] { border-color: var(--danger); }
+
 /* ── AGENTS ───────────────────────────────────────────────────────────────── */
 .agentCliList {
   margin: 0;

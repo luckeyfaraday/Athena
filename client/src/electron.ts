@@ -208,6 +208,24 @@ export type TerminalControlState = {
   attentionReason: string | null;
 };
 
+// Mirrors RemoteAccessState in electron/remote-control.ts.
+export type RemoteAccessState = {
+  enabled: boolean;
+  port: number;
+  urls: string[];
+  dnsUrl: string | null;
+  tailscale: {
+    detected: boolean;
+    backendState: string | null;
+    dnsName: string | null;
+    hostName: string | null;
+  };
+  hasToken: boolean;
+  errors: string[];
+  lastRequest: { at: string; peer: string; method: string; path: string } | null;
+  lastRejected: { at: string; peer: string; status: number; reason: string } | null;
+};
+
 export type AthenaLaunchState = {
   pid: number;
   startedAt: string;
@@ -223,6 +241,12 @@ type WorkspaceApi = {
   getControlState: () => Promise<ElectronControlStatus>;
   checkControlHealth: () => Promise<ElectronControlStatus>;
   restartControl: () => Promise<ElectronControlStatus>;
+  getRemoteAccessState: () => Promise<RemoteAccessState>;
+  refreshRemoteAccess: () => Promise<RemoteAccessState>;
+  setRemoteAccessEnabled: (enabled: boolean) => Promise<RemoteAccessState>;
+  setRemoteAccessPort: (port: number) => Promise<RemoteAccessState>;
+  regenerateRemoteAccessToken: () => Promise<RemoteAccessState>;
+  getRemoteAccessToken: () => Promise<string>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
   getPreferences: () => Promise<Record<string, string>>;
@@ -287,6 +311,12 @@ const browserFallback: WorkspaceApi = {
   async getControlState() { return fallbackControlState(); },
   async checkControlHealth() { return fallbackControlState(); },
   async restartControl() { return fallbackControlState(); },
+  async getRemoteAccessState() { return fallbackRemoteAccessState(); },
+  async refreshRemoteAccess() { return fallbackRemoteAccessState(); },
+  async setRemoteAccessEnabled() { return fallbackRemoteAccessState(); },
+  async setRemoteAccessPort() { return fallbackRemoteAccessState(); },
+  async regenerateRemoteAccessToken() { return fallbackRemoteAccessState(); },
+  async getRemoteAccessToken() { return ""; },
   async getLaunchState() { return null; },
   async clearTerminalRestorePause() {
     return {
@@ -457,6 +487,20 @@ function fallbackControlState(): ElectronControlStatus {
     running: false,
     port: null,
     lastError: "Electron preload is unavailable in browser preview. Run the desktop app for Electron control.",
+  };
+}
+
+function fallbackRemoteAccessState(): RemoteAccessState {
+  return {
+    enabled: false,
+    port: 47821,
+    urls: [],
+    dnsUrl: null,
+    tailscale: { detected: false, backendState: null, dnsName: null, hostName: null },
+    hasToken: false,
+    errors: ["Remote access needs the desktop app."],
+    lastRequest: null,
+    lastRejected: null,
   };
 }
 

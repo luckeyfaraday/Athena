@@ -44,7 +44,7 @@ export function evaluateControlAccess(headers: ControlAccessHeaders, token: stri
   return { ok: true };
 }
 
-function hostnameFromHostHeader(host: string | undefined): string | null {
+export function hostnameFromHostHeader(host: string | undefined): string | null {
   if (!host) return null;
   const trimmed = host.trim();
   if (!trimmed) return null;
@@ -62,13 +62,13 @@ function isLoopbackOrigin(origin: string): boolean {
   }
 }
 
-function bearerToken(authorization: string | undefined): string | undefined {
+export function bearerToken(authorization: string | undefined): string | undefined {
   if (!authorization) return undefined;
   const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
   return match ? match[1].trim() : undefined;
 }
 
-function timingSafeEquals(left: string, right: string): boolean {
+export function timingSafeEquals(left: string, right: string): boolean {
   const leftBuffer = Buffer.from(left, "utf8");
   const rightBuffer = Buffer.from(right, "utf8");
   if (leftBuffer.length !== rightBuffer.length) return false;

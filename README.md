@@ -123,7 +123,7 @@ Themes are sets of design tokens (`client/src/styles/themes.css`), so switching 
 - Appearance: theme gallery, density, interface mode (terminal or chat), terminal font and size.
 - Workspace, notifications, and terminal restore.
 - Agents: detected agent CLIs with Install and Update, Hermes status and install, and the MCP bridge connect helper.
-- System: graphics mode (auto, safe, accelerated), backend and Electron control status.
+- System: graphics mode (auto, safe, accelerated), backend and Electron control status, and [remote access over Tailscale](#remote-access-over-tailscale).
 - Diagnostics for terminal throughput, event-loop lag, and agent processes, and a keyboard shortcut reference.
 
 ### Hermes MCP Integration
@@ -387,6 +387,41 @@ The `New` menu can launch:
 
 Agent panes receive a generated Athena prompt path only for task or curated
 launches. Clean launches receive no prompt path.
+
+## Remote Access Over Tailscale
+
+Athena can let your other machines drive this one over [Tailscale](https://tailscale.com). It's off by
+default. Turn it on in **Settings > System > Remote access**. While it's on, another machine on the same
+tailnet can call this machine's Electron control API: list terminals, stream their output, type into them,
+and launch shells or agents. The terminals and agents run on this machine and see this machine's files; the
+other machine only gets a window into them.
+
+What Athena does when remote access is on:
+
+- It listens only on this machine's Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48), on port
+  47821 by default. It never listens on 0.0.0.0, loopback, or LAN addresses. Athena checks for Tailscale
+  addresses every 15 seconds, so it picks up Tailscale starting late or changing address.
+- It answers only peers whose source address is on the tailnet, and only when the Host is a Tailscale
+  address or MagicDNS name. Any request with a browser `Origin` header is refused.
+- Every request except `/health` needs the machine's **access token**
+  (`Authorization: Bearer athena_remote_…` or `X-Athena-Control-Token`). The token is persistent, is stored
+  with 0600 permissions in Athena's user-data folder as `remote-access.json`, and is separate from the local
+  per-launch control token. **Regenerate** issues a new token and drops existing connections.
+- After 10 bad tokens in a minute, a peer gets HTTP 429. Settings shows the last accepted and the last
+  rejected request.
+
+Try it from another machine:
+
+```bash
+export ATHENA_TOKEN='athena_remote_…'   # Settings > System > Remote access > Copy token
+curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/machine
+curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/terminals
+```
+
+Anyone with the token who can reach your tailnet can run commands on the machine. Keep the port off
+[Funnel](https://tailscale.com/kb/1223/funnel). For extra safety, add a Tailscale ACL that limits port 47821
+to your own devices. On Windows, allow Athena through Windows Defender Firewall for private networks the
+first time you turn it on.
 
 ## Hermes Memory
 

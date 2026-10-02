@@ -66,13 +66,15 @@ test("listDirectories refuses URLs, relative paths, UNC paths, files, and missin
 
 test("reportWorkspaces keeps valid, unique tabs and notifies only on change", () => {
   const seen = [];
+  const app = path.resolve("workspace-fixture", "app");
+  const api = path.resolve("workspace-fixture", "api");
   const remove = onReportedWorkspaces((state) => seen.push(state));
   try {
-    const state = reportWorkspaces(["/home/alan/app", "/home/alan/app", "", 42, "/srv/api"], "/srv/api");
-    assert.deepEqual(state.workspaces.map((item) => item.nativePath), ["/home/alan/app", "/srv/api"]);
-    assert.equal(state.active.nativePath, "/srv/api");
+    const state = reportWorkspaces([app, app, "", 42, api], api);
+    assert.deepEqual(state.workspaces.map((item) => item.nativePath), [app, api]);
+    assert.equal(state.active.nativePath, api);
     assert.equal(reportedWorkspaces(), state);
-    reportWorkspaces(["/home/alan/app", "/srv/api"], "/srv/api");
+    reportWorkspaces([app, api], api);
     assert.equal(seen.length, 1, "an identical report is not a change");
     reportWorkspaces("nonsense", null);
     assert.deepEqual(reportedWorkspaces(), { workspaces: [], active: null });

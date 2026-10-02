@@ -123,7 +123,7 @@ Themes are sets of design tokens (`client/src/styles/themes.css`), so switching 
 - Appearance: theme gallery, density, interface mode (terminal or chat), terminal font and size.
 - Workspace, notifications, and terminal restore.
 - Agents: detected agent CLIs with Install and Update, Hermes status and install, and the MCP bridge connect helper.
-- System: graphics mode (auto, safe, accelerated), backend and Electron control status.
+- System: graphics mode (auto, safe, accelerated), backend and Electron control status, and [remote access over Tailscale](#remote-access-over-tailscale).
 - Diagnostics for terminal throughput, event-loop lag, and agent processes, and a keyboard shortcut reference.
 
 ### Hermes MCP Integration
@@ -387,6 +387,52 @@ The `New` menu can launch:
 
 Agent panes receive a generated Athena prompt path only for task or curated
 launches. Clean launches receive no prompt path.
+
+## Remote Access Over Tailscale
+
+Athena can let your other machines drive this one over [Tailscale](https://tailscale.com). It's off by
+default. Turn it on in **Settings > System > Remote access**. While it's on, another machine on the same
+tailnet can call this machine's Electron control API: list terminals, stream their output, type into them,
+and launch shells or agents. The terminals and agents run on this machine and see this machine's files; the
+other machine only gets a window into them.
+
+What Athena does when remote access is on:
+
+- It listens only on local addresses confirmed by `tailscale status --json`, on port 47821 by default.
+  The Tailscale CLI must be installed, running and signed in; unavailable or stopped Tailscale leaves
+  the listeners closed. Athena checks every 15 seconds, so it picks up Tailscale starting late or changing
+  address. An address in the same IP range on another VPN or LAN does not qualify.
+- It answers only peers whose source address is on the tailnet, and only when the Host is a Tailscale
+  address or MagicDNS name. Any request with a browser `Origin` header is refused.
+- **Trust my own devices** (off by default): when enabled, a request from another device signed in to the same Tailscale
+  account is let in without a token. Athena asks the local Tailscale client who owns the connecting address
+  (`tailscale whois`). Tagged devices never count as your own, and neither does this machine dialing itself.
+  Leave the setting at **Token only** to require the token from every device.
+- Every other request except `/health` needs the machine's **access token**
+  (`Authorization: Bearer athena_remote_…` or `X-Athena-Control-Token`). The token is persistent, is stored
+  with 0600 permissions in Athena's user-data folder as `remote-access.json`, and is separate from the local
+  per-launch control token. **Regenerate** issues a new token and drops existing connections.
+- After 10 bad tokens in a minute, a peer gets HTTP 429. Settings shows the last accepted and the last
+  rejected request, with the device name and whether it was let in by account or by token.
+
+**Your machines** (Settings > System) lists the other computers on your tailnet and whether each one's Athena
+is ready for this machine: *Ready*, *Needs token*, *Not answering* (Athena closed, remote access off, or a
+firewall), or *Offline*. It checks the same port this machine uses, so keep the port the same everywhere.
+
+Try it from another of your machines using the token copied from Settings:
+
+```bash
+export ATHENA_TOKEN='athena_remote_…'
+curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/machine
+curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/terminals
+# After explicitly enabling Trust my own devices, another device on your account can omit the token:
+curl http://my-desktop.tail1234.ts.net:47821/machine
+```
+
+Anyone who can reach the port from one of your devices, or who has the token, can run commands on the machine. Keep the port off
+[Funnel](https://tailscale.com/kb/1223/funnel). For extra safety, add a Tailscale ACL that limits port 47821
+to your own devices. On Windows, allow Athena through Windows Defender Firewall for private networks the
+first time you turn it on.
 
 ## Hermes Memory
 

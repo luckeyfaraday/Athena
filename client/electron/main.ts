@@ -15,6 +15,7 @@ import {
 } from "./embedded-terminal.js";
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
+import { startRemoteAccess, stopRemoteAccess } from "./remote-control.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { beginAthenaLaunch, markAthenaCleanExit, pauseTerminalRestore } from "./launch-state.js";
 import { checkDiskSpace, formatBytes, DISK_WARN_BYTES } from "./disk-guard.js";
@@ -345,6 +346,10 @@ if (singleInstanceLock) {
     void startControlServer().catch((error) => {
       console.error("Electron control server failed to start:", error);
     });
+    // Opt-in (Settings > System > Remote access); a no-op unless enabled.
+    void startRemoteAccess().catch((error) => {
+      console.error("Remote access failed to start:", error);
+    });
     await createWindow();
     startAutoUpdates();
 
@@ -438,6 +443,7 @@ app.on("before-quit", (event) => {
     Promise.resolve(prepareEmbeddedTerminalRestoreForQuit()).then(() => true, () => false),
     stopBackend().catch(() => false),
     stopControlServer().catch(() => false),
+    stopRemoteAccess().catch(() => false),
   ]);
   void Promise.race<{ completedBeforeDeadline: boolean; results: boolean[] | null }>([
     shutdown.then((results) => ({ completedBeforeDeadline: true, results })),

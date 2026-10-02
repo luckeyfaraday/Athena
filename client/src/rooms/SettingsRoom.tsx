@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   FolderOpen,
+  Globe,
   Keyboard,
   MessageSquare,
   Minus,
@@ -33,6 +34,18 @@ import type {
   GraphicsRuntimeStatus,
   PerformanceDiagnostics,
 } from "../electron";
+import { desktop, type RemoteAccessState, type RemoteMachinesState } from "../electron";
+import {
+  machineDetail,
+  machinesSummary,
+  machineStatusView,
+  parseRemotePortInput,
+  preferredRemoteUrl,
+  remoteAccessCurlExample,
+  remoteAccessStatusView,
+  remoteActivitySummary,
+  trustOwnDevicesHelp,
+} from "../remote-access-view";
 import { settingsSections, type SettingsSection } from "../settings-sections";
 import { shortcutReference } from "../shortcuts";
 import {
@@ -329,6 +342,8 @@ export function SettingsRoom({
                   </div>
                 </SettingsRow>
               </SettingsGroup>
+              <RemoteAccessGroup />
+              <YourMachinesGroup />
               <SettingsGroup title="Graphics">
                 <SettingsRow
                   label="Rendering mode"
@@ -842,6 +857,306 @@ function AgentsSection({
         </details>
       </SettingsGroup>
     </>
+  );
+}
+
+const REMOTE_ACCESS_POLL_MS = 5_000;
+
+function RemoteAccessGroup() {
+  const [state, setState] = useState<RemoteAccessState | null>(null);
+  const [portDraft, setPortDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"url" | "token" | "example" | null>(null);
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void desktop.getRemoteAccessState()
+        .then((next) => {
+          if (!cancelled) setState(next);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, REMOTE_ACCESS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const savedPort = state?.port;
+  useEffect(() => {
+    if (savedPort !== undefined) setPortDraft(String(savedPort));
+  }, [savedPort]);
+
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = window.setTimeout(() => setCopied(null), 1_600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  // Regenerate is destructive (every paired machine loses access), so it takes a second click.
+  useEffect(() => {
+    if (!confirmRegenerate) return undefined;
+    const timer = window.setTimeout(() => setConfirmRegenerate(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [confirmRegenerate]);
+
+  async function run(action: () => Promise<RemoteAccessState>) {
+    setPending(true);
+    setError(null);
+    try {
+      setState(await action());
+    } catch (caught) {
+      setError(String(caught instanceof Error ? caught.message : caught).replace(/^Error invoking remote method '[^']+': (Error: )?/, ""));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function copy(kind: "url" | "token" | "example", text: Promise<string> | string) {
+    try {
+      const value = await text;
+      if (!value) return;
+      await copyToClipboard(value);
+      setCopied(kind);
+    } catch {
+      // Clipboard access can be refused; the value is still shown or retrievable.
+    }
+  }
+
+  const enabled = Boolean(state?.enabled);
+  const status = remoteAccessStatusView(state);
+  const url = preferredRemoteUrl(state);
+  const port = parseRemotePortInput(portDraft);
+  const addresses = state ? [state.dnsUrl, ...state.urls].filter((value): value is string => Boolean(value)) : [];
+
+  return (
+    <SettingsGroup
+      title="Remote access"
+      actions={status ? <StatusPill tone={status.tone}>{status.label}</StatusPill> : undefined}
+    >
+      <p className="settingsGroupIntro">
+        Let your other machines on the same Tailscale network list, watch, type into, and launch terminals here. Athena
+        listens only on this machine's Tailscale addresses and answers only tailnet peers. Every device needs this
+        machine's access token unless you turn on Trust my own devices. Anyone granted access can run commands
+        on this machine.
+      </p>
+      <SettingsRow
+        label="Allow remote access"
+        help={enabled
+          ? "Your other machines can connect now. Turning this off disconnects them immediately."
+          : state?.tailscale.detected === false ? "Off. Tailscale is not running on this machine yet." : "Off by default."}
+        labelId="remoteAccessEnabledLabel"
+      >
+        <div className="segmentedControl" role="group" aria-labelledby="remoteAccessEnabledLabel">
+          <button
+            type="button"
+            className={enabled ? "active" : ""}
+            aria-pressed={enabled}
+            disabled={pending || !state}
+            onClick={() => void run(() => desktop.setRemoteAccessEnabled(true))}
+          >
+            <Globe size={14} /> On
+          </button>
+          <button
+            type="button"
+            className={!enabled ? "active" : ""}
+            aria-pressed={!enabled}
+            disabled={pending || !state}
+            onClick={() => void run(() => desktop.setRemoteAccessEnabled(false))}
+          >
+            Off
+          </button>
+        </div>
+      </SettingsRow>
+      {error ? <p className="settingsGroupIntro remoteAccessError" role="alert">{error}</p> : null}
+      {enabled && state ? (
+        <>
+          <SettingsRow label="Trust my own devices" help={trustOwnDevicesHelp(state)} labelId="remoteAccessTrustLabel">
+            <div className="segmentedControl" role="group" aria-labelledby="remoteAccessTrustLabel">
+              <button
+                type="button"
+                className={state.trustOwnDevices ? "active" : ""}
+                aria-pressed={state.trustOwnDevices}
+                disabled={pending}
+                onClick={() => void run(() => desktop.setRemoteAccessTrustOwnDevices(true))}
+              >
+                On
+              </button>
+              <button
+                type="button"
+                className={!state.trustOwnDevices ? "active" : ""}
+                aria-pressed={!state.trustOwnDevices}
+                disabled={pending}
+                onClick={() => void run(() => desktop.setRemoteAccessTrustOwnDevices(false))}
+              >
+                Token only
+              </button>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Reachable at"
+            help={
+              <>
+                {addresses.length
+                  ? addresses.map((address) => <code key={address} className="settingsPath remoteAccessAddress">{address}</code>)
+                  : null}
+                {state.errors.map((message) => <span key={message} className="remoteAccessWarning">{message}</span>)}
+              </>
+            }
+          >
+            <div className="settingsControlCluster">
+              <button className="ghostButton small" type="button" disabled={!url} onClick={() => url && void copy("url", url)}>
+                {copied === "url" ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy address</>}
+              </button>
+              <button
+                className="ghostButton small"
+                type="button"
+                disabled={pending}
+                title="Look for Tailscale addresses again"
+                onClick={() => void run(() => desktop.refreshRemoteAccess())}
+              >
+                <RefreshCw size={13} className={pending ? "spinning" : undefined} /> Refresh
+              </button>
+            </div>
+          </SettingsRow>
+          <SettingsRow label="Port" help="Using the same port on every machine keeps pairing simple. Default 47821.">
+            <div className="settingsControlCluster">
+              <input
+                className="textInput remoteAccessPort"
+                type="text"
+                inputMode="numeric"
+                aria-label="Remote access port"
+                aria-invalid={port === null}
+                value={portDraft}
+                onChange={(event) => setPortDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && port !== null && port !== state.port) void run(() => desktop.setRemoteAccessPort(port));
+                }}
+              />
+              <button
+                className="ghostButton small"
+                type="button"
+                disabled={pending || port === null || port === state.port}
+                onClick={() => port !== null && void run(() => desktop.setRemoteAccessPort(port))}
+              >
+                Apply
+              </button>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Access token"
+            help={state.trustOwnDevices
+              ? "Only needed for devices outside your Tailscale account, and for scripts. Regenerating disconnects anything using the old one."
+              : "Give this to the machines you want to connect from. Regenerating disconnects every machine using the old one."}
+          >
+            <div className="settingsControlCluster">
+              <button className="ghostButton small" type="button" onClick={() => void copy("token", desktop.getRemoteAccessToken())}>
+                {copied === "token" ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy token</>}
+              </button>
+              <button
+                className={confirmRegenerate ? "dangerButton small" : "ghostButton small"}
+                type="button"
+                disabled={pending}
+                onClick={() => {
+                  if (!confirmRegenerate) {
+                    setConfirmRegenerate(true);
+                    return;
+                  }
+                  setConfirmRegenerate(false);
+                  void run(async () => desktop.regenerateRemoteAccessToken());
+                }}
+              >
+                <RotateCcw size={13} /> {confirmRegenerate ? "Click again to regenerate" : "Regenerate"}
+              </button>
+            </div>
+          </SettingsRow>
+          <SettingsRow label="Activity" help={remoteActivitySummary(state)} />
+          <details className="settingsDisclosure">
+            <summary>Test it from another machine</summary>
+            <div className="settingsDisclosureBody">
+              <p>
+                Both machines must be signed in to the same tailnet. If nothing answers from Windows, allow Athena through
+                Windows Defender Firewall for private networks.
+              </p>
+              <pre className="settingsPre">{remoteAccessCurlExample(state)}</pre>
+              <button className="ghostButton small" type="button" onClick={() => void copy("example", remoteAccessCurlExample(state))}>
+                {copied === "example" ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy commands</>}
+              </button>
+            </div>
+          </details>
+        </>
+      ) : null}
+    </SettingsGroup>
+  );
+}
+
+function YourMachinesGroup() {
+  const [state, setState] = useState<RemoteMachinesState | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void desktop.getRemoteMachines()
+        .then((next) => {
+          if (!cancelled) setState(next);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, REMOTE_ACCESS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      setState(await desktop.refreshRemoteMachines());
+    } catch {
+      // Keep the last list; the next poll tries again.
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return (
+    <SettingsGroup
+      title="Your machines"
+      actions={(
+        <button className="ghostButton small" type="button" disabled={refreshing} onClick={() => void refresh()}>
+          <RefreshCw size={13} className={refreshing ? "spinning" : undefined} /> {refreshing ? "Checking" : "Check again"}
+        </button>
+      )}
+    >
+      <p className="settingsGroupIntro">
+        {machinesSummary(state)} A machine is ready once Athena is running there with remote access on. Athena checks
+        port {state?.port ?? 47821} on each one.
+      </p>
+      {state?.machines.length ? (
+        <ul className="remoteMachineList">
+          {state.machines.map((machine) => {
+            const view = machineStatusView(machine);
+            return (
+              <li key={machine.id}>
+                <div className="remoteMachineText">
+                  <strong>{machine.name}</strong>
+                  <span title={machine.dnsName ?? undefined}>{machineDetail(machine)}</span>
+                </div>
+                <StatusPill tone={view.tone}>{view.label}</StatusPill>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </SettingsGroup>
   );
 }
 

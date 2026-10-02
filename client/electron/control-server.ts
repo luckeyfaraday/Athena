@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { BrowserWindow } from "electron";
+import { app, BrowserWindow } from "electron";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -31,6 +31,7 @@ import {
   evaluateControlAccess,
   sameControlPath,
   validatedWorkspacePath,
+  type ControlAccessDecision,
 } from "./control-access.js";
 import {
   boundedTerminalBufferMaxChars,
@@ -148,6 +149,40 @@ let state: ControlState = {
 
 export type { ControlState };
 
+/**
+ * One way into the control API. The local listener authorizes with the
+ * per-launch token; the remote (Tailscale) listener in remote-control.ts brings
+ * its own authorizer and source tag and shares every route below.
+ */
+export type ControlListener = {
+  source: "local" | "remote";
+  authorize: (request: IncomingMessage) => ControlAccessDecision | Promise<ControlAccessDecision>;
+  onError?: (error: unknown) => void;
+};
+
+const localListener: ControlListener = {
+  source: "local",
+  authorize: (request) => evaluateControlAccess(
+    {
+      host: headerValue(request.headers.host),
+      origin: headerValue(request.headers.origin),
+      authorization: headerValue(request.headers.authorization),
+      token: headerValue(request.headers["x-athena-control-token"]),
+    },
+    controlToken,
+  ),
+  onError: (error) => {
+    state = { ...state, lastError: String(error) };
+    writeControlDiscovery();
+  },
+};
+
+export function createControlRequestListener(listener: ControlListener): http.RequestListener {
+  return (request, response) => {
+    void handleRequest(request, response, listener);
+  };
+}
+
 export function getControlState(): ControlState {
   return { ...state };
 }
@@ -205,9 +240,7 @@ export async function startControlServer(): Promise<ControlState> {
 
   const port = await findFreePort();
   controlToken = crypto.randomBytes(32).toString("hex");
-  const nextServer = http.createServer((request, response) => {
-    void handleRequest(request, response);
-  });
+  const nextServer = http.createServer(createControlRequestListener(localListener));
   nextServer.on("connection", (socket) => {
     controlSockets.add(socket);
     socket.once("close", () => controlSockets.delete(socket));
@@ -294,24 +327,29 @@ function closeControlServer(serverToStop: http.Server, timeoutMs = 1_000): Promi
   });
 }
 
-async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleRequest(request: IncomingMessage, response: ServerResponse, listener: ControlListener): Promise<void> {
+  const controlSource = listener.source === "remote" ? "remote-control" : "electron-control";
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/health") {
       sendJson(response, 200, { status: "ok", service: "electron-control" });
       return;
     }
-    const access = evaluateControlAccess(
-      {
-        host: headerValue(request.headers.host),
-        origin: headerValue(request.headers.origin),
-        authorization: headerValue(request.headers.authorization),
-        token: headerValue(request.headers["x-athena-control-token"]),
-      },
-      controlToken,
-    );
+    const access = await listener.authorize(request);
     if (!access.ok) {
       sendJson(response, access.status, { error: access.reason });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/machine") {
+      // Lets a remote Athena label this machine and check it can drive it.
+      sendJson(response, 200, {
+        hostname: os.hostname(),
+        platform: process.platform,
+        arch: process.arch,
+        version: app.getVersion(),
+        homedir: os.homedir(),
+        via: listener.source,
+      });
       return;
     }
     if (request.method === "GET" && url.pathname === "/terminals") {
@@ -459,7 +497,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
             contextMode: payload.contextMode,
             contextText: payload.contextText,
             model: payload.model,
-            controlSource: "electron-control",
+            controlSource,
           }).catch((error) => {
             recordControlFailure({
               kind: "spawn.failed",
@@ -499,8 +537,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     sendJson(response, 404, { error: `Unknown control endpoint: ${request.method} ${url.pathname}` });
   } catch (error) {
-    state = { ...state, lastError: String(error) };
-    writeControlDiscovery();
+    listener.onError?.(error);
     sendJson(response, 400, { error: String(error) });
   }
 }

@@ -4,6 +4,8 @@ import type { AgentSession } from "./agent-sessions.js";
 import type { AttentionActivatePayload, AttentionNotificationRequest } from "./attention-notifications.js";
 import type { BackendState } from "./backend.js";
 import type { ControlState } from "./control-server.js";
+import type { RemoteAccessState } from "./remote-control.js";
+import type { RemoteMachinesState } from "./remote-machines.js";
 import type { EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
 import type { AthenaLaunchState } from "./launch-state.js";
 import type { WorkspacePath } from "./platform.js";
@@ -128,6 +130,15 @@ export type WorkspaceApi = {
   getControlState: () => Promise<ControlState>;
   checkControlHealth: () => Promise<ControlState>;
   restartControl: () => Promise<ControlState>;
+  getRemoteAccessState: () => Promise<RemoteAccessState>;
+  refreshRemoteAccess: () => Promise<RemoteAccessState>;
+  setRemoteAccessEnabled: (enabled: boolean) => Promise<RemoteAccessState>;
+  setRemoteAccessPort: (port: number) => Promise<RemoteAccessState>;
+  setRemoteAccessTrustOwnDevices: (trust: boolean) => Promise<RemoteAccessState>;
+  regenerateRemoteAccessToken: () => Promise<RemoteAccessState>;
+  getRemoteAccessToken: () => Promise<string>;
+  getRemoteMachines: () => Promise<RemoteMachinesState>;
+  refreshRemoteMachines: () => Promise<RemoteMachinesState>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
   getPreferences: () => Promise<Record<string, string>>;
@@ -287,6 +298,15 @@ const api: WorkspaceApi = {
   getControlState: () => ipcRenderer.invoke("control:getState"),
   checkControlHealth: () => ipcRenderer.invoke("control:checkHealth"),
   restartControl: () => ipcRenderer.invoke("control:restart"),
+  getRemoteAccessState: () => ipcRenderer.invoke("remoteAccess:getState"),
+  refreshRemoteAccess: () => ipcRenderer.invoke("remoteAccess:refresh"),
+  setRemoteAccessEnabled: (enabled) => ipcRenderer.invoke("remoteAccess:setEnabled", enabled),
+  setRemoteAccessPort: (port) => ipcRenderer.invoke("remoteAccess:setPort", port),
+  setRemoteAccessTrustOwnDevices: (trust) => ipcRenderer.invoke("remoteAccess:setTrustOwnDevices", trust),
+  regenerateRemoteAccessToken: () => ipcRenderer.invoke("remoteAccess:regenerateToken"),
+  getRemoteAccessToken: () => ipcRenderer.invoke("remoteAccess:getToken"),
+  getRemoteMachines: () => ipcRenderer.invoke("remoteMachines:get"),
+  refreshRemoteMachines: () => ipcRenderer.invoke("remoteMachines:refresh"),
   getLaunchState: () => ipcRenderer.invoke("launchState:get"),
   clearTerminalRestorePause: () => ipcRenderer.invoke("launchState:clearTerminalRestorePause"),
   getPreferences: () => ipcRenderer.invoke("preferences:get"),

@@ -8,7 +8,7 @@ export type StatusView = {
   tone: StatusTone;
 };
 
-export function StatusPill({ tone, children }: { tone: StatusTone; children: ReactNode }) {
+export function StatusPill({ tone, children }: { tone: StatusTone | "muted"; children: ReactNode }) {
   return (
     <span className={`statusPill ${tone}`}>
       <span />

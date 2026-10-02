@@ -27,7 +27,7 @@ export function remoteAccessCurlExample(state: RemoteAccessState | null): string
     `curl -H "Authorization: Bearer $ATHENA_TOKEN" ${url}/machine`,
     `curl -H "Authorization: Bearer $ATHENA_TOKEN" ${url}/terminals`,
   ];
-  if (state?.trustOwnDevices === false) {
+  if (state?.trustOwnDevices !== true) {
     return ["# On another machine on your tailnet, with this machine's token:", ...withToken].join("\n");
   }
   return [
@@ -60,7 +60,7 @@ export function remoteActivitySummary(state: RemoteAccessState | null, now = Dat
 export function trustOwnDevicesHelp(state: RemoteAccessState | null): string {
   const account = state?.tailscale.account;
   const who = account ? `your Tailscale account (${account})` : "your Tailscale account";
-  return state?.trustOwnDevices === false
+  return state?.trustOwnDevices !== true
     ? `Off: every device needs the access token, even ones signed in to ${who}.`
     : `Devices signed in to ${who} connect without the token. Shared and tagged devices still need it.`;
 }

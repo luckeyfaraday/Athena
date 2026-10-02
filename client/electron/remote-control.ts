@@ -34,7 +34,7 @@ export type RemoteAccessState = {
   dnsUrl: string | null;
   trustOwnDevices: boolean;
   tailscale: {
-    /** True when a Tailscale address is present on a local network interface. */
+    /** True when a local address is confirmed by the running Tailscale client. */
     detected: boolean;
     backendState: string | null;
     dnsName: string | null;
@@ -130,7 +130,6 @@ export async function startRemoteAccess(): Promise<RemoteAccessState> {
   if (currentConfig().enabled) {
     startRescan();
     await syncListeners();
-    void tailscaleStatus().catch(() => null);
   }
   return getRemoteAccessState();
 }
@@ -146,8 +145,7 @@ export async function setRemoteAccessEnabled(enabled: boolean): Promise<RemoteAc
   saveConfig({ ...previous, enabled, token: previous.token ?? generateRemoteToken() });
   if (enabled) {
     startRescan();
-    await syncListeners();
-    await tailscaleStatus({ maxAgeMs: 0 });
+    await syncListeners({ maxAgeMs: 0 });
   } else {
     await stopRemoteAccess();
   }
@@ -190,11 +188,11 @@ export function getRemoteAccessState(): RemoteAccessState {
   const current = currentConfig();
   const status = cachedTailscaleStatus();
   const port = listeners.port ?? current.port;
-  const detected = tailscaleAddresses().length > 0;
+  const detected = tailscaleAddresses(status).length > 0;
   const urls = current.enabled ? listeners.addresses.map((address) => remoteUrl(address, port)) : [];
   const errors = current.enabled ? Object.values(listeners.errors) : [];
   if (current.enabled && !detected) {
-    errors.unshift("No Tailscale address found on this machine. Start Tailscale (and sign in); Athena checks again every few seconds.");
+    errors.unshift("No local address confirmed by Tailscale. Make sure the Tailscale CLI is installed, running and signed in; Athena checks again every few seconds.");
   }
   return {
     enabled: current.enabled,
@@ -217,14 +215,16 @@ export function getRemoteAccessState(): RemoteAccessState {
 }
 
 export async function refreshRemoteAccessState(): Promise<RemoteAccessState> {
-  if (currentConfig().enabled) await syncListeners();
-  await tailscaleStatus({ maxAgeMs: 0 });
+  await syncListeners({ maxAgeMs: 0 });
   return getRemoteAccessState();
 }
 
-function syncListeners(): Promise<void> {
+async function syncListeners(options: { maxAgeMs?: number } = {}): Promise<void> {
+  const status = await tailscaleStatus(options);
+  // Read the setting after the asynchronous query: disabling access during a
+  // status refresh must not reopen listeners when that query completes.
   const current = currentConfig();
-  return listeners.sync(current.enabled ? tailscaleAddresses() : [], current.port);
+  return listeners.sync(current.enabled ? tailscaleAddresses(status) : [], current.port);
 }
 
 function startRescan(): void {
@@ -233,7 +233,6 @@ function startRescan(): void {
   // addresses can change; pick that up without a restart.
   rescanTimer = setInterval(() => {
     void syncListeners().catch(() => undefined);
-    void tailscaleStatus().catch(() => null);
   }, ADDRESS_RESCAN_INTERVAL_MS);
   rescanTimer.unref?.();
 }

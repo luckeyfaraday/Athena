@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { flushAgentMessages } from "./agent-messages.js";
 import { installAttentionWindowHandlers } from "./attention-notifications.js";
-import { flushIpcBreadcrumbs, registerIpcHandlers } from "./ipc-handlers.js";
+import { disposeRemoteClient, flushIpcBreadcrumbs, registerIpcHandlers } from "./ipc-handlers.js";
 import {
   confirmEmbeddedTerminalRestoreShutdown,
   hasPendingEmbeddedTerminalRestoreAttempts,
@@ -439,6 +439,7 @@ app.on("before-quit", (event) => {
     viteProc.kill();
     viteProc = null;
   }
+  disposeRemoteClient();
   const shutdown = Promise.all([
     Promise.resolve(prepareEmbeddedTerminalRestoreForQuit()).then(() => true, () => false),
     stopBackend().catch(() => false),

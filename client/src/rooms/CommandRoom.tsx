@@ -92,6 +92,8 @@ export type CommandRoomProps = {
   // agent CLIs not on PATH: marked in the launch menus (launching one offers to install it)
   missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
   emptyMark: ReactNode;
+  // Showing another machine's terminals: terminal view only, no native session history.
+  remoteMachine?: { name: string };
 };
 
 type LaunchOption = { kind: EmbeddedTerminalKind; label: string; detail: string };
@@ -150,12 +152,13 @@ export function CommandRoom({
   onAddWorkspace,
   missingAgents,
   emptyMark,
+  remoteMachine,
 }: CommandRoomProps) {
   const [paneOrderByWorkspace, setPaneOrderByWorkspace] = useState<Record<string, string[]>>({});
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
   // Falls back to local state when rendered without App (browser harness).
   const [localView, setLocalView] = useState<CommandRoomView>("terminals");
-  const activeView: CommandRoomView = view ?? localView;
+  const activeView: CommandRoomView = remoteMachine ? "terminals" : view ?? localView;
   const [activeSessionProvider, setActiveSessionProvider] = useState<SessionProviderFilter>("all");
   const [sessionQuery, setSessionQuery] = useState("");
   const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
@@ -547,7 +550,7 @@ export function CommandRoom({
             <TerminalSquare size={14} /> Terminals
             {visibleSessions.length > 0 && <span className="commandTabCount">{visibleSessions.length}</span>}
           </button>
-          <button
+          {!remoteMachine && <button
             type="button"
             className={activeView === "sessions" ? "active" : ""}
             onClick={() => setActiveView("sessions")}
@@ -561,10 +564,11 @@ export function CommandRoom({
                 {runningAgentSessions || visibleAgentSessions.length}
               </span>
             )}
-          </button>
+          </button>}
+          {remoteMachine && <span className="remoteMachineLabel" title={`These terminals run on ${remoteMachine.name}`}>on {remoteMachine.name}</span>}
         </div>
         <div className="commandToolbarActions">
-          <div className="segmentedControl viewModeToggle" role="group" aria-label="Pane view">
+          {!remoteMachine && <div className="segmentedControl viewModeToggle" role="group" aria-label="Pane view">
             <button
               type="button"
               className={interfaceMode === "terminal" ? "active" : ""}
@@ -585,7 +589,7 @@ export function CommandRoom({
             >
               <MessageSquare size={14} />
             </button>
-          </div>
+          </div>}
           <button
             type="button"
             className="ghostButton"
@@ -727,6 +731,7 @@ export function CommandRoom({
               missingAgents={missingAgents}
               onLaunch={launch}
               onAddWorkspace={onAddWorkspace}
+              machineName={remoteMachine?.name}
             />
           )}
         </div>
@@ -876,6 +881,7 @@ function EmptyStage({
   missingAgents,
   onLaunch,
   onAddWorkspace,
+  machineName,
 }: {
   workspace: string;
   busy: boolean;
@@ -883,18 +889,24 @@ function EmptyStage({
   missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
   onLaunch: (kind: EmbeddedTerminalKind, count: number) => void;
   onAddWorkspace?: () => void;
+  // Set when this is another machine's (empty) Command Room.
+  machineName?: string;
 }) {
   if (!workspace) {
     return (
       <div className="terminalEmptyState">
         <div className="emptyHero">
           {emptyMark}
-          <h2>No workspace open</h2>
-          <p>Athena runs agents and shells inside a project folder. Open one to get started.</p>
+          <h2>{machineName ? <>No workspace open on <span>{machineName}</span></> : "No workspace open"}</h2>
+          <p>
+            {machineName
+              ? `Pick a folder on ${machineName}. Agents you start there run on ${machineName}, with its files.`
+              : "Athena runs agents and shells inside a project folder. Open one to get started."}
+          </p>
         </div>
         {onAddWorkspace && (
           <button type="button" className="primaryButton" onClick={onAddWorkspace}>
-            <FolderOpen size={15} /> Open a project folder
+            <FolderOpen size={15} /> {machineName ? `Open a folder on ${machineName}` : "Open a project folder"}
           </button>
         )}
       </div>
@@ -904,8 +916,12 @@ function EmptyStage({
     <div className="terminalEmptyState">
       <div className="emptyHero">
         {emptyMark}
-        <h2>Start something in <span>{workspaceFolderName(workspace)}</span></h2>
-        <p>Every agent runs in a real terminal in this folder. Launch one, or a grid of four to work in parallel.</p>
+        <h2>Start something in <span>{workspaceFolderName(workspace)}</span>{machineName ? <> on <span>{machineName}</span></> : null}</h2>
+        <p>
+          {machineName
+            ? `Every agent runs in a real terminal on ${machineName}, in this folder. You watch and type from here.`
+            : "Every agent runs in a real terminal in this folder. Launch one, or a grid of four to work in parallel."}
+        </p>
       </div>
       <div className="emptyLaunchGrid">
         {launchOptions.map((option) => {

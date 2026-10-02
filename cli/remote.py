@@ -6,14 +6,15 @@ commands talk to that API directly over HTTP -- not to the local FastAPI backend
 the rest of the CLI uses -- with only the standard library, so they work on a
 bare Python (for example over SSH from a phone) without httpx.
 
-Requests from another device signed in to the same Tailscale account need no
-token. Devices on other accounts need that machine's access token
-(``--token`` / ``ATHENA_REMOTE_TOKEN``), sent as ``Authorization: Bearer``.
+Requests need that machine's access token (``--token`` / ``ATHENA_REMOTE_TOKEN``),
+sent as ``Authorization: Bearer``. After enabling Trust my own devices on the
+host, another device signed in to the same Tailscale account can omit the token.
 
 Addressing:
   MACHINE  a tailnet name (short name, HostName, or MagicDNS name), a Tailscale
            IP, ``host:port``, or a full ``http://host:port`` URL. Anything not
-           found in ``tailscale status`` is used as a hostname as-is.
+           found in ``tailscale status`` is used as a hostname as-is, without
+           a token. To send a token outside discovery, specify the full URL.
   TARGET   ``MACHINE:TERMINAL`` (``MACHINE:PORT:TERMINAL`` for an explicit
            port), or ``http://host:port/TERMINAL``. TERMINAL is a terminal id,
            a unique id prefix (as ``athena remote ls`` shows), or a handle the
@@ -683,7 +684,15 @@ def _token(args: argparse.Namespace) -> str | None:
 
 
 def _host(args: argparse.Namespace, spec: str) -> RemoteHost:
-    return RemoteHost(resolve_machine(spec, _port(args)), _token(args))
+    machine = resolve_machine(spec, _port(args))
+    token = _token(args)
+    if token and machine.peer is None and not machine.url_form:
+        raise RemoteError(
+            f"{spec!r} was not found in Tailscale discovery; refusing to send its access token "
+            "to an unverified hostname. Check the machine name and Tailscale status, or specify "
+            "the full http:// or https:// URL to explicitly choose the destination."
+        )
+    return RemoteHost(machine, token)
 
 
 def _target(args: argparse.Namespace) -> tuple[RemoteHost, str]:
@@ -1093,7 +1102,7 @@ MACHINE is a tailnet name or IP (see `athena remote machines`), host:port, or ht
 TARGET is MACHINE:TERMINAL (MACHINE:PORT:TERMINAL for an explicit port) or http://host:port/TERMINAL,
 where TERMINAL is an id prefix from `athena remote ls` or a handle such as claude or codex#2.
 
-Your own devices (same Tailscale account) need no token; others need --token or ATHENA_REMOTE_TOKEN.
+Use --token or ATHENA_REMOTE_TOKEN, or opt in to Trust my own devices on the host for account-based access.
 The remote machine needs Settings > System > Remote access turned on.
 """
 
@@ -1115,8 +1124,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     shared.add_argument(
         "--token",
         default=argparse.SUPPRESS,
-        help="Access token of the one machine a command names, for machines not on your Tailscale account "
-        "(or ATHENA_REMOTE_TOKEN). Never sent by `machines` or a bare `ls`, which contact every peer.",
+        help="Access token of the one machine a command names (or ATHENA_REMOTE_TOKEN). "
+        "Requires a discovered peer or an explicit full URL. Never sent by `machines` or a bare `ls`.",
     )
 
     group = sub.add_parser(

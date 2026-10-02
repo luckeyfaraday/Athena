@@ -656,6 +656,26 @@ def test_no_token_header_by_default(fake) -> None:
     assert "Authorization" not in fake.requests[-1].headers
 
 
+@pytest.mark.parametrize("from_env", [False, True])
+def test_token_is_not_sent_to_an_undiscovered_hostname(fake, monkeypatch, capsys, from_env) -> None:
+    monkeypatch.setattr(remote, "load_peers", lambda: [])
+    args = ["remote", "ls", f"127.0.0.1:{fake.port}"]
+    if from_env:
+        monkeypatch.setenv("ATHENA_REMOTE_TOKEN", "secret")
+    else:
+        args += ["--token", "secret"]
+    assert run(*args) == 1
+    assert "refusing to send" in capsys.readouterr().err
+    assert fake.requests == [], "a DNS fallback must never receive the token"
+
+
+def test_token_can_be_sent_to_an_explicit_url(fake, monkeypatch) -> None:
+    monkeypatch.setattr(remote, "load_peers", lambda: [])
+    monkeypatch.setenv("ATHENA_REMOTE_TOKEN", "secret")
+    assert run("remote", "ls", fake.url) == 0
+    assert fake.requests[-1].headers["Authorization"] == "Bearer secret"
+
+
 def test_missing_token_message(capsys) -> None:
     host = FakeHost(token="s3cret")
     try:

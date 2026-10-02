@@ -18,6 +18,8 @@ export type RemoteSubscriber = {
   readonly id: number;
   send(channel: string, payload: unknown): void;
   isDestroyed(): boolean;
+  on(event: "did-navigate" | "render-process-gone" | "destroyed", listener: () => void): unknown;
+  removeListener(event: "did-navigate" | "render-process-gone" | "destroyed", listener: () => void): unknown;
 };
 
 export type RemoteConnectionStatus = "idle" | "connecting" | "connected" | "error";
@@ -544,6 +546,7 @@ export class RemoteClient {
   private readonly connections = new Map<string, MachineConnection>();
   private readonly streams = new Map<string, TerminalStream>();
   private readonly subscribers = new Map<string, Map<number, RemoteSubscriber>>();
+  private readonly subscriberCleanups = new Map<number, () => void>();
   private readonly keystrokes = new Map<string, KeystrokeQueue>();
   private readonly resizes = new Map<string, { cols: number; rows: number; inFlight: boolean; dirty: boolean }>();
   private refreshTimer: NodeJS.Timeout | null = null;
@@ -569,6 +572,10 @@ export class RemoteClient {
     this.streams.clear();
     this.connections.clear();
     this.subscribers.clear();
+    for (const cleanup of this.subscriberCleanups.values()) cleanup();
+    this.subscriberCleanups.clear();
+    this.keystrokes.clear();
+    this.resizes.clear();
   }
 
   /** Re-run discovery and connect to every machine that is ready for this one. */
@@ -590,7 +597,8 @@ export class RemoteClient {
     const machines = (this.state?.machines ?? []).map((machine): RemoteMachineView => {
       const connection = this.connections.get(machine.id);
       return {
-        ...machine,
+        // A healthy event stream is stronger evidence than one failed probe.
+        ...(connection?.status === "connected" ? connection.machine : machine),
         connection: connection?.status ?? "idle",
         connectionError: connection?.error ?? null,
         hasToken: Boolean(this.options.tokenFor(machine.id)),
@@ -611,6 +619,23 @@ export class RemoteClient {
   // ---- terminal proxy (namespaced ids) ----
 
   subscribe(id: string, subscriber: RemoteSubscriber): void {
+    if (!this.subscriberCleanups.has(subscriber.id)) {
+      const drop = () => this.unsubscribeSubscriber(subscriber.id);
+      const destroyed = () => {
+        drop();
+        cleanup();
+        this.subscriberCleanups.delete(subscriber.id);
+      };
+      const cleanup = () => {
+        subscriber.removeListener("did-navigate", drop);
+        subscriber.removeListener("render-process-gone", drop);
+        subscriber.removeListener("destroyed", destroyed);
+      };
+      subscriber.on("did-navigate", drop);
+      subscriber.on("render-process-gone", drop);
+      subscriber.on("destroyed", destroyed);
+      this.subscriberCleanups.set(subscriber.id, cleanup);
+    }
     let subscribers = this.subscribers.get(id);
     if (!subscribers) {
       subscribers = new Map();
@@ -627,6 +652,10 @@ export class RemoteClient {
       this.streams.get(id)?.close();
       this.streams.delete(id);
     }
+  }
+
+  private unsubscribeSubscriber(subscriberId: number): void {
+    for (const id of this.subscribers.keys()) this.unsubscribe(id, subscriberId);
   }
 
   /** Attach a view: a fresh stream whose first snapshot is returned; output follows as data events. */
@@ -793,11 +822,30 @@ export class RemoteClient {
   // ---- internals ----
 
   private reconcile(): void {
-    const ready = new Map((this.state?.machines ?? []).filter((machine) => machine.status === "ready").map((machine) => [machine.id, machine]));
+    const ready = new Map<string, RemoteMachine>();
+    for (const machine of this.state?.machines ?? []) {
+      const connection = this.connections.get(machine.id);
+      if (machine.status === "ready") {
+        ready.set(machine.id, machine);
+      } else if (machine.online && connection?.status === "connected" && machine.url === connection.url
+        && (machine.status === "no-athena" || machine.status === "unknown")) {
+        // A slow /machine probe must not tear down a working stream. Explicit
+        // authorization failures, offline peers and address changes still do.
+        ready.set(machine.id, { ...connection.machine, online: machine.online, checkedAt: machine.checkedAt });
+      }
+    }
     for (const [machineId, connection] of this.connections) {
       if (!ready.has(machineId)) {
         connection.close();
         this.connections.delete(machineId);
+        for (const id of this.streams.keys()) {
+          if (parseRemoteTerminalId(id)?.machineId !== machineId) continue;
+          this.streams.get(id)?.close();
+          this.streams.delete(id);
+          this.subscribers.delete(id);
+          this.keystrokes.delete(id);
+          this.resizes.delete(id);
+        }
       }
     }
     for (const [machineId, machine] of ready) {
@@ -845,13 +893,13 @@ export class RemoteClient {
     if (!subscribers) return;
     for (const [subscriberId, subscriber] of subscribers) {
       if (subscriber.isDestroyed()) {
-        subscribers.delete(subscriberId);
+        this.unsubscribe(id, subscriberId);
         continue;
       }
       try {
         subscriber.send(channel, payload);
       } catch {
-        subscribers.delete(subscriberId);
+        this.unsubscribe(id, subscriberId);
       }
     }
   }

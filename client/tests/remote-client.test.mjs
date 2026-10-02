@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -212,7 +213,7 @@ function client(host, { token = null, machines } = {}) {
 
 function subscriber(id = 1) {
   const received = [];
-  return { id, received, send: (channel, payload) => received.push({ channel, payload }), isDestroyed: () => false };
+  return Object.assign(new EventEmitter(), { id, received, send: (channel, payload) => received.push({ channel, payload }), isDestroyed: () => false });
 }
 
 test("RemoteClient connects to ready machines and mirrors their terminals and tabs", async (t) => {
@@ -367,6 +368,84 @@ test("RemoteClient reconnects a dropped event stream", async (t) => {
   await until(() => remote.snapshot().machines[0].connection === "connected", "reconnected", 4000);
   assert.equal(host.requests.filter((item) => item.path === "/events").length, 2);
 });
+
+test("RemoteClient keeps a healthy stream through failed probes but closes it for offline or unauthorized peers", async (t) => {
+  const host = await fakeHost();
+  const machines = [machine(host.url)];
+  const { remote } = client(host, { machines });
+  t.after(async () => {
+    remote.dispose();
+    await host.close();
+  });
+  await remote.refresh();
+  await until(() => remote.snapshot().machines[0].connection === "connected", "connection");
+  const view = subscriber();
+  await remote.attach("remote:nLAPTOP:t1", view);
+  const stream = host.terminalStream("t1");
+  for (const status of ["no-athena", "unknown", "no-athena"]) {
+    machines[0] = machine(host.url, { status, detail: "probe timed out", homedir: null, version: null });
+    await remote.refresh();
+    const snapshot = remote.snapshot().machines[0];
+    assert.equal(snapshot.connection, "connected");
+    assert.equal(snapshot.status, "ready", "the switcher keeps the machine available");
+    assert.equal(snapshot.homedir, "/home/alan");
+    assert.equal(snapshot.sessions.length, 1);
+    assert.equal(host.terminalStream("t1"), stream);
+  }
+  host.pushOutput("t1", "data", { epoch: "e1", fromSequence: 5, sequence: 5, data: "still live" });
+  await until(() => view.received.length === 1, "output after failed probe");
+  assert.equal(host.requests.filter((item) => item.path === "/events").length, 1, "no reconnection");
+
+  for (const overrides of [{ status: "offline", online: false }, { status: "needs-token" }, { status: "refused" }]) {
+    machines[0] = machine(host.url, overrides);
+    await remote.refresh();
+    assert.equal(remote.snapshot().machines[0].connection, "idle");
+    assert.equal(remote.snapshot().machines[0].sessions.length, 0);
+    await until(() => host.eventStreamCount === 0 && !host.terminalStream("t1"), "streams closed");
+    machines[0] = machine(host.url);
+    await remote.refresh();
+    await until(() => remote.snapshot().machines[0].connection === "connected", "recovery");
+    await remote.attach("remote:nLAPTOP:t1", view);
+  }
+});
+
+for (const event of ["did-navigate", "render-process-gone", "destroyed"]) {
+  test(`RemoteClient drops all streams for a window on ${event} and accepts new subscriptions`, async (t) => {
+    const host = await fakeHost();
+    host.terminals.set("t2", session("t2", "Codex", "/home/alan/app"));
+    const { remote } = client(host);
+    t.after(async () => {
+      remote.dispose();
+      await host.close();
+    });
+    await remote.refresh();
+    await until(() => remote.snapshot().machines[0].connection === "connected", "connection");
+    const first = subscriber(1);
+    const second = subscriber(2);
+    await remote.attach("remote:nLAPTOP:t1", first);
+    await remote.attach("remote:nLAPTOP:t2", first);
+    remote.subscribe("remote:nLAPTOP:t2", second);
+    assert.equal(first.listenerCount(event), 1, "one lifecycle hook per window");
+    first.emit(event);
+    await until(() => !host.terminalStream("t1"), "first window's private stream closed");
+    assert.ok(host.terminalStream("t2"), "the other window keeps its shared stream");
+    host.pushOutput("t2", "data", { epoch: "e1", fromSequence: 5, sequence: 5, data: "second window" });
+    await until(() => second.received.length === 1, "other window's output");
+    assert.equal(first.received.length, 0, "no data sent to the old document");
+    remote.unsubscribe("remote:nLAPTOP:t2", second.id);
+    await until(() => !host.terminalStream("t2"), "shared stream closed");
+    // Reload/crash reuses WebContents; a destroyed window is replaced.
+    const next = event === "destroyed" ? subscriber(3) : first;
+    await remote.attach("remote:nLAPTOP:t1", next);
+    assert.ok(host.terminalStream("t1"));
+    remote.dispose();
+    for (const target of [first, second, next]) {
+      assert.equal(target.listenerCount("did-navigate"), 0);
+      assert.equal(target.listenerCount("render-process-gone"), 0);
+      assert.equal(target.listenerCount("destroyed"), 0);
+    }
+  });
+}
 
 test("RemoteClient closes a terminal stream when its last view goes away", async (t) => {
   const host = await fakeHost();

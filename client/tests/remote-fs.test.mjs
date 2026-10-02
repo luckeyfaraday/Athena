@@ -8,7 +8,7 @@ import { listDirectories } from "../dist-electron/remote-fs.js";
 import { onReportedWorkspaces, reportedWorkspaces, reportWorkspaces } from "../dist-electron/workspace-registry.js";
 
 function tree() {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "athena-dirs-")));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "athena-dirs-")));
   for (const dir of ["beta", "Alpha", "project10", "project9", ".hidden"]) fs.mkdirSync(path.join(root, dir));
   fs.writeFileSync(path.join(root, "notes.txt"), "not a folder");
   if (process.platform !== "win32") {

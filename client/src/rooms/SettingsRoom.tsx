@@ -1098,6 +1098,7 @@ function RemoteAccessGroup() {
 function YourMachinesGroup() {
   const [state, setState] = useState<RemoteMachinesState | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1118,10 +1119,13 @@ function YourMachinesGroup() {
 
   async function refresh() {
     setRefreshing(true);
+    setError(null);
     try {
-      setState(await desktop.refreshRemoteMachines());
-    } catch {
-      // Keep the last list; the next poll tries again.
+      // Reconcile connections and publish the switcher update too.
+      await desktop.refreshRemote();
+      setState(await desktop.getRemoteMachines());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setRefreshing(false);
     }
@@ -1138,8 +1142,10 @@ function YourMachinesGroup() {
     >
       <p className="settingsGroupIntro">
         {machinesSummary(state)} A machine is ready once Athena is running there with remote access on. Athena checks
-        port {state?.port ?? 47821} on each one.
+        port {state?.port ?? 47821} on each one. To pair, copy its token from Settings &gt; System &gt; Remote access there
+        and save it below.
       </p>
+      {error && <p className="settingsGroupIntro remoteAccessError" role="alert">{error}</p>}
       {state?.machines.length ? (
         <ul className="remoteMachineList">
           {state.machines.map((machine) => {
@@ -1151,12 +1157,81 @@ function YourMachinesGroup() {
                   <span title={machine.dnsName ?? undefined}>{machineDetail(machine)}</span>
                 </div>
                 <StatusPill tone={view.tone}>{view.label}</StatusPill>
+                <RemoteMachineTokenForm
+                  machineId={machine.id}
+                  machineName={machine.name}
+                  onUpdated={async () => setState(await desktop.getRemoteMachines())}
+                />
               </li>
             );
           })}
         </ul>
       ) : null}
     </SettingsGroup>
+  );
+}
+
+function RemoteMachineTokenForm({ machineId, machineName, onUpdated }: {
+  machineId: string;
+  machineName: string;
+  onUpdated: () => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(token: string | null) {
+    setPending(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const snapshot = await desktop.setRemoteMachineToken(machineId, token);
+      setDraft("");
+      const machine = snapshot.machines.find((entry) => entry.id === machineId);
+      if (token && machine?.status === "needs-token") {
+        setError("This token was rejected. Copy the current token from that machine and try again.");
+      } else {
+        setMessage(token
+          ? machine?.status === "ready" ? "Connected. Select this machine in the Command Room." : "Token saved. The machine is not ready yet; check its status above."
+          : "Saved token removed.");
+      }
+      await onUpdated();
+    } catch {
+      // Do not echo an IPC error that could contain a submitted credential.
+      setError("Could not update the connection. Check again and retry.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="remoteMachinePairing" aria-label={`Pair with ${machineName}`} onSubmit={(event) => {
+      event.preventDefault();
+      if (!pending && draft.trim()) void save(draft.trim());
+    }}>
+      <div className="settingsControlCluster">
+        <input
+          className="textInput"
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label={`Access token for ${machineName}`}
+          placeholder="Paste this machine’s access token"
+          value={draft}
+          disabled={pending}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+        />
+        <button className="ghostButton small" type="submit" disabled={pending || !draft.trim()}>
+          {pending ? "Saving…" : "Save token"}
+        </button>
+        <button className="ghostButton small" type="button" disabled={pending} onClick={() => void save(null)}>
+          Forget token
+        </button>
+      </div>
+      {message && <span role="status">{message}</span>}
+      {error && <span className="remoteAccessError" role="alert">{error}</span>}
+    </form>
   );
 }
 

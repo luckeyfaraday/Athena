@@ -636,6 +636,9 @@
   border-top: 1px solid var(--border);
 }
 .remoteMachineText { min-width: 0; display: grid; gap: 2px; }
+.remoteMachinePairing { grid-column: 1 / -1; min-width: 0; display: grid; gap: 6px; font-size: var(--fs-xs); color: var(--text-muted); }
+.remoteMachinePairing .settingsControlCluster { justify-content: flex-start; }
+.remoteMachinePairing input { flex: 1 1 180px; min-width: 0; width: 100%; }
 .remoteMachineText strong { font-size: var(--fs-sm); font-weight: var(--weight-strong); }
 .remoteMachineText span {
   overflow: hidden;

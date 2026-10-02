@@ -419,6 +419,9 @@ What Athena does when remote access is on:
 **Your machines** (Settings > System) lists the other computers on your tailnet and whether each one's Athena
 is ready for this machine: *Ready*, *Needs token*, *Not answering* (Athena closed, remote access off, or a
 firewall), or *Offline*. It checks the same port this machine uses, so keep the port the same everywhere.
+For token-based pairing, copy the host's token from **Remote access**, then paste it into that host's
+**Access token** field under **Your machines** on the viewing computer and click **Save token**.
+**Forget token** removes the saved credential. **Check again** refreshes both this list and the machine switcher.
 
 Try it from another of your machines using the token copied from Settings:
 

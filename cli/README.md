@@ -150,16 +150,20 @@ athena remote kill omarchy:3f9c2a1b
 
 **Addressing.** MACHINE is a tailnet name (short name, OS hostname, or full
 MagicDNS name), a Tailscale IP, `host:port`, or `http://host:port`; anything
-`tailscale status` doesn't know is used as a hostname as-is. TARGET is
+`tailscale status` doesn't know is used as a hostname as-is only without a token.
+With `--token` or `ATHENA_REMOTE_TOKEN`, an undiscovered destination requires an
+explicit full `http://` or `https://` URL so a typo cannot send credentials to an
+unintended DNS host. TARGET is
 `MACHINE:TERMINAL` (`MACHINE:PORT:TERMINAL` with an explicit port, or
 `http://host:port/TERMINAL`). TERMINAL is the id shown by `remote ls` (any
 unique prefix of 4+ characters) or a handle the remote Athena resolves itself:
 `claude` when there is one Claude pane, `claude#2`, `codex#1`.
 
-**Access.** Your own devices (signed in to the same Tailscale account) need no
-token. Machines on other accounts need their access token: pass `--token` or set
+**Access.** Every device needs the host's access token by default: pass `--token` or set
 `ATHENA_REMOTE_TOKEN` (on that machine: Settings > System > Remote access > Copy
-token). A token belongs to one machine, so it is only sent by commands that
+token). Alternatively, explicitly enable **Trust my own devices** on the host to
+let other devices signed in to the same Tailscale account connect without a token.
+A token belongs to one machine, so it is only sent by commands that
 name a machine (`ls MACHINE`, `spawn`, `tail`, `say`, ...); `remote machines`
 and a bare `remote ls` contact every peer and never send it. `--port` /
 `ATHENA_REMOTE_PORT` change the port.

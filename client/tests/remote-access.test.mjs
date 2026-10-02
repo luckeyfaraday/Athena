@@ -11,10 +11,12 @@ import {
   DEFAULT_REMOTE_PORT,
   evaluateRemoteAccess,
   generateRemoteToken,
+  isOwnDevice,
   isTailscaleAddress,
   normalizeAddress,
   normalizeRemotePort,
   parseTailscaleStatus,
+  parseTailscaleWhois,
   readRemoteAccessConfig,
   remoteHostAllowed,
   remoteUrl,
@@ -151,42 +153,143 @@ test("remote access config round-trips with 0600 permissions and safe defaults",
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "athena-remote-"));
   try {
     const file = path.join(dir, "nested", "remote-access.json");
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null });
-    writeRemoteAccessConfig(file, { enabled: true, port: 50000, token: TOKEN });
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: true, port: 50000, token: TOKEN });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true });
+    writeRemoteAccessConfig(file, { enabled: true, port: 50000, token: TOKEN, trustOwnDevices: false });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: true, port: 50000, token: TOKEN, trustOwnDevices: false });
     if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 
     fs.writeFileSync(file, JSON.stringify({ enabled: "yes", port: 22, token: "guessable" }));
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true });
     fs.writeFileSync(file, "{not json");
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("parseTailscaleStatus extracts the MagicDNS name and tailnet addresses", () => {
-  const status = parseTailscaleStatus({
-    BackendState: "Running",
-    Self: {
-      DNSName: "arch-desktop.tail1234.ts.net.",
-      HostName: "arch-desktop",
-      TailscaleIPs: ["100.101.102.103", "fd7a:115c:a1e0::1234", "10.0.0.1"],
+const STATUS_JSON = {
+  BackendState: "Running",
+  User: {
+    2539845234848443: { ID: 2539845234848443, LoginName: "alan@example.com", DisplayName: "Alan" },
+    777: { ID: 777, LoginName: "friend@example.com" },
+  },
+  Self: {
+    ID: "nSELF11CNTRL",
+    UserID: 2539845234848443,
+    HostName: "omarchy",
+    DNSName: "omarchy.tail1234.ts.net.",
+    OS: "linux",
+    Online: true,
+    TailscaleIPs: ["100.101.102.103", "fd7a:115c:a1e0::1234", "10.0.0.1"],
+  },
+  Peer: {
+    "nodekey:a": {
+      ID: "nLAPTOP11CNTRL",
+      UserID: 2539845234848443,
+      HostName: "alan-Surface-Laptop-3",
+      DNSName: "alan-surface-laptop-3.tail1234.ts.net.",
+      OS: "linux",
+      Online: true,
+      TailscaleIPs: ["100.124.147.99", "fd7a:115c:a1e0::b201:938e"],
     },
-  });
-  assert.deepEqual(status, {
-    backendState: "Running",
-    dnsName: "arch-desktop.tail1234.ts.net",
-    hostName: "arch-desktop",
+    "nodekey:b": {
+      ID: "nSERVER11CNTRL",
+      UserID: 123,
+      HostName: "build-box",
+      DNSName: "build-box.tail1234.ts.net.",
+      OS: "linux",
+      Online: false,
+      TailscaleIPs: ["100.70.0.9"],
+      Tags: ["tag:server"],
+    },
+  },
+};
+
+test("parseTailscaleStatus extracts this machine, its account, and its peers", () => {
+  const status = parseTailscaleStatus(STATUS_JSON);
+  assert.equal(status.backendState, "Running");
+  assert.equal(status.dnsName, "omarchy.tail1234.ts.net");
+  assert.equal(status.hostName, "omarchy");
+  assert.deepEqual(status.addresses, ["100.101.102.103", "fd7a:115c:a1e0::1234"]);
+  assert.deepEqual(status.self, {
+    id: "nSELF11CNTRL",
+    hostName: "omarchy",
+    dnsName: "omarchy.tail1234.ts.net",
+    os: "linux",
+    online: true,
     addresses: ["100.101.102.103", "fd7a:115c:a1e0::1234"],
+    userId: 2539845234848443,
+    loginName: "alan@example.com",
+    tags: [],
   });
+  assert.equal(status.peers.length, 2);
+  const server = status.peers.find((peer) => peer.id === "nSERVER11CNTRL");
+  assert.deepEqual(server.tags, ["tag:server"]);
+  assert.equal(server.online, false);
+  assert.equal(server.loginName, null);
+});
+
+test("parseTailscaleStatus tolerates a signed-out or missing status", () => {
   assert.equal(parseTailscaleStatus(null), null);
   assert.deepEqual(parseTailscaleStatus({ BackendState: "NeedsLogin" }), {
     backendState: "NeedsLogin",
     dnsName: null,
     hostName: null,
     addresses: [],
+    self: null,
+    peers: [],
   });
+});
+
+const WHOIS_JSON = {
+  Node: {
+    ID: 2183935639504796,
+    StableID: "nLAPTOP11CNTRL",
+    Name: "alan-surface-laptop-3.tail1234.ts.net.",
+    User: 2539845234848443,
+    ComputedName: "alan-surface-laptop-3",
+  },
+  UserProfile: { ID: 2539845234848443, LoginName: "alan@example.com", DisplayName: "Alan" },
+};
+
+test("parseTailscaleWhois extracts the device and its owner", () => {
+  assert.deepEqual(parseTailscaleWhois(WHOIS_JSON), {
+    nodeId: "nLAPTOP11CNTRL",
+    nodeName: "alan-surface-laptop-3",
+    userId: 2539845234848443,
+    loginName: "alan@example.com",
+    displayName: "Alan",
+    tags: [],
+  });
+  const tagged = parseTailscaleWhois({ Node: { StableID: "nX", Name: "ci.tail1234.ts.net.", Tags: ["tag:ci"], User: 5 } });
+  assert.equal(tagged.nodeName, "ci");
+  assert.deepEqual(tagged.tags, ["tag:ci"]);
+  assert.equal(tagged.userId, 5);
+  assert.equal(parseTailscaleWhois({}), null);
+  assert.equal(parseTailscaleWhois("nope"), null);
+});
+
+test("isOwnDevice trusts other untagged devices of the same account only", () => {
+  const self = parseTailscaleStatus(STATUS_JSON).self;
+  const laptop = parseTailscaleWhois(WHOIS_JSON);
+  assert.equal(isOwnDevice(laptop, self), true);
+  assert.equal(isOwnDevice({ ...laptop, userId: 777, loginName: "friend@example.com" }, self), false, "someone else's device");
+  assert.equal(isOwnDevice({ ...laptop, tags: ["tag:server"] }, self), false, "tagged peer");
+  assert.equal(isOwnDevice(laptop, { ...self, tags: ["tag:server"] }), false, "tagged self: tagged nodes share a pseudo-user");
+  assert.equal(isOwnDevice({ ...laptop, nodeId: "nSELF11CNTRL" }, self), false, "this machine itself");
+  assert.equal(isOwnDevice({ ...laptop, userId: null }, self), false, "unknown owner");
+  assert.equal(isOwnDevice(null, self), false);
+  assert.equal(isOwnDevice(laptop, null), false);
+});
+
+test("evaluateRemoteAccess lets an own device in without a token, but only past the network checks", () => {
+  const noToken = remoteRequest({ authorization: undefined });
+  assert.deepEqual(evaluateRemoteAccess(noToken, { token: TOKEN, boundAddresses: BOUND, ownDevice: true }), { ok: true });
+  assert.equal(evaluateRemoteAccess(noToken, { token: TOKEN, boundAddresses: BOUND, ownDevice: false }).status, 401);
+  for (const overrides of [{ remoteAddress: "192.168.1.50" }, { host: "evil.example.com" }, { origin: "http://100.101.102.103:47821" }]) {
+    const decision = evaluateRemoteAccess({ ...noToken, ...overrides }, { token: TOKEN, boundAddresses: BOUND, ownDevice: true });
+    assert.equal(decision.status, 403, JSON.stringify(overrides));
+  }
 });
 
 // The listener set is address-agnostic; loopback stands in for a Tailscale

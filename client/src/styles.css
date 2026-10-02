@@ -807,6 +807,8 @@ input[type="range"] { accent-color: var(--accent); }
 .statusPill.warn > span { background: var(--warn); }
 .statusPill.bad { color: var(--danger); background: var(--danger-soft); }
 .statusPill.bad > span { background: var(--danger); }
+.statusPill.muted { color: var(--text-muted); background: var(--hover); }
+.statusPill.muted > span { background: var(--text-muted); }
 
 /* Agent identity: a tinted icon tile and a text badge, keyed by agent kind. */
 .agentGlyph {

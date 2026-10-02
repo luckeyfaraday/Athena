@@ -32,6 +32,22 @@ export type RemoteAccessConfig = {
   enabled: boolean;
   port: number;
   token: string | null;
+  /** Devices signed in to the same Tailscale account connect without the token. */
+  trustOwnDevices: boolean;
+};
+
+export type TailscaleNode = {
+  /** Stable node ID, e.g. "nhhkvaH74J11CNTRL". */
+  id: string | null;
+  hostName: string | null;
+  /** MagicDNS name without the trailing dot. */
+  dnsName: string | null;
+  os: string | null;
+  online: boolean;
+  addresses: string[];
+  userId: number | null;
+  loginName: string | null;
+  tags: string[];
 };
 
 export type TailscaleStatus = {
@@ -39,9 +55,31 @@ export type TailscaleStatus = {
   dnsName: string | null;
   hostName: string | null;
   addresses: string[];
+  self: TailscaleNode | null;
+  peers: TailscaleNode[];
+};
+
+/** Who is behind a tailnet address, from `tailscale whois --json`. */
+export type TailscaleIdentity = {
+  nodeId: string | null;
+  nodeName: string | null;
+  userId: number | null;
+  loginName: string | null;
+  displayName: string | null;
+  tags: string[];
 };
 
 export type RemoteAccessHeaders = ControlAccessHeaders & { remoteAddress?: string };
+
+export type RemoteAccessOptions = {
+  token: string | null;
+  boundAddresses: readonly string[];
+  /**
+   * The peer is another device signed in to this machine's Tailscale account
+   * (see isOwnDevice), so it is let in without the token. Network checks still apply.
+   */
+  ownDevice?: boolean;
+};
 
 /** Strip an IPv6 zone and the IPv4-mapped prefix Node reports for dual-stack sockets. */
 export function normalizeAddress(address: string | undefined | null): string {
@@ -110,10 +148,7 @@ export function remoteHostAllowed(hostHeader: string | undefined, boundAddresses
  * Decide whether a remote control request is authorized. Network checks (tailnet
  * peer, Host, no browser Origin) run before the constant-time token comparison.
  */
-export function evaluateRemoteAccess(
-  headers: RemoteAccessHeaders,
-  options: { token: string | null; boundAddresses: readonly string[] },
-): ControlAccessDecision {
+export function evaluateRemoteAccess(headers: RemoteAccessHeaders, options: RemoteAccessOptions): ControlAccessDecision {
   if (!isTailscaleAddress(headers.remoteAddress)) {
     return { ok: false, status: 403, reason: "Remote control only accepts peers on your tailnet." };
   }
@@ -125,6 +160,7 @@ export function evaluateRemoteAccess(
   if (headers.origin) {
     return { ok: false, status: 403, reason: "Browser requests are not accepted by remote control." };
   }
+  if (options.ownDevice) return { ok: true };
   if (!options.token) {
     return { ok: false, status: 503, reason: "Remote access token is not initialized." };
   }
@@ -133,6 +169,21 @@ export function evaluateRemoteAccess(
     return { ok: false, status: 401, reason: "Missing or invalid remote access token." };
   }
   return { ok: true };
+}
+
+/**
+ * True when the identity Tailscale reports for a peer is another device of the
+ * account this machine is signed in to. Tagged devices are excluded on either
+ * side: all tagged nodes share one pseudo-user, so two tagged servers would
+ * otherwise "own" each other. This machine itself is excluded too, so another
+ * OS user on this machine cannot skip the token by dialing its tailnet address.
+ */
+export function isOwnDevice(identity: TailscaleIdentity | null, self: TailscaleNode | null): boolean {
+  if (!identity || !self) return false;
+  if (identity.userId == null || self.userId == null) return false;
+  if (identity.tags.length > 0 || self.tags.length > 0) return false;
+  if (identity.nodeId && self.id && identity.nodeId === self.id) return false;
+  return identity.userId === self.userId;
 }
 
 /**
@@ -185,7 +236,7 @@ export function normalizeRemotePort(value: unknown): number {
 }
 
 export function readRemoteAccessConfig(filePath: string): RemoteAccessConfig {
-  const defaults: RemoteAccessConfig = { enabled: false, port: DEFAULT_REMOTE_PORT, token: null };
+  const defaults: RemoteAccessConfig = { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true };
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -201,7 +252,8 @@ export function readRemoteAccessConfig(filePath: string): RemoteAccessConfig {
     // Keep the default for a hand-edited, out-of-range port.
   }
   const token = typeof record.token === "string" && record.token.startsWith(REMOTE_TOKEN_PREFIX) ? record.token : null;
-  return { enabled: record.enabled === true, port, token };
+  // Trusting your own devices is the default; only an explicit false turns it off.
+  return { enabled: record.enabled === true, port, token, trustOwnDevices: record.trustOwnDevices !== false };
 }
 
 export function writeRemoteAccessConfig(filePath: string, config: RemoteAccessConfig): void {
@@ -211,20 +263,82 @@ export function writeRemoteAccessConfig(filePath: string, config: RemoteAccessCo
   fs.chmodSync(filePath, 0o600);
 }
 
-/** Pick the fields Athena shows from `tailscale status --json`. */
+/** Pick the fields Athena uses from `tailscale status --json`. */
 export function parseTailscaleStatus(value: unknown): TailscaleStatus | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const self = record.Self && typeof record.Self === "object" ? record.Self as Record<string, unknown> : {};
-  const dnsName = typeof self.DNSName === "string" && self.DNSName.trim() ? self.DNSName.trim().replace(/\.$/, "") : null;
-  const hostName = typeof self.HostName === "string" && self.HostName.trim() ? self.HostName.trim() : null;
-  const ips = Array.isArray(self.TailscaleIPs) ? self.TailscaleIPs : Array.isArray(record.TailscaleIPs) ? record.TailscaleIPs : [];
+  const users = record.User && typeof record.User === "object" ? record.User as Record<string, unknown> : {};
+  const selfRecord = record.Self && typeof record.Self === "object" ? record.Self as Record<string, unknown> : null;
+  const self = selfRecord ? parseTailscaleNode(selfRecord, users) : null;
+  if (self && !self.addresses.length && Array.isArray(record.TailscaleIPs)) {
+    self.addresses = addressList(record.TailscaleIPs);
+  }
+  const peerRecords = record.Peer && typeof record.Peer === "object" ? Object.values(record.Peer as Record<string, unknown>) : [];
+  const peers = peerRecords
+    .filter((peer): peer is Record<string, unknown> => Boolean(peer) && typeof peer === "object")
+    .map((peer) => parseTailscaleNode(peer, users));
   return {
     backendState: typeof record.BackendState === "string" ? record.BackendState : null,
-    dnsName,
-    hostName,
-    addresses: ips.filter((ip): ip is string => typeof ip === "string").map(normalizeAddress).filter(isTailscaleAddress),
+    dnsName: self?.dnsName ?? null,
+    hostName: self?.hostName ?? null,
+    addresses: self?.addresses ?? [],
+    self,
+    peers,
   };
+}
+
+/** Pick the fields Athena uses from `tailscale whois --json <address>`. */
+export function parseTailscaleWhois(value: unknown): TailscaleIdentity | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const node = record.Node && typeof record.Node === "object" ? record.Node as Record<string, unknown> : null;
+  const profile = record.UserProfile && typeof record.UserProfile === "object" ? record.UserProfile as Record<string, unknown> : null;
+  if (!node && !profile) return null;
+  const nodeName = stringField(node?.ComputedName) ?? stringField(node?.Name)?.replace(/\.$/, "").split(".")[0] ?? null;
+  return {
+    nodeId: stringField(node?.StableID),
+    nodeName,
+    userId: numberField(profile?.ID) ?? numberField(node?.User),
+    loginName: stringField(profile?.LoginName),
+    displayName: stringField(profile?.DisplayName),
+    tags: stringList(node?.Tags),
+  };
+}
+
+function parseTailscaleNode(record: Record<string, unknown>, users: Record<string, unknown>): TailscaleNode {
+  const userId = numberField(record.UserID);
+  const user = userId != null && users[String(userId)] && typeof users[String(userId)] === "object"
+    ? users[String(userId)] as Record<string, unknown>
+    : null;
+  return {
+    id: stringField(record.ID),
+    hostName: stringField(record.HostName),
+    dnsName: stringField(record.DNSName)?.replace(/\.$/, "") ?? null,
+    os: stringField(record.OS),
+    online: record.Online === true,
+    addresses: addressList(record.TailscaleIPs),
+    userId,
+    loginName: stringField(user?.LoginName),
+    tags: stringList(record.Tags),
+  };
+}
+
+function addressList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((ip): ip is string => typeof ip === "string").map(normalizeAddress).filter(isTailscaleAddress)
+    : [];
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())) : [];
 }
 
 type BoundListener = { server: http.Server; sockets: Set<net.Socket> };

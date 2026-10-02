@@ -403,22 +403,31 @@ What Athena does when remote access is on:
   addresses every 15 seconds, so it picks up Tailscale starting late or changing address.
 - It answers only peers whose source address is on the tailnet, and only when the Host is a Tailscale
   address or MagicDNS name. Any request with a browser `Origin` header is refused.
-- Every request except `/health` needs the machine's **access token**
+- **Trust my own devices** (on by default): a request from another device signed in to the same Tailscale
+  account is let in without a token. Athena asks the local Tailscale client who owns the connecting address
+  (`tailscale whois`). Tagged devices never count as your own, and neither does this machine dialing itself.
+  Turn the setting to **Token only** to require the token from every device.
+- Every other request except `/health` needs the machine's **access token**
   (`Authorization: Bearer athena_remote_…` or `X-Athena-Control-Token`). The token is persistent, is stored
   with 0600 permissions in Athena's user-data folder as `remote-access.json`, and is separate from the local
   per-launch control token. **Regenerate** issues a new token and drops existing connections.
 - After 10 bad tokens in a minute, a peer gets HTTP 429. Settings shows the last accepted and the last
-  rejected request.
+  rejected request, with the device name and whether it was let in by account or by token.
 
-Try it from another machine:
+**Your machines** (Settings > System) lists the other computers on your tailnet and whether each one's Athena
+is ready for this machine: *Ready*, *Needs token*, *Not answering* (Athena closed, remote access off, or a
+firewall), or *Offline*. It checks the same port this machine uses, so keep the port the same everywhere.
+
+Try it from another of your machines (no token needed with **Trust my own devices** on):
 
 ```bash
-export ATHENA_TOKEN='athena_remote_…'   # Settings > System > Remote access > Copy token
-curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/machine
+curl http://my-desktop.tail1234.ts.net:47821/machine
+curl http://my-desktop.tail1234.ts.net:47821/terminals
+# From a device on another account, or with Token only:
 curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/terminals
 ```
 
-Anyone with the token who can reach your tailnet can run commands on the machine. Keep the port off
+Anyone who can reach the port from one of your devices, or who has the token, can run commands on the machine. Keep the port off
 [Funnel](https://tailscale.com/kb/1223/funnel). For extra safety, add a Tailscale ACL that limits port 47821
 to your own devices. On Windows, allow Athena through Windows Defender Firewall for private networks the
 first time you turn it on.

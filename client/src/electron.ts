@@ -214,16 +214,54 @@ export type RemoteAccessState = {
   port: number;
   urls: string[];
   dnsUrl: string | null;
+  trustOwnDevices: boolean;
   tailscale: {
     detected: boolean;
     backendState: string | null;
     dnsName: string | null;
     hostName: string | null;
+    account: string | null;
   };
   hasToken: boolean;
   errors: string[];
-  lastRequest: { at: string; peer: string; method: string; path: string } | null;
-  lastRejected: { at: string; peer: string; status: number; reason: string } | null;
+  lastRequest: {
+    at: string;
+    peer: string;
+    device: string | null;
+    via: "account" | "token";
+    method: string;
+    path: string;
+  } | null;
+  lastRejected: { at: string; peer: string; device: string | null; status: number; reason: string } | null;
+};
+
+// Mirrors RemoteMachine / RemoteMachinesState in electron/remote-machines.ts.
+export type RemoteMachineStatus = "offline" | "no-athena" | "ready" | "needs-token" | "refused" | "unknown";
+
+export type RemoteMachine = {
+  id: string;
+  name: string;
+  dnsName: string | null;
+  os: string | null;
+  online: boolean;
+  address: string | null;
+  url: string | null;
+  owner: string | null;
+  ownDevice: boolean;
+  status: RemoteMachineStatus;
+  detail: string | null;
+  version: string | null;
+  platform: string | null;
+  homedir: string | null;
+  checkedAt: string | null;
+};
+
+export type RemoteMachinesState = {
+  tailscale: "running" | "stopped" | "unavailable";
+  account: string | null;
+  port: number;
+  machines: RemoteMachine[];
+  refreshedAt: string | null;
 };
 
 export type AthenaLaunchState = {
@@ -245,8 +283,11 @@ type WorkspaceApi = {
   refreshRemoteAccess: () => Promise<RemoteAccessState>;
   setRemoteAccessEnabled: (enabled: boolean) => Promise<RemoteAccessState>;
   setRemoteAccessPort: (port: number) => Promise<RemoteAccessState>;
+  setRemoteAccessTrustOwnDevices: (trust: boolean) => Promise<RemoteAccessState>;
   regenerateRemoteAccessToken: () => Promise<RemoteAccessState>;
   getRemoteAccessToken: () => Promise<string>;
+  getRemoteMachines: () => Promise<RemoteMachinesState>;
+  refreshRemoteMachines: () => Promise<RemoteMachinesState>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
   getPreferences: () => Promise<Record<string, string>>;
@@ -315,8 +356,11 @@ const browserFallback: WorkspaceApi = {
   async refreshRemoteAccess() { return fallbackRemoteAccessState(); },
   async setRemoteAccessEnabled() { return fallbackRemoteAccessState(); },
   async setRemoteAccessPort() { return fallbackRemoteAccessState(); },
+  async setRemoteAccessTrustOwnDevices() { return fallbackRemoteAccessState(); },
   async regenerateRemoteAccessToken() { return fallbackRemoteAccessState(); },
   async getRemoteAccessToken() { return ""; },
+  async getRemoteMachines() { return fallbackRemoteMachinesState(); },
+  async refreshRemoteMachines() { return fallbackRemoteMachinesState(); },
   async getLaunchState() { return null; },
   async clearTerminalRestorePause() {
     return {
@@ -496,12 +540,17 @@ function fallbackRemoteAccessState(): RemoteAccessState {
     port: 47821,
     urls: [],
     dnsUrl: null,
-    tailscale: { detected: false, backendState: null, dnsName: null, hostName: null },
+    trustOwnDevices: true,
+    tailscale: { detected: false, backendState: null, dnsName: null, hostName: null, account: null },
     hasToken: false,
     errors: ["Remote access needs the desktop app."],
     lastRequest: null,
     lastRejected: null,
   };
+}
+
+function fallbackRemoteMachinesState(): RemoteMachinesState {
+  return { tailscale: "unavailable", account: null, port: 47821, machines: [], refreshedAt: null };
 }
 
 export const desktop = window.contextWorkspace ?? browserFallback;

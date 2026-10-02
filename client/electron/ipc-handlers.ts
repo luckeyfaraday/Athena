@@ -22,13 +22,17 @@ import {
   type ControlState,
 } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
+import { discoverMachines, RemoteMachineDirectory, type RemoteMachinesState } from "./remote-machines.js";
+import { tailscaleStatus } from "./tailscale.js";
 import {
+  getRemoteAccessPort,
   getRemoteAccessState,
   getRemoteAccessToken,
   refreshRemoteAccessState,
   regenerateRemoteAccessToken,
   setRemoteAccessEnabled,
   setRemoteAccessPort,
+  setRemoteAccessTrustOwnDevices,
   type RemoteAccessState,
 } from "./remote-control.js";
 import {
@@ -165,6 +169,14 @@ function requestUiMemoryOverride(admission: LaunchAdmissionResult): Promise<bool
   return uiMemoryPromptInFlight;
 }
 
+// Discovery probes every online desktop on the tailnet, so a Settings poll
+// reuses a recent result and refreshes in the background.
+const MACHINE_DISCOVERY_MAX_AGE_MS = 20_000;
+const machineDirectory = new RemoteMachineDirectory(async (fresh) => discoverMachines({
+  status: await tailscaleStatus(fresh ? { maxAgeMs: 0 } : {}),
+  port: getRemoteAccessPort(),
+}));
+
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
   ipcMain.on("embeddedTerminal:dataAck", (event, id: string, epoch: string, sequence: number) => {
@@ -248,8 +260,11 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("remoteAccess:refresh", (): Promise<RemoteAccessState> => refreshRemoteAccessState());
   handle("remoteAccess:setEnabled", (_event, enabled: unknown): Promise<RemoteAccessState> => setRemoteAccessEnabled(enabled === true));
   handle("remoteAccess:setPort", (_event, port: unknown): Promise<RemoteAccessState> => setRemoteAccessPort(port));
+  handle("remoteAccess:setTrustOwnDevices", (_event, trust: unknown): RemoteAccessState => setRemoteAccessTrustOwnDevices(trust === true));
   handle("remoteAccess:regenerateToken", (): RemoteAccessState => regenerateRemoteAccessToken());
   handle("remoteAccess:getToken", (): string => getRemoteAccessToken());
+  handle("remoteMachines:get", (): Promise<RemoteMachinesState> => machineDirectory.get(MACHINE_DISCOVERY_MAX_AGE_MS));
+  handle("remoteMachines:refresh", (): Promise<RemoteMachinesState> => machineDirectory.refresh());
   handle("launchState:get", (): AthenaLaunchState | null => readAthenaLaunchState());
   handle("launchState:clearTerminalRestorePause", (): AthenaLaunchState => {
     clearSavedEmbeddedTerminalRestores();
@@ -413,6 +428,7 @@ const IPC_HOT_CHANNELS = new Set([
   "control:getState",
   "control:checkHealth",
   "remoteAccess:getState",
+  "remoteMachines:get",
   "launchState:get",
   "preferences:get",
   "graphics:getStatus",

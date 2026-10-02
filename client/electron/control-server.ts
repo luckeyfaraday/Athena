@@ -156,7 +156,7 @@ export type { ControlState };
  */
 export type ControlListener = {
   source: "local" | "remote";
-  authorize: (request: IncomingMessage) => ControlAccessDecision;
+  authorize: (request: IncomingMessage) => ControlAccessDecision | Promise<ControlAccessDecision>;
   onError?: (error: unknown) => void;
 };
 
@@ -335,7 +335,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       sendJson(response, 200, { status: "ok", service: "electron-control" });
       return;
     }
-    const access = listener.authorize(request);
+    const access = await listener.authorize(request);
     if (!access.ok) {
       sendJson(response, access.status, { error: access.reason });
       return;

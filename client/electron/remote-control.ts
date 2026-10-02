@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
 import { app } from "electron";
@@ -8,17 +7,18 @@ import {
   AuthFailureLimiter,
   evaluateRemoteAccess,
   generateRemoteToken,
+  isOwnDevice,
   normalizeAddress,
   normalizeRemotePort,
-  parseTailscaleStatus,
   readRemoteAccessConfig,
   remoteUrl,
   RemoteListenerSet,
   tailscaleAddresses,
   writeRemoteAccessConfig,
   type RemoteAccessConfig,
-  type TailscaleStatus,
+  type RemoteAccessHeaders,
 } from "./remote-access.js";
+import { cachedTailscaleStatus, tailscaleIdentity, tailscalePeerName, tailscaleStatus } from "./tailscale.js";
 
 // Opt-in remote access to this machine's Electron control API over Tailscale,
 // so another Athena (or a script) on the same tailnet can list, watch, type
@@ -32,28 +32,35 @@ export type RemoteAccessState = {
   urls: string[];
   /** MagicDNS URL, when the Tailscale CLI reported a DNS name. */
   dnsUrl: string | null;
+  trustOwnDevices: boolean;
   tailscale: {
     /** True when a Tailscale address is present on a local network interface. */
     detected: boolean;
     backendState: string | null;
     dnsName: string | null;
     hostName: string | null;
+    /** The Tailscale account this machine is signed in to. */
+    account: string | null;
   };
   hasToken: boolean;
   errors: string[];
-  lastRequest: { at: string; peer: string; method: string; path: string } | null;
-  lastRejected: { at: string; peer: string; status: number; reason: string } | null;
+  lastRequest: {
+    at: string;
+    peer: string;
+    /** Device name from Tailscale, when known. */
+    device: string | null;
+    /** "account": let in as one of your own devices; "token": presented the access token. */
+    via: "account" | "token";
+    method: string;
+    path: string;
+  } | null;
+  lastRejected: { at: string; peer: string; device: string | null; status: number; reason: string } | null;
 };
 
 const ADDRESS_RESCAN_INTERVAL_MS = 15_000;
-const TAILSCALE_STATUS_TTL_MS = 60_000;
-const TAILSCALE_STATUS_TIMEOUT_MS = 3_000;
 
 let config: RemoteAccessConfig | null = null;
 let rescanTimer: NodeJS.Timeout | null = null;
-let tailscaleStatus: TailscaleStatus | null = null;
-let tailscaleStatusAt = 0;
-let tailscaleStatusInFlight: Promise<void> | null = null;
 let lastRequest: RemoteAccessState["lastRequest"] = null;
 let lastRejected: RemoteAccessState["lastRejected"] = null;
 const failureLimiter = new AuthFailureLimiter();
@@ -78,29 +85,44 @@ function saveConfig(next: RemoteAccessConfig): RemoteAccessConfig {
   return next;
 }
 
-function authorizeRemoteRequest(request: IncomingMessage): ControlAccessDecision {
+async function authorizeRemoteRequest(request: IncomingMessage): Promise<ControlAccessDecision> {
   const peer = normalizeAddress(request.socket.remoteAddress);
-  const decision = failureLimiter.blocked(peer)
-    ? { ok: false as const, status: 429, reason: "Too many failed remote access attempts; try again in a minute." }
-    : evaluateRemoteAccess(
-      {
-        remoteAddress: peer,
-        host: headerValue(request.headers.host),
-        origin: headerValue(request.headers.origin),
-        authorization: headerValue(request.headers.authorization),
-        token: headerValue(request.headers["x-athena-control-token"]),
-      },
-      { token: currentConfig().token, boundAddresses: listeners.addresses },
-    );
   const at = new Date().toISOString();
-  if (decision.ok) {
-    failureLimiter.recordSuccess(peer);
-    const pathname = new URL(request.url ?? "/", "http://remote").pathname;
-    lastRequest = { at, peer, method: request.method ?? "GET", path: pathname };
-  } else {
-    if (decision.status === 401) failureLimiter.recordFailure(peer);
-    lastRejected = { at, peer, status: decision.status, reason: decision.reason };
+  if (failureLimiter.blocked(peer)) {
+    return reject(peer, at, { ok: false, status: 429, reason: "Too many failed remote access attempts; try again in a minute." });
   }
+  const headers: RemoteAccessHeaders = {
+    remoteAddress: peer,
+    host: headerValue(request.headers.host),
+    origin: headerValue(request.headers.origin),
+    authorization: headerValue(request.headers.authorization),
+    token: headerValue(request.headers["x-athena-control-token"]),
+  };
+  const current = currentConfig();
+  const options = { token: current.token, boundAddresses: listeners.addresses };
+  let decision = evaluateRemoteAccess(headers, options);
+  let via: "account" | "token" = "token";
+  // Only a missing or wrong token is worth asking Tailscale about: every
+  // network check already passed, and a valid token needs no lookup.
+  if (!decision.ok && decision.status === 401 && current.trustOwnDevices) {
+    const [identity, status] = await Promise.all([tailscaleIdentity(peer), tailscaleStatus()]);
+    if (isOwnDevice(identity, status?.self ?? null)) {
+      decision = evaluateRemoteAccess(headers, { ...options, ownDevice: true });
+      via = "account";
+    }
+  }
+  if (!decision.ok) {
+    if (decision.status === 401) failureLimiter.recordFailure(peer);
+    return reject(peer, at, decision);
+  }
+  failureLimiter.recordSuccess(peer);
+  const pathname = new URL(request.url ?? "/", "http://remote").pathname;
+  lastRequest = { at, peer, device: tailscalePeerName(peer), via, method: request.method ?? "GET", path: pathname };
+  return decision;
+}
+
+function reject(peer: string, at: string, decision: Extract<ControlAccessDecision, { ok: false }>): ControlAccessDecision {
+  lastRejected = { at, peer, device: tailscalePeerName(peer), status: decision.status, reason: decision.reason };
   return decision;
 }
 
@@ -108,7 +130,7 @@ export async function startRemoteAccess(): Promise<RemoteAccessState> {
   if (currentConfig().enabled) {
     startRescan();
     await syncListeners();
-    void refreshTailscaleStatus();
+    void tailscaleStatus().catch(() => null);
   }
   return getRemoteAccessState();
 }
@@ -125,7 +147,7 @@ export async function setRemoteAccessEnabled(enabled: boolean): Promise<RemoteAc
   if (enabled) {
     startRescan();
     await syncListeners();
-    await refreshTailscaleStatus(true);
+    await tailscaleStatus({ maxAgeMs: 0 });
   } else {
     await stopRemoteAccess();
   }
@@ -136,6 +158,13 @@ export async function setRemoteAccessPort(value: unknown): Promise<RemoteAccessS
   const port = normalizeRemotePort(value);
   saveConfig({ ...currentConfig(), port });
   if (currentConfig().enabled) await syncListeners();
+  return getRemoteAccessState();
+}
+
+export function setRemoteAccessTrustOwnDevices(trustOwnDevices: boolean): RemoteAccessState {
+  saveConfig({ ...currentConfig(), trustOwnDevices });
+  // Connections let in by account (open terminal streams included) must not outlive the setting.
+  if (!trustOwnDevices) listeners.destroyConnections();
   return getRemoteAccessState();
 }
 
@@ -152,8 +181,14 @@ export function getRemoteAccessToken(): string {
   return saveConfig({ ...currentConfig(), token: generateRemoteToken() }).token as string;
 }
 
+/** The port this machine's remote access uses; discovery assumes peers use the same one. */
+export function getRemoteAccessPort(): number {
+  return currentConfig().port;
+}
+
 export function getRemoteAccessState(): RemoteAccessState {
   const current = currentConfig();
+  const status = cachedTailscaleStatus();
   const port = listeners.port ?? current.port;
   const detected = tailscaleAddresses().length > 0;
   const urls = current.enabled ? listeners.addresses.map((address) => remoteUrl(address, port)) : [];
@@ -165,12 +200,14 @@ export function getRemoteAccessState(): RemoteAccessState {
     enabled: current.enabled,
     port: current.port,
     urls,
-    dnsUrl: current.enabled && urls.length && tailscaleStatus?.dnsName ? `http://${tailscaleStatus.dnsName}:${port}` : null,
+    dnsUrl: current.enabled && urls.length && status?.dnsName ? `http://${status.dnsName}:${port}` : null,
+    trustOwnDevices: current.trustOwnDevices,
     tailscale: {
       detected,
-      backendState: tailscaleStatus?.backendState ?? null,
-      dnsName: tailscaleStatus?.dnsName ?? null,
-      hostName: tailscaleStatus?.hostName ?? null,
+      backendState: status?.backendState ?? null,
+      dnsName: status?.dnsName ?? null,
+      hostName: status?.hostName ?? null,
+      account: status?.self?.loginName ?? null,
     },
     hasToken: Boolean(current.token),
     errors,
@@ -181,7 +218,7 @@ export function getRemoteAccessState(): RemoteAccessState {
 
 export async function refreshRemoteAccessState(): Promise<RemoteAccessState> {
   if (currentConfig().enabled) await syncListeners();
-  await refreshTailscaleStatus(true);
+  await tailscaleStatus({ maxAgeMs: 0 });
   return getRemoteAccessState();
 }
 
@@ -196,7 +233,7 @@ function startRescan(): void {
   // addresses can change; pick that up without a restart.
   rescanTimer = setInterval(() => {
     void syncListeners().catch(() => undefined);
-    void refreshTailscaleStatus();
+    void tailscaleStatus().catch(() => null);
   }, ADDRESS_RESCAN_INTERVAL_MS);
   rescanTimer.unref?.();
 }
@@ -205,51 +242,6 @@ function stopRescan(): void {
   if (!rescanTimer) return;
   clearInterval(rescanTimer);
   rescanTimer = null;
-}
-
-/** Best effort: the MagicDNS name only adds a friendlier URL in Settings. */
-function refreshTailscaleStatus(force = false): Promise<void> {
-  if (!force && Date.now() - tailscaleStatusAt < TAILSCALE_STATUS_TTL_MS) return Promise.resolve();
-  tailscaleStatusInFlight ??= readTailscaleStatus()
-    .then((status) => {
-      tailscaleStatus = status;
-      tailscaleStatusAt = Date.now();
-    })
-    .finally(() => {
-      tailscaleStatusInFlight = null;
-    });
-  return tailscaleStatusInFlight;
-}
-
-async function readTailscaleStatus(): Promise<TailscaleStatus | null> {
-  for (const command of tailscaleCommands()) {
-    const status = await new Promise<TailscaleStatus | null>((resolve) => {
-      execFile(command, ["status", "--json"], { timeout: TAILSCALE_STATUS_TIMEOUT_MS, windowsHide: true, maxBuffer: 4_000_000 }, (error, stdout) => {
-        if (error && !stdout) {
-          resolve(null);
-          return;
-        }
-        try {
-          resolve(parseTailscaleStatus(JSON.parse(stdout)));
-        } catch {
-          resolve(null);
-        }
-      });
-    });
-    if (status) return status;
-  }
-  return null;
-}
-
-function tailscaleCommands(): string[] {
-  if (process.platform === "win32") {
-    const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
-    return ["tailscale", path.win32.join(programFiles, "Tailscale", "tailscale.exe")];
-  }
-  if (process.platform === "darwin") {
-    return ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
-  }
-  return ["tailscale"];
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {

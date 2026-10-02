@@ -34,13 +34,17 @@ import type {
   GraphicsRuntimeStatus,
   PerformanceDiagnostics,
 } from "../electron";
-import { desktop, type RemoteAccessState } from "../electron";
+import { desktop, type RemoteAccessState, type RemoteMachinesState } from "../electron";
 import {
+  machineDetail,
+  machinesSummary,
+  machineStatusView,
   parseRemotePortInput,
   preferredRemoteUrl,
   remoteAccessCurlExample,
   remoteAccessStatusView,
   remoteActivitySummary,
+  trustOwnDevicesHelp,
 } from "../remote-access-view";
 import { settingsSections, type SettingsSection } from "../settings-sections";
 import { shortcutReference } from "../shortcuts";
@@ -339,6 +343,7 @@ export function SettingsRoom({
                 </SettingsRow>
               </SettingsGroup>
               <RemoteAccessGroup />
+              <YourMachinesGroup />
               <SettingsGroup title="Graphics">
                 <SettingsRow
                   label="Rendering mode"
@@ -935,13 +940,14 @@ function RemoteAccessGroup() {
     >
       <p className="settingsGroupIntro">
         Let your other machines on the same Tailscale network list, watch, type into, and launch terminals here. Athena
-        listens only on this machine's Tailscale addresses, answers only tailnet peers, and every request needs this
-        machine's access token. Anyone with the token who can reach your tailnet can run commands on this machine.
+        listens only on this machine's Tailscale addresses and answers only tailnet peers. A request must come from
+        another device signed in to your Tailscale account, or carry this machine's access token. Anyone who can do
+        either can run commands on this machine.
       </p>
       <SettingsRow
         label="Allow remote access"
         help={enabled
-          ? "Machines on your tailnet can connect with the token below. Turning this off disconnects them immediately."
+          ? "Your other machines can connect now. Turning this off disconnects them immediately."
           : state?.tailscale.detected === false ? "Off. Tailscale is not running on this machine yet." : "Off by default."}
         labelId="remoteAccessEnabledLabel"
       >
@@ -969,6 +975,28 @@ function RemoteAccessGroup() {
       {error ? <p className="settingsGroupIntro remoteAccessError" role="alert">{error}</p> : null}
       {enabled && state ? (
         <>
+          <SettingsRow label="Trust my own devices" help={trustOwnDevicesHelp(state)} labelId="remoteAccessTrustLabel">
+            <div className="segmentedControl" role="group" aria-labelledby="remoteAccessTrustLabel">
+              <button
+                type="button"
+                className={state.trustOwnDevices ? "active" : ""}
+                aria-pressed={state.trustOwnDevices}
+                disabled={pending}
+                onClick={() => void run(() => desktop.setRemoteAccessTrustOwnDevices(true))}
+              >
+                On
+              </button>
+              <button
+                type="button"
+                className={!state.trustOwnDevices ? "active" : ""}
+                aria-pressed={!state.trustOwnDevices}
+                disabled={pending}
+                onClick={() => void run(() => desktop.setRemoteAccessTrustOwnDevices(false))}
+              >
+                Token only
+              </button>
+            </div>
+          </SettingsRow>
           <SettingsRow
             label="Reachable at"
             help={
@@ -1021,7 +1049,9 @@ function RemoteAccessGroup() {
           </SettingsRow>
           <SettingsRow
             label="Access token"
-            help="Give this to the machines you want to connect from. Regenerating disconnects every machine using the old one."
+            help={state.trustOwnDevices
+              ? "Only needed for devices outside your Tailscale account, and for scripts. Regenerating disconnects anything using the old one."
+              : "Give this to the machines you want to connect from. Regenerating disconnects every machine using the old one."}
           >
             <div className="settingsControlCluster">
               <button className="ghostButton small" type="button" onClick={() => void copy("token", desktop.getRemoteAccessToken())}>
@@ -1059,6 +1089,71 @@ function RemoteAccessGroup() {
             </div>
           </details>
         </>
+      ) : null}
+    </SettingsGroup>
+  );
+}
+
+function YourMachinesGroup() {
+  const [state, setState] = useState<RemoteMachinesState | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      void desktop.getRemoteMachines()
+        .then((next) => {
+          if (!cancelled) setState(next);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, REMOTE_ACCESS_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      setState(await desktop.refreshRemoteMachines());
+    } catch {
+      // Keep the last list; the next poll tries again.
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  return (
+    <SettingsGroup
+      title="Your machines"
+      actions={(
+        <button className="ghostButton small" type="button" disabled={refreshing} onClick={() => void refresh()}>
+          <RefreshCw size={13} className={refreshing ? "spinning" : undefined} /> {refreshing ? "Checking" : "Check again"}
+        </button>
+      )}
+    >
+      <p className="settingsGroupIntro">
+        {machinesSummary(state)} A machine is ready once Athena is running there with remote access on. Athena checks
+        port {state?.port ?? 47821} on each one.
+      </p>
+      {state?.machines.length ? (
+        <ul className="remoteMachineList">
+          {state.machines.map((machine) => {
+            const view = machineStatusView(machine);
+            return (
+              <li key={machine.id}>
+                <div className="remoteMachineText">
+                  <strong>{machine.name}</strong>
+                  <span title={machine.dnsName ?? undefined}>{machineDetail(machine)}</span>
+                </div>
+                <StatusPill tone={view.tone}>{view.label}</StatusPill>
+              </li>
+            );
+          })}
+        </ul>
       ) : null}
     </SettingsGroup>
   );

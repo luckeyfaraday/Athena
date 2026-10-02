@@ -23,7 +23,16 @@ import {
 } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { discoverMachines, RemoteMachineDirectory, type RemoteMachinesState } from "./remote-machines.js";
-import { tailscaleStatus } from "./tailscale.js";
+import { reportWorkspaces } from "./workspace-registry.js";
+import { cachedTailscaleStatus, tailscaleStatus } from "./tailscale.js";
+import {
+  isRemoteTerminalId,
+  RemoteClient,
+  RemoteTokenStore,
+  type RemoteSnapshot,
+  type RemoteSpawnRequest,
+} from "./remote-client.js";
+import type { DirectoryListing } from "./remote-fs.js";
 import {
   getRemoteAccessPort,
   getRemoteAccessState,
@@ -175,20 +184,54 @@ const MACHINE_DISCOVERY_MAX_AGE_MS = 20_000;
 const machineDirectory = new RemoteMachineDirectory(async (fresh) => discoverMachines({
   status: await tailscaleStatus(fresh ? { maxAgeMs: 0 } : {}),
   port: getRemoteAccessPort(),
+  tokenFor: (machineId) => remoteTokens().get(machineId),
 }));
+
+let remoteTokenStore: RemoteTokenStore | null = null;
+function remoteTokens(): RemoteTokenStore {
+  remoteTokenStore ??= new RemoteTokenStore(path.join(app.getPath("userData"), "remote-tokens.json"));
+  return remoteTokenStore;
+}
+
+// Other machines' terminals, proxied under "remote:<machine>:<terminal>" ids.
+const remoteClient = new RemoteClient({
+  discover: (fresh) => machineDirectory.refresh(fresh),
+  tokenFor: (machineId) => remoteTokens().get(machineId),
+  broadcast: (channel, payload) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send(channel, payload);
+    }
+  },
+  selfName: () => {
+    const self = cachedTailscaleStatus()?.self;
+    return self?.dnsName?.split(".")[0] ?? self?.hostName ?? os.hostname();
+  },
+});
+
+export function disposeRemoteClient(): void {
+  remoteClient.dispose();
+}
 
 export function registerIpcHandlers(appRoot: string): void {
   initEmbeddedTerminals(appRoot);
   ipcMain.on("embeddedTerminal:dataAck", (event, id: string, epoch: string, sequence: number) => {
+    // Remote streams are paced by the host's own backpressure; there is nothing to acknowledge.
+    if (isRemoteTerminalId(id)) return;
     if (typeof id === "string" && typeof epoch === "string" && Number.isSafeInteger(sequence)) {
       acknowledgeEmbeddedTerminalOutput(id, event.sender.id, epoch, sequence);
     }
   });
   ipcMain.on("embeddedTerminal:subscribe", (event, id: string) => {
-    if (typeof id === "string" && id) subscribeEmbeddedTerminalOutput(id, event.sender);
+    if (isRemoteTerminalId(id)) remoteClient.subscribe(id, event.sender);
+    else if (typeof id === "string" && id) subscribeEmbeddedTerminalOutput(id, event.sender);
+  });
+  // The renderer's open workspace tabs, served to remote Athenas.
+  ipcMain.on("workspaces:report", (_event, paths: unknown, active: unknown) => {
+    reportWorkspaces(paths, active);
   });
   ipcMain.on("embeddedTerminal:unsubscribe", (event, id: string) => {
-    if (typeof id === "string" && id) unsubscribeEmbeddedTerminalOutput(id, event.sender.id);
+    if (isRemoteTerminalId(id)) remoteClient.unsubscribe(id, event.sender.id);
+    else if (typeof id === "string" && id) unsubscribeEmbeddedTerminalOutput(id, event.sender.id);
   });
   installIpcBreadcrumbCrashFlush();
   const handle = (channel: string, listener: Parameters<typeof ipcMain.handle>[1]): void => {
@@ -296,8 +339,10 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("embeddedTerminal:restore", (_event, allowedWorkspaces?: string[]): Promise<EmbeddedTerminalSession[]> =>
     restoreEmbeddedTerminals(allowedWorkspaces),
   );
-  handle("embeddedTerminal:attachStream", (event, id: string) => attachEmbeddedTerminalStream(id, event.sender));
-  handle("embeddedTerminal:buffer", (_event, id: string): string => getEmbeddedTerminalBuffer(id));
+  handle("embeddedTerminal:attachStream", (event, id: string) =>
+    isRemoteTerminalId(id) ? remoteClient.attach(id, event.sender) : attachEmbeddedTerminalStream(id, event.sender));
+  handle("embeddedTerminal:buffer", (_event, id: string): string | Promise<string> =>
+    isRemoteTerminalId(id) ? remoteClient.buffer(id) : getEmbeddedTerminalBuffer(id));
   handle("performance:diagnostics", async () => ({
     ...await getPerformanceDiagnostics(),
     sessionIndex: getAgentSessionScanDiagnostics(),
@@ -353,12 +398,32 @@ export function registerIpcHandlers(appRoot: string): void {
       }
     },
   );
-  handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> => writeEmbeddedTerminal(id, data));
-  handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession => renameEmbeddedTerminal(id, title));
+  handle("embeddedTerminal:write", (_event, id: string, data: string): Promise<EmbeddedTerminalSession> =>
+    isRemoteTerminalId(id) ? remoteClient.write(id, data) : writeEmbeddedTerminal(id, data));
+  handle("embeddedTerminal:rename", (_event, id: string, title: string): EmbeddedTerminalSession | Promise<EmbeddedTerminalSession> =>
+    isRemoteTerminalId(id) ? remoteClient.rename(id, title) : renameEmbeddedTerminal(id, title));
   handle("embeddedTerminal:resize", (_event, id: string, cols: number, rows: number): Promise<EmbeddedTerminalSession> =>
-    resizeEmbeddedTerminal(id, cols, rows),
+    isRemoteTerminalId(id) ? remoteClient.resize(id, cols, rows) : resizeEmbeddedTerminal(id, cols, rows),
   );
-  handle("embeddedTerminal:kill", (_event, id: string): Promise<EmbeddedTerminalSession> => killEmbeddedTerminal(id));
+  handle("embeddedTerminal:kill", (_event, id: string): Promise<EmbeddedTerminalSession> =>
+    isRemoteTerminalId(id) ? remoteClient.kill(id) : killEmbeddedTerminal(id));
+  handle("remote:snapshot", async (): Promise<RemoteSnapshot> => {
+    remoteClient.start();
+    return machineDirectory.state ? remoteClient.snapshot() : remoteClient.refresh(false);
+  });
+  handle("remote:refresh", (): Promise<RemoteSnapshot> => remoteClient.refresh(true));
+  handle("remote:spawn", (_event, machineId: string, request: RemoteSpawnRequest): Promise<EmbeddedTerminalSession[]> =>
+    remoteClient.spawn(String(machineId), request));
+  handle("remote:listDirectories", (_event, machineId: string, directory?: string | null): Promise<DirectoryListing> =>
+    remoteClient.listDirectories(String(machineId), typeof directory === "string" ? directory : null));
+  handle("remote:openWorkspace", (_event, machineId: string, workspace: string): Promise<WorkspacePath> =>
+    remoteClient.openWorkspace(String(machineId), String(workspace)));
+  handle("remote:closeWorkspace", (_event, machineId: string, workspace: string): Promise<void> =>
+    remoteClient.closeWorkspace(String(machineId), String(workspace)));
+  handle("remote:setToken", async (_event, machineId: string, token: unknown): Promise<RemoteSnapshot> => {
+    remoteTokens().set(String(machineId), typeof token === "string" ? token : null);
+    return remoteClient.refresh(true);
+  });
   handle("agentSessions:list", (_event, workspace: string): Promise<AgentSession[]> =>
     listAgentSessionsCached(workspace, listEmbeddedTerminals()),
   );
@@ -414,7 +479,7 @@ type IpcBreadcrumb = {
 const IPC_BREADCRUMB_CAPACITY = 64;
 const IPC_BREADCRUMB_FLUSH_DELAY_MS = 5_000;
 // Terminal input is user keystrokes (possibly secrets); record only its size.
-const IPC_REDACTED_STRING_CHANNELS = new Set(["embeddedTerminal:write"]);
+const IPC_REDACTED_STRING_CHANNELS = new Set(["embeddedTerminal:write", "remote:setToken"]);
 // Per-keystroke, per-resize, list and polling channels. Everything else is
 // written through synchronously before its handler runs.
 const IPC_HOT_CHANNELS = new Set([
@@ -429,6 +494,7 @@ const IPC_HOT_CHANNELS = new Set([
   "control:checkHealth",
   "remoteAccess:getState",
   "remoteMachines:get",
+  "remote:snapshot",
   "launchState:get",
   "preferences:get",
   "graphics:getStatus",

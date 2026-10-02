@@ -523,6 +523,128 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   flex: 0 0 auto;
 }
 
+/* ── MACHINES ─────────────────────────────────────────────────────────────── */
+.workspaceTabs.withLeading { grid-template-columns: auto minmax(0, 1fr) auto; }
+/* This machine's room stays mounted (and keeps its layout) while another machine is shown. */
+.machineView { display: contents; }
+.machineView[hidden] { display: none; }
+.machineSwitcher { position: relative; }
+.machineSwitcherButton {
+  height: 32px;
+  max-width: 200px;
+  padding: 0 8px 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-strong);
+  white-space: nowrap;
+}
+.machineSwitcherButton:hover,
+.machineSwitcherButton.open { background: var(--hover); color: var(--text); border-color: var(--border-strong); }
+.machineSwitcherButton.remote {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+  color: var(--text);
+}
+.machineSwitcherButton svg { flex: 0 0 auto; color: var(--text-muted); }
+.machineSwitcherButton.remote svg:first-child { color: var(--accent); }
+.machineSwitcherName { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.machineAttentionDot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  background: var(--info);
+}
+.machineAttentionDot.action { background: var(--warn); }
+.machineSwitcherMenu {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 260px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-overlay);
+  box-shadow: var(--shadow-lg);
+  animation: athenaPopIn var(--dur-2) var(--ease);
+  transform-origin: top left;
+}
+.machineSwitcherMenu button {
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  text-align: left;
+}
+.machineSwitcherMenu button:hover:not(:disabled),
+.machineSwitcherMenu button:focus-visible { outline: 0; background: var(--hover); color: var(--text); }
+.machineSwitcherMenu button:disabled { opacity: .45; cursor: default; }
+.machineSwitcherMenu button.active { color: var(--text); }
+.machineSwitcherCheck { width: 14px; flex: 0 0 auto; display: grid; place-items: center; color: var(--accent); }
+.machineSwitcherText { min-width: 0; flex: 1 1 auto; display: grid; gap: 1px; }
+.machineSwitcherText strong { overflow: hidden; font-size: var(--fs-sm); font-weight: var(--weight-strong); text-overflow: ellipsis; white-space: nowrap; }
+.machineSwitcherText small { color: var(--text-muted); font-size: var(--fs-2xs); }
+.machineSwitcherMenu .machineSwitcherManage { min-height: 32px; gap: 9px; font-size: var(--fs-xs); color: var(--text-muted); }
+.remoteWorkspaceTabs { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.remoteMachineLabel {
+  align-self: center;
+  margin-left: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: var(--fs-2xs);
+  font-weight: var(--weight-strong);
+  white-space: nowrap;
+}
+.remoteFolderDialog { width: min(560px, 100%); }
+.remoteFolderPath { display: flex; align-items: center; gap: 6px; }
+.remoteFolderPath .textInput { flex: 1 1 auto; min-width: 0; height: 32px; font-family: var(--font-mono); font-size: var(--fs-xs); }
+.remoteFolderList {
+  height: min(320px, 45vh);
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+.remoteFolderList[aria-busy="true"] { opacity: .6; }
+.remoteFolderList button {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.remoteFolderList button:hover,
+.remoteFolderList button:focus-visible { outline: 0; background: var(--hover); color: var(--text); }
+.remoteFolderList button svg { flex: 0 0 auto; color: var(--text-muted); }
+.remoteFolderList button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remoteFolderEmpty { padding: 10px; color: var(--text-muted); font-size: var(--fs-sm); }
+.remoteFolderHint { color: var(--text-muted); font-size: var(--fs-xs); }
+
 /* ── NOTICE BAR ───────────────────────────────────────────────────────────── */
 .noticeBar {
   flex: 0 0 auto;

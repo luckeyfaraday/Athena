@@ -85,6 +85,7 @@ AI coding tools often run as isolated terminals, each in its own window. Athena 
 - Panes always fill the window edge to edge, under the workspace tabs and a slim toolbar.
 - The Sessions tab lists native Codex, OpenCode, Claude Code, Athena Code, and Hermes sessions for the active workspace, with search, provider filters, and Resume, Rename, Focus, and Hide actions.
 - Chat view reads native user and assistant messages for Codex, Claude Code, OpenCode, Athena Code, Grok, and Hermes, with terminal output as a fallback. Replies retain Markdown, code blocks, and short answers. Use the pane's **Terminal** button for approvals, menus, and live tool output, then **Back to chat** to continue with your draft intact.
+- The machine switcher at the start of the tab strip shows another of your computers' terminals in the same Command Room, over Tailscale. See [Working across your machines](#working-across-your-machines).
 
 ### Subscription Usage
 
@@ -418,6 +419,9 @@ What Athena does when remote access is on:
 **Your machines** (Settings > System) lists the other computers on your tailnet and whether each one's Athena
 is ready for this machine: *Ready*, *Needs token*, *Not answering* (Athena closed, remote access off, or a
 firewall), or *Offline*. It checks the same port this machine uses, so keep the port the same everywhere.
+For token-based pairing, copy the host's token from **Remote access**, then paste it into that host's
+**Access token** field under **Your machines** on the viewing computer and click **Save token**.
+**Forget token** removes the saved credential. **Check again** refreshes both this list and the machine switcher.
 
 Try it from another of your machines using the token copied from Settings:
 
@@ -433,6 +437,38 @@ Anyone who can reach the port from one of your devices, or who has the token, ca
 [Funnel](https://tailscale.com/kb/1223/funnel). For extra safety, add a Tailscale ACL that limits port 47821
 to your own devices. On Windows, allow Athena through Windows Defender Firewall for private networks the
 first time you turn it on.
+
+### Working across your machines
+
+Once another of your computers has Athena running with remote access on, a **machine switcher** appears at
+the start of the workspace tab strip on this one (it stays hidden while there is nothing to switch to). Pick a
+machine and the Command Room shows *that* machine's workspace tabs and terminals:
+
+- Panes are the same live terminals: watch output, type, answer prompts, resize, rename, and close them. Closing
+  a pane stops the process on that machine.
+- **New Shell**, **New**, the launch cards, and the command palette launch agents *on that machine*, in its
+  folder, with its files and its installed CLIs. If an agent isn't installed there, Athena says so.
+- **Add** opens a folder picker that browses that machine's folders (names only). The folder also opens as a
+  tab in that machine's own window, without switching what's on its screen.
+- Terminals started at that machine, or by Hermes or a script there, show up live; so do its tabs.
+- An agent there that needs you (an approval, a question, a finished turn) badges its tab and the switcher, and
+  raises a desktop notification like a local one. Clicking it opens that machine and pane.
+- Everything keeps running on that machine when you switch back, close this window, or put this laptop to sleep.
+
+Chat view and native session history are local-only for now: remote panes always use terminal view.
+
+The `athena` CLI drives other machines too, which works well over SSH or from a phone:
+
+```bash
+athena remote machines                         # your computers and whether Athena is ready on each
+athena remote ls                               # terminals on every ready machine
+athena remote spawn surface claude -w '~/src/app' --task "fix the failing test"
+athena remote tail surface:claude --follow
+athena remote say surface:claude "yes, commit it"
+athena remote keys surface:claude --key down --key enter
+```
+
+See `cli/README.md` for every command.
 
 ## Hermes Memory
 

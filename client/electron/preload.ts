@@ -6,6 +6,8 @@ import type { BackendState } from "./backend.js";
 import type { ControlState } from "./control-server.js";
 import type { RemoteAccessState } from "./remote-control.js";
 import type { RemoteMachinesState } from "./remote-machines.js";
+import type { RemoteAttention, RemoteSnapshot, RemoteSpawnRequest } from "./remote-client.js";
+import type { DirectoryListing } from "./remote-fs.js";
 import type { EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
 import type { AthenaLaunchState } from "./launch-state.js";
 import type { WorkspacePath } from "./platform.js";
@@ -138,6 +140,16 @@ export type WorkspaceApi = {
   regenerateRemoteAccessToken: () => Promise<RemoteAccessState>;
   getRemoteAccessToken: () => Promise<string>;
   getRemoteMachines: () => Promise<RemoteMachinesState>;
+  reportWorkspaces: (paths: string[], active: string | null) => void;
+  getRemoteSnapshot: () => Promise<RemoteSnapshot>;
+  refreshRemote: () => Promise<RemoteSnapshot>;
+  spawnRemoteTerminals: (machineId: string, request: RemoteSpawnRequest) => Promise<EmbeddedTerminalSession[]>;
+  listRemoteDirectories: (machineId: string, directory?: string | null) => Promise<DirectoryListing>;
+  openRemoteWorkspace: (machineId: string, workspace: string) => Promise<WorkspacePath>;
+  closeRemoteWorkspace: (machineId: string, workspace: string) => Promise<void>;
+  setRemoteMachineToken: (machineId: string, token: string | null) => Promise<RemoteSnapshot>;
+  onRemoteUpdate: (callback: (snapshot: RemoteSnapshot) => void) => () => void;
+  onRemoteAttention: (callback: (attention: RemoteAttention) => void) => () => void;
   refreshRemoteMachines: () => Promise<RemoteMachinesState>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
@@ -290,6 +302,8 @@ const onEmbeddedTerminalAttention = createIpcSubscription<TerminalAttentionEvent
 const onAttentionActivate = createIpcSubscription<AttentionActivatePayload>("attention:activate");
 const onWorkspaceOpen = createIpcSubscription<{ workspace: WorkspacePath; select: boolean }>("workspace:open");
 const onWorkspaceClose = createIpcSubscription<{ workspace: WorkspacePath }>("workspace:close");
+const onRemoteUpdate = createIpcSubscription<RemoteSnapshot>("remote:update");
+const onRemoteAttention = createIpcSubscription<RemoteAttention>("remote:attention");
 
 const api: WorkspaceApi = {
   getBackendState: () => ipcRenderer.invoke("backend:getState"),
@@ -306,6 +320,16 @@ const api: WorkspaceApi = {
   regenerateRemoteAccessToken: () => ipcRenderer.invoke("remoteAccess:regenerateToken"),
   getRemoteAccessToken: () => ipcRenderer.invoke("remoteAccess:getToken"),
   getRemoteMachines: () => ipcRenderer.invoke("remoteMachines:get"),
+  reportWorkspaces: (paths, active) => ipcRenderer.send("workspaces:report", paths, active),
+  getRemoteSnapshot: () => ipcRenderer.invoke("remote:snapshot"),
+  refreshRemote: () => ipcRenderer.invoke("remote:refresh"),
+  spawnRemoteTerminals: (machineId, request) => ipcRenderer.invoke("remote:spawn", machineId, request),
+  listRemoteDirectories: (machineId, directory) => ipcRenderer.invoke("remote:listDirectories", machineId, directory ?? null),
+  openRemoteWorkspace: (machineId, workspace) => ipcRenderer.invoke("remote:openWorkspace", machineId, workspace),
+  closeRemoteWorkspace: (machineId, workspace) => ipcRenderer.invoke("remote:closeWorkspace", machineId, workspace),
+  setRemoteMachineToken: (machineId, token) => ipcRenderer.invoke("remote:setToken", machineId, token),
+  onRemoteUpdate,
+  onRemoteAttention,
   refreshRemoteMachines: () => ipcRenderer.invoke("remoteMachines:refresh"),
   getLaunchState: () => ipcRenderer.invoke("launchState:get"),
   clearTerminalRestorePause: () => ipcRenderer.invoke("launchState:clearTerminalRestorePause"),

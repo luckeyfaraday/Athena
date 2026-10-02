@@ -368,6 +368,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-discovery", action="store_true", help="Do not write the discovery file.")
     p.set_defaults(func=cmd_serve)
 
+    # remote: other machines' Athena over Tailscale (direct HTTP, not the backend)
+    from .remote import register as register_remote
+
+    register_remote(sub)
+
     return parser
 
 
@@ -388,6 +393,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _print_error(exc: Exception) -> None:
+    from .remote import RemoteError
+
+    # `athena remote` errors are complete messages about another machine; the
+    # local-backend hint below would only mislead.
+    if isinstance(exc, RemoteError):
+        print(f"error: {exc}", file=sys.stderr)
+        return
     # Unwrap httpx errors into something readable without importing httpx eagerly.
     response = getattr(exc, "response", None)
     if response is not None:

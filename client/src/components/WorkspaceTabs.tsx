@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent } from "react";
 import { FolderOpen, FolderPlus, Pencil, X, XCircle } from "lucide-react";
 import type { EmbeddedTerminalSession, WorkspacePath } from "../electron";
 import type { WorkspaceAttention } from "../workspace-attention";
@@ -13,6 +13,9 @@ export function WorkspaceTabs({
   terminalSessions,
   attentionByWorkspace = {},
   className = "",
+  leading,
+  addTitle = "Add an existing folder as a workspace",
+  emptyText = "No workspace open. Add a project folder to begin.",
   onSelect,
   onClose,
   onAdd,
@@ -25,12 +28,17 @@ export function WorkspaceTabs({
   terminalSessions: EmbeddedTerminalSession[];
   attentionByWorkspace?: Record<string, WorkspaceAttention>;
   className?: string;
+  // Shown before the tabs (the machine switcher).
+  leading?: ReactNode;
+  addTitle?: string;
+  emptyText?: string;
   onSelect: (workspace: WorkspacePath) => void;
   onClose: (workspace: WorkspacePath) => void;
   onAdd: () => Promise<void>;
   onCreate?: () => Promise<void>;
   onRename?: (workspace: WorkspacePath) => void;
-  onOpenInFiles: (workspace: WorkspacePath) => void;
+  // Omitted for another machine's folders, which this machine cannot open.
+  onOpenInFiles?: (workspace: WorkspacePath) => void;
 }) {
   const [menu, setMenu] = useState<{ workspace: WorkspacePath; x: number; y: number } | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -80,6 +88,8 @@ export function WorkspaceTabs({
   }
 
   function openMenu(workspace: WorkspacePath, x: number, y: number) {
+    // Nothing to offer (a single remote tab): no empty menu.
+    if (!onOpenInFiles && !onRename && workspaces.length <= 1) return;
     setMenu({
       workspace,
       x: Math.min(x, window.innerWidth - contextMenuWidth - 8),
@@ -88,7 +98,8 @@ export function WorkspaceTabs({
   }
 
   return (
-    <div className={className ? `workspaceTabs ${className}` : "workspaceTabs"}>
+    <div className={["workspaceTabs", leading ? "withLeading" : "", className].filter(Boolean).join(" ")}>
+      {leading}
       <div className="workspaceTabList" ref={listRef} role="tablist" aria-label="Open workspaces" onWheel={scrollTabs}>
         {workspaces.map((workspace) => {
           const key = workspaceKey(workspace);
@@ -150,7 +161,7 @@ export function WorkspaceTabs({
             </div>
           );
         })}
-        {workspaces.length === 0 && <span className="workspaceTabEmpty">No workspace open. Add a project folder to begin.</span>}
+        {workspaces.length === 0 && <span className="workspaceTabEmpty">{emptyText}</span>}
       </div>
       {menu && (
         <div
@@ -159,16 +170,18 @@ export function WorkspaceTabs({
           role="menu"
           onClick={(event) => event.stopPropagation()}
         >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              onOpenInFiles(menu.workspace);
-              setMenu(null);
-            }}
-          >
-            <FolderOpen size={14} /> Open in file manager
-          </button>
+          {onOpenInFiles && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onOpenInFiles(menu.workspace);
+                setMenu(null);
+              }}
+            >
+              <FolderOpen size={14} /> Open in file manager
+            </button>
+          )}
           {onRename && (
             <button
               type="button"
@@ -200,7 +213,7 @@ export function WorkspaceTabs({
         </div>
       )}
       <div className="workspaceTabActions">
-        <button type="button" className="workspaceAddButton" onClick={() => void onAdd()} title="Add an existing folder as a workspace">
+        <button type="button" className="workspaceAddButton" onClick={() => void onAdd()} title={addTitle}>
           <FolderOpen size={14} /> Add
         </button>
         {onCreate && (

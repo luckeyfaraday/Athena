@@ -1950,8 +1950,29 @@ function isSessionDiscoveryKind(kind: EmbeddedTerminalKind): boolean {
   return kind === "claude" || kind === "codex" || kind === "grok" || isOpenCodeKind(kind);
 }
 
+export type EmbeddedTerminalEventListener = (channel: string, payload: unknown) => void;
+const embeddedTerminalEventListeners = new Set<EmbeddedTerminalEventListener>();
+
+/**
+ * Observe the session, attention, and exit events sent to renderer windows,
+ * e.g. to relay them to a remote Athena over the control server's /events.
+ */
+export function onEmbeddedTerminalEvent(listener: EmbeddedTerminalEventListener): () => void {
+  embeddedTerminalEventListeners.add(listener);
+  return () => {
+    embeddedTerminalEventListeners.delete(listener);
+  };
+}
+
 function emit(channel: string, payload: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(channel, payload);
+  }
+  for (const listener of embeddedTerminalEventListeners) {
+    try {
+      listener(channel, payload);
+    } catch {
+      // A failing observer must never break delivery to windows.
+    }
   }
 }

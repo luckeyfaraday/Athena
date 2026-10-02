@@ -597,7 +597,7 @@ function fallbackRemoteAccessState(): RemoteAccessState {
     port: 47821,
     urls: [],
     dnsUrl: null,
-    trustOwnDevices: true,
+    trustOwnDevices: false,
     tailscale: { detected: false, backendState: null, dnsName: null, hostName: null, account: null },
     hasToken: false,
     errors: ["Remote access needs the desktop app."],

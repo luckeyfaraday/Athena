@@ -399,15 +399,16 @@ other machine only gets a window into them.
 
 What Athena does when remote access is on:
 
-- It listens only on this machine's Tailscale addresses (100.64.0.0/10 and fd7a:115c:a1e0::/48), on port
-  47821 by default. It never listens on 0.0.0.0, loopback, or LAN addresses. Athena checks for Tailscale
-  addresses every 15 seconds, so it picks up Tailscale starting late or changing address.
+- It listens only on local addresses confirmed by `tailscale status --json`, on port 47821 by default.
+  The Tailscale CLI must be installed, running and signed in; unavailable or stopped Tailscale leaves
+  the listeners closed. Athena checks every 15 seconds, so it picks up Tailscale starting late or changing
+  address. An address in the same IP range on another VPN or LAN does not qualify.
 - It answers only peers whose source address is on the tailnet, and only when the Host is a Tailscale
   address or MagicDNS name. Any request with a browser `Origin` header is refused.
-- **Trust my own devices** (on by default): a request from another device signed in to the same Tailscale
+- **Trust my own devices** (off by default): when enabled, a request from another device signed in to the same Tailscale
   account is let in without a token. Athena asks the local Tailscale client who owns the connecting address
   (`tailscale whois`). Tagged devices never count as your own, and neither does this machine dialing itself.
-  Turn the setting to **Token only** to require the token from every device.
+  Leave the setting at **Token only** to require the token from every device.
 - Every other request except `/health` needs the machine's **access token**
   (`Authorization: Bearer athena_remote_…` or `X-Athena-Control-Token`). The token is persistent, is stored
   with 0600 permissions in Athena's user-data folder as `remote-access.json`, and is separate from the local
@@ -419,13 +420,14 @@ What Athena does when remote access is on:
 is ready for this machine: *Ready*, *Needs token*, *Not answering* (Athena closed, remote access off, or a
 firewall), or *Offline*. It checks the same port this machine uses, so keep the port the same everywhere.
 
-Try it from another of your machines (no token needed with **Trust my own devices** on):
+Try it from another of your machines using the token copied from Settings:
 
 ```bash
-curl http://my-desktop.tail1234.ts.net:47821/machine
-curl http://my-desktop.tail1234.ts.net:47821/terminals
-# From a device on another account, or with Token only:
+export ATHENA_TOKEN='athena_remote_…'
+curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/machine
 curl -H "Authorization: Bearer $ATHENA_TOKEN" http://my-desktop.tail1234.ts.net:47821/terminals
+# After explicitly enabling Trust my own devices, another device on your account can omit the token:
+curl http://my-desktop.tail1234.ts.net:47821/machine
 ```
 
 Anyone who can reach the port from one of your devices, or who has the token, can run commands on the machine. Keep the port off

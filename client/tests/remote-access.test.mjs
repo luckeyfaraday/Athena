@@ -54,10 +54,13 @@ test("normalizeAddress strips brackets, zones, and the IPv4-mapped prefix", () =
   assert.equal(normalizeAddress("FD7A:115C:A1E0::1"), "fd7a:115c:a1e0::1");
 });
 
-test("tailscaleAddresses picks tailnet addresses from any interface, IPv4 first", () => {
+test("tailscaleAddresses selects only confirmed local addresses, IPv4 first", () => {
   const interfaces = {
     lo: [{ address: "127.0.0.1", family: "IPv4", internal: true }],
-    eth0: [{ address: "192.168.1.20", family: "IPv4", internal: false }],
+    eth0: [
+      { address: "192.168.1.20", family: "IPv4", internal: false },
+      { address: "100.70.0.1", family: "IPv4", internal: false },
+    ],
     tailscale0: [
       { address: "fd7a:115c:a1e0::1234", family: "IPv6", internal: false },
       { address: "100.101.102.103", family: "IPv4", internal: false },
@@ -65,8 +68,13 @@ test("tailscaleAddresses picks tailnet addresses from any interface, IPv4 first"
     // Windows names the adapter "Tailscale".
     Tailscale: [{ address: "100.101.102.103", family: "IPv4", internal: false }],
   };
-  assert.deepEqual(tailscaleAddresses(interfaces), ["100.101.102.103", "fd7a:115c:a1e0::1234"]);
-  assert.deepEqual(tailscaleAddresses({ eth0: interfaces.eth0 }), []);
+  const status = parseTailscaleStatus(STATUS_JSON);
+  assert.deepEqual(tailscaleAddresses(status, interfaces), ["100.101.102.103", "fd7a:115c:a1e0::1234"]);
+  assert.deepEqual(tailscaleAddresses(status, { eth0: interfaces.eth0 }), []);
+  assert.deepEqual(tailscaleAddresses(null, interfaces), [], "an unavailable CLI cannot confirm the network");
+  assert.deepEqual(tailscaleAddresses({ ...status, backendState: "Stopped" }, interfaces), []);
+  assert.deepEqual(tailscaleAddresses({ ...status, addresses: [] }, interfaces), [], "no range fallback when status has no addresses");
+  assert.deepEqual(tailscaleAddresses({ ...status, addresses: ["100.64.0.99"] }, interfaces), [], "the address must also be on a local interface");
 });
 
 test("remoteUrl brackets IPv6 addresses", () => {
@@ -153,15 +161,19 @@ test("remote access config round-trips with 0600 permissions and safe defaults",
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "athena-remote-"));
   try {
     const file = path.join(dir, "nested", "remote-access.json");
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: false });
     writeRemoteAccessConfig(file, { enabled: true, port: 50000, token: TOKEN, trustOwnDevices: false });
     assert.deepEqual(readRemoteAccessConfig(file), { enabled: true, port: 50000, token: TOKEN, trustOwnDevices: false });
     if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 
     fs.writeFileSync(file, JSON.stringify({ enabled: "yes", port: 22, token: "guessable" }));
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: false });
     fs.writeFileSync(file, "{not json");
-    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true });
+    assert.deepEqual(readRemoteAccessConfig(file), { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: false });
+    for (const value of [undefined, null, "true", 1, false, true]) {
+      fs.writeFileSync(file, JSON.stringify({ enabled: true, token: TOKEN, trustOwnDevices: value }));
+      assert.equal(readRemoteAccessConfig(file).trustOwnDevices, value === true, "only a saved boolean true opts in");
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -277,6 +289,8 @@ test("isOwnDevice trusts other untagged devices of the same account only", () =>
   assert.equal(isOwnDevice({ ...laptop, tags: ["tag:server"] }, self), false, "tagged peer");
   assert.equal(isOwnDevice(laptop, { ...self, tags: ["tag:server"] }), false, "tagged self: tagged nodes share a pseudo-user");
   assert.equal(isOwnDevice({ ...laptop, nodeId: "nSELF11CNTRL" }, self), false, "this machine itself");
+  assert.equal(isOwnDevice({ ...laptop, nodeId: null }, self), false, "unknown peer node");
+  assert.equal(isOwnDevice(laptop, { ...self, id: null }), false, "unknown local node");
   assert.equal(isOwnDevice({ ...laptop, userId: null }, self), false, "unknown owner");
   assert.equal(isOwnDevice(null, self), false);
   assert.equal(isOwnDevice(laptop, null), false);

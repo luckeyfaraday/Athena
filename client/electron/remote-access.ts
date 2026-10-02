@@ -105,16 +105,21 @@ export function isTailscaleAddress(address: string | undefined | null): boolean 
   return false;
 }
 
-/** This machine's Tailscale addresses, IPv4 first. Empty when Tailscale is down or not installed. */
+/** Local addresses confirmed by a running Tailscale client, IPv4 first. */
 export function tailscaleAddresses(
+  status: TailscaleStatus | null,
   interfaces: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces(),
 ): string[] {
+  // Other VPNs and carrier networks use the same CGNAT range. A range match
+  // alone cannot establish that traffic arrived through Tailscale.
+  if (status?.backendState !== "Running") return [];
+  const confirmed = new Set(status.addresses.map(normalizeAddress));
   const found = new Set<string>();
   for (const entries of Object.values(interfaces)) {
     for (const entry of entries ?? []) {
       if (entry.internal) continue;
       const address = normalizeAddress(entry.address);
-      if (isTailscaleAddress(address)) found.add(address);
+      if (isTailscaleAddress(address) && confirmed.has(address)) found.add(address);
     }
   }
   return [...found].sort((left, right) => {
@@ -182,7 +187,7 @@ export function isOwnDevice(identity: TailscaleIdentity | null, self: TailscaleN
   if (!identity || !self) return false;
   if (identity.userId == null || self.userId == null) return false;
   if (identity.tags.length > 0 || self.tags.length > 0) return false;
-  if (identity.nodeId && self.id && identity.nodeId === self.id) return false;
+  if (!identity.nodeId || !self.id || identity.nodeId === self.id) return false;
   return identity.userId === self.userId;
 }
 
@@ -236,7 +241,7 @@ export function normalizeRemotePort(value: unknown): number {
 }
 
 export function readRemoteAccessConfig(filePath: string): RemoteAccessConfig {
-  const defaults: RemoteAccessConfig = { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: true };
+  const defaults: RemoteAccessConfig = { enabled: false, port: DEFAULT_REMOTE_PORT, token: null, trustOwnDevices: false };
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -252,8 +257,8 @@ export function readRemoteAccessConfig(filePath: string): RemoteAccessConfig {
     // Keep the default for a hand-edited, out-of-range port.
   }
   const token = typeof record.token === "string" && record.token.startsWith(REMOTE_TOKEN_PREFIX) ? record.token : null;
-  // Trusting your own devices is the default; only an explicit false turns it off.
-  return { enabled: record.enabled === true, port, token, trustOwnDevices: record.trustOwnDevices !== false };
+  // Account-based access requires an explicit opt-in.
+  return { enabled: record.enabled === true, port, token, trustOwnDevices: record.trustOwnDevices === true };
 }
 
 export function writeRemoteAccessConfig(filePath: string, config: RemoteAccessConfig): void {

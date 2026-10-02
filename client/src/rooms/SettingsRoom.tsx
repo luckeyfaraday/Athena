@@ -887,9 +887,10 @@ function RemoteAccessGroup() {
     };
   }, []);
 
+  const savedPort = state?.port;
   useEffect(() => {
-    if (state && !portDraft) setPortDraft(String(state.port));
-  }, [state, portDraft]);
+    if (savedPort !== undefined) setPortDraft(String(savedPort));
+  }, [savedPort]);
 
   useEffect(() => {
     if (!copied) return undefined;
@@ -940,9 +941,9 @@ function RemoteAccessGroup() {
     >
       <p className="settingsGroupIntro">
         Let your other machines on the same Tailscale network list, watch, type into, and launch terminals here. Athena
-        listens only on this machine's Tailscale addresses and answers only tailnet peers. A request must come from
-        another device signed in to your Tailscale account, or carry this machine's access token. Anyone who can do
-        either can run commands on this machine.
+        listens only on this machine's Tailscale addresses and answers only tailnet peers. Every device needs this
+        machine's access token unless you turn on Trust my own devices. Anyone granted access can run commands
+        on this machine.
       </p>
       <SettingsRow
         label="Allow remote access"

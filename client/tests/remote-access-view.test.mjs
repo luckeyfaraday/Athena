@@ -93,7 +93,7 @@ test("parseRemotePortInput accepts whole unprivileged ports only", () => {
 test("trustOwnDevicesHelp names the account and the fallback", () => {
   assert.match(trustOwnDevicesHelp(state()), /signed in to your Tailscale account \(alan@example\.com\) connect without the token/);
   assert.match(trustOwnDevicesHelp(state({ trustOwnDevices: false })), /^Off: every device needs the access token/);
-  assert.match(trustOwnDevicesHelp(null), /your Tailscale account connect/);
+  assert.match(trustOwnDevicesHelp(null), /^Off: every device needs the access token/);
 });
 
 function machine(overrides = {}) {

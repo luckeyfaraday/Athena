@@ -46,6 +46,10 @@ import { toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { listDirectories } from "./remote-fs.js";
 import { onReportedWorkspaces, reportedWorkspaces } from "./workspace-registry.js";
 import type { AgentContextMode } from "./agent-context.js";
+import { sessionIndexClient } from "./session-index-client.js";
+import { RemoteSessionHistory, SessionHistoryError } from "./remote-session-history.js";
+
+const remoteSessionHistory = new RemoteSessionHistory((workspace) => sessionIndexClient.listAgentSessions(workspace, false));
 
 type ControlState = {
   baseUrl: string | null;
@@ -368,6 +372,17 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     }
     if (request.method === "GET" && url.pathname === "/terminals") {
       sendJson(response, 200, { terminals: listEmbeddedTerminals() });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/agent-sessions") {
+      const workspace = validatedWorkspacePath(url.searchParams.get("workspace"));
+      const key = process.platform === "win32" ? workspace.toLowerCase() : workspace;
+      try {
+        sendJson(response, 200, await remoteSessionHistory.list(key, url.searchParams.get("cursor")));
+      } catch (error) {
+        if (!(error instanceof SessionHistoryError)) throw error;
+        sendJson(response, error.status, { error: error.message });
+      }
       return;
     }
     if (request.method === "GET" && url.pathname === "/agent-messages") {

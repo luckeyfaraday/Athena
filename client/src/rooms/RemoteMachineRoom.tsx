@@ -1,10 +1,12 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState, type ReactNode } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { CommandRoom } from "./CommandRoom";
 import { WorkspaceTabs } from "../components/WorkspaceTabs";
 import { RemoteFolderDialog } from "../components/RemoteFolderDialog";
 import type { ConfirmRequest, TextPromptRequest } from "../components/PromptDialog";
-import { desktop, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type RemoteMachineView, type WorkspacePath } from "../electron";
+import { desktop, type AgentSession, type EmbeddedTerminalKind, type EmbeddedTerminalSession, type RemoteMachineView, type WorkspacePath } from "../electron";
+import { useRemoteSessionHistory } from "../use-remote-session-history";
+import { applyAgentSessionRenames, providerLabel, readRenamedSessions, selectedAgentSessionKey, writeRenamedSessions } from "../session-utils";
 import {
   pickRemoteWorkspace,
   remoteLaunchError,
@@ -15,6 +17,8 @@ import type { WorkspaceAttention } from "../workspace-attention";
 import { sameWorkspacePath, workspaceDisplayName, workspaceKey } from "../workspace-utils";
 
 export type RemoteMachineRoomHandle = {
+  showView: (view: "sessions" | "terminals") => void;
+  toggleSessions: () => void;
   launch: (kind: EmbeddedTerminalKind, count?: number) => void;
   switchWorkspaceBy: (offset: number) => void;
   goToWorkspace: (index: number) => void;
@@ -75,6 +79,9 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
 }, ref) {
   const [remembered, setRemembered] = useState<string | null>(() => readRememberedWorkspace(machine.id));
   const [busy, setBusy] = useState(false);
+  const launchPending = useRef(false);
+  const [view, setView] = useState<"terminals" | "sessions">("terminals");
+  const [renameVersion, setRenameVersion] = useState(0);
   const [folderDialog, setFolderDialog] = useState(false);
   const [layoutResetNonce, setLayoutResetNonce] = useState(0);
   const [revealPane, setRevealPane] = useState<{ id: string; nonce: number } | null>(null);
@@ -86,6 +93,18 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
   const tabs = useMemo(() => remoteWorkspaceTabs(machine), [machine]);
   const active = pickRemoteWorkspace(tabs, remembered, machine.activeWorkspace);
   const activePath = active?.nativePath ?? "";
+  const activePathRef = useRef(activePath);
+  activePathRef.current = activePath;
+  const history = useRemoteSessionHistory(machine.id, activePath, view === "sessions");
+  const agentSessions = useMemo(() => {
+    const renames = readRenamedSessions(`remote:${machine.id}:${activePath}`);
+    const sessions = history.sessions.map((session) => {
+      const live = machine.sessions.find((terminal) => terminal.kind === session.provider
+        && terminal.providerSessionId === session.id && sameWorkspacePath(terminal.workspace, session.workspace));
+      return live ? { ...session, terminalId: live.id, status: live.status === "running" ? "running" as const : "exited" as const } : session;
+    });
+    return applyAgentSessionRenames(sessions, renames);
+  }, [history.sessions, machine.sessions, machine.id, activePath, renameVersion]);
 
   useEffect(() => {
     onActiveWorkspaceChange(activePath || null);
@@ -105,21 +124,61 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
   }
 
   async function launch(kind: EmbeddedTerminalKind, count = 1) {
-    if (!activePath || busy) return;
+    if (!activePath || launchPending.current) return;
     if (machine.connection !== "connected") {
       onToast(`Still connecting to ${machine.name}…`);
       return;
     }
+    launchPending.current = true;
     setBusy(true);
     try {
       const created = await desktop.spawnRemoteTerminals(machine.id, { workspace: activePath, kind, count });
+      if (activePathRef.current !== activePath) return;
+      setView("terminals");
       if (count > 1) setLayoutResetNonce((value) => value + 1);
       if (created[0]) setRevealPane({ id: created[0].id, nonce: Date.now() });
     } catch (error) {
       onError(remoteLaunchError(error, machine.name));
     } finally {
+      launchPending.current = false;
       setBusy(false);
     }
+  }
+
+  async function resumeSession(session: AgentSession): Promise<boolean> {
+    if (launchPending.current || !history.sessions.some((row) => row.id === session.id
+      && row.provider === session.provider && row.workspace === session.workspace)) return false;
+    if (machine.connection !== "connected") {
+      onToast(`Still connecting to ${machine.name}…`);
+      return false;
+    }
+    launchPending.current = true;
+    setBusy(true);
+    try {
+      const created = await desktop.spawnRemoteTerminals(machine.id, {
+        workspace: session.workspace, kind: session.provider, count: 1,
+        title: `${providerLabel(session.provider)} Resume`, resumeSessionId: session.id, sessionLabel: session.title,
+      });
+      if (!created[0]) throw new Error(`${machine.name} did not return a resumed terminal. Check its terminals before trying again.`);
+      if (activePathRef.current !== activePath) return false;
+      selectWorkspace(session.workspace);
+      if (created[0]) setRevealPane({ id: created[0].id, nonce: Date.now() });
+      return true;
+    } catch (error) {
+      onError(remoteLaunchError(error, machine.name));
+      return false;
+    } finally {
+      launchPending.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function renameAgentSession(session: AgentSession) {
+    const key = `remote:${machine.id}:${activePath}`;
+    const title = await requestText({ title: "Rename session", initialValue: session.title, confirmLabel: "Rename" });
+    if (!title || title === session.title) return;
+    writeRenamedSessions(key, { ...readRenamedSessions(key), [selectedAgentSessionKey(session)]: title });
+    setRenameVersion((version) => version + 1);
   }
 
   async function closeTerminal(id: string) {
@@ -171,6 +230,8 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
   }
 
   useImperativeHandle(ref, () => ({
+    showView: setView,
+    toggleSessions: () => setView((current) => current === "sessions" ? "terminals" : "sessions"),
     launch: (kind, count) => void launch(kind, count),
     switchWorkspaceBy: switchBy,
     goToWorkspace: (index) => {
@@ -222,12 +283,12 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
         key={machine.id}
         workspace={activePath}
         sessions={machine.sessions}
-        agentSessions={[]}
+        agentSessions={agentSessions}
         busy={busy}
         layoutResetNonce={layoutResetNonce}
         interfaceMode="terminal"
-        view="terminals"
-        onViewChange={() => undefined}
+        view={view}
+        onViewChange={setView}
         revealPaneRequest={revealPane}
         onRevealPaneHandled={() => setRevealPane(null)}
         onInterfaceModeChange={() => undefined}
@@ -235,12 +296,20 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
         onAddWorkspace={() => setFolderDialog(true)}
         onLaunch={launch}
         onClose={closeTerminal}
-        onResumeSession={async () => undefined}
+        onResumeSession={resumeSession}
+        onFocusAgentSession={(session) => {
+          selectWorkspace(session.workspace);
+          setView("terminals");
+          if (session.terminalId) setRevealPane({ id: session.terminalId, nonce: Date.now() });
+        }}
         onRenameEmbeddedSession={(session) => void renameTerminal(session)}
-        onRenameAgentSession={() => undefined}
-        onRefreshAgentSessions={async () => undefined}
+        onRenameAgentSession={(session) => void renameAgentSession(session)}
+        onRefreshAgentSessions={history.refresh}
+        sessionHistoryLoading={history.loading}
+        sessionHistoryMessage={history.message}
+        onLoadMoreSessions={history.loadMore}
         emptyMark={emptyMark}
-        remoteMachine={{ name: machine.name }}
+        remoteMachine={{ id: machine.id, name: machine.name }}
       />
       {folderDialog && (
         <RemoteFolderDialog

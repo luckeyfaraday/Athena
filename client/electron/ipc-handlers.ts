@@ -414,6 +414,8 @@ export function registerIpcHandlers(appRoot: string): void {
   handle("remote:refresh", (): Promise<RemoteSnapshot> => remoteClient.refresh(true));
   handle("remote:spawn", (_event, machineId: string, request: RemoteSpawnRequest): Promise<EmbeddedTerminalSession[]> =>
     remoteClient.spawn(String(machineId), request));
+  handle("remote:agentSessions", (_event, machineId: string, workspace: string, cursor?: string | null) =>
+    remoteClient.listAgentSessions(String(machineId), String(workspace), cursor));
   handle("remote:listDirectories", (_event, machineId: string, directory?: string | null): Promise<DirectoryListing> =>
     remoteClient.listDirectories(String(machineId), typeof directory === "string" ? directory : null));
   handle("remote:openWorkspace", (_event, machineId: string, workspace: string): Promise<WorkspacePath> =>

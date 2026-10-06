@@ -26,6 +26,12 @@ export type AgentSession = {
   metadata: Record<string, string>;
 };
 
+export type RemoteSessionPage = {
+  sessions: AgentSession[];
+  nextCursor: string | null;
+  warning: string | null;
+};
+
 export type HermesIndexDiagnostics = {
   filesSeen: number;
   filesStatted: number;

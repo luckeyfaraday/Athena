@@ -1,4 +1,6 @@
 import type { BackendStatus, ElectronControlStatus } from "./api";
+import type { RemoteSessionPage } from "../electron/session-index-protocol";
+export type { RemoteSessionPage } from "../electron/session-index-protocol";
 import type { TerminalAttentionEvent } from "./workspace-attention";
 
 export type EmbeddedTerminalKind = "shell" | "hermes" | "codex" | "opencode" | "claude" | "athena" | "grok";
@@ -291,7 +293,7 @@ export type RemoteAttention = {
   session: EmbeddedTerminalSession | null;
 };
 
-export type RemoteSpawnRequest = { workspace: string; kind: EmbeddedTerminalKind; count?: number; title?: string };
+export type RemoteSpawnRequest = { workspace: string; kind: EmbeddedTerminalKind; count?: number; title?: string; resumeSessionId?: string; sessionLabel?: string };
 
 export type DirectoryListing = {
   path: string;
@@ -328,6 +330,7 @@ type WorkspaceApi = {
   getRemoteSnapshot: () => Promise<RemoteSnapshot>;
   refreshRemote: () => Promise<RemoteSnapshot>;
   spawnRemoteTerminals: (machineId: string, request: RemoteSpawnRequest) => Promise<EmbeddedTerminalSession[]>;
+  listRemoteAgentSessions: (machineId: string, workspace: string, cursor?: string | null) => Promise<RemoteSessionPage>;
   listRemoteDirectories: (machineId: string, directory?: string | null) => Promise<DirectoryListing>;
   openRemoteWorkspace: (machineId: string, workspace: string) => Promise<WorkspacePath>;
   closeRemoteWorkspace: (machineId: string, workspace: string) => Promise<void>;
@@ -411,6 +414,7 @@ const browserFallback: WorkspaceApi = {
   async getRemoteSnapshot() { return fallbackRemoteSnapshot(); },
   async refreshRemote() { return fallbackRemoteSnapshot(); },
   async spawnRemoteTerminals() { throw new Error("Remote machines need the desktop app."); },
+  async listRemoteAgentSessions() { throw new Error("Remote machines need the desktop app."); },
   async listRemoteDirectories() { throw new Error("Remote machines need the desktop app."); },
   async openRemoteWorkspace() { throw new Error("Remote machines need the desktop app."); },
   async closeRemoteWorkspace() { throw new Error("Remote machines need the desktop app."); },

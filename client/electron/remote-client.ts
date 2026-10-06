@@ -5,6 +5,7 @@ import type { EmbeddedTerminalSession } from "./embedded-terminal.js";
 import type { WorkspacePath } from "./platform.js";
 import type { DirectoryListing } from "./remote-fs.js";
 import type { RemoteMachine, RemoteMachinesState } from "./remote-machines.js";
+import type { AgentSession, RemoteSessionPage } from "./session-index-protocol.js";
 
 // The viewing side of remote machines: keeps one event stream open to every
 // other Athena that is ready for this one, and proxies their terminals into the
@@ -54,6 +55,8 @@ export type RemoteSpawnRequest = {
   kind: string;
   count?: number;
   title?: string;
+  resumeSessionId?: string;
+  sessionLabel?: string;
 };
 
 export type RemoteStreamSnapshot = { id: string; epoch: string; buffer: string; throughSequence: number };
@@ -141,7 +144,7 @@ function authHeaders(token: string | null): Record<string, string> {
 /** One JSON request to a remote Athena's control API. Non-2xx answers throw RemoteRequestError. */
 export function requestJson(
   url: string,
-  options: { method?: string; body?: unknown; token?: string | null; timeoutMs?: number } = {},
+  options: { method?: string; body?: unknown; token?: string | null; timeoutMs?: number; maxResponseBytes?: number; deadlineMs?: number } = {},
 ): Promise<Record<string, unknown>> {
   const payload = options.body === undefined ? undefined : JSON.stringify(options.body);
   return new Promise((resolve, reject) => {
@@ -154,8 +157,14 @@ export function requestJson(
       },
     }, (response) => {
       let text = "";
+      let bytes = 0;
       response.setEncoding("utf8");
       response.on("data", (chunk: string) => {
+        bytes += Buffer.byteLength(chunk);
+        if (options.maxResponseBytes && bytes > options.maxResponseBytes) {
+          request.destroy(new Error("The remote history response exceeded its size limit."));
+          return;
+        }
         text += chunk;
       });
       response.on("end", () => {
@@ -180,6 +189,11 @@ export function requestJson(
       request.destroy(new Error("The remote machine did not answer in time."));
     });
     request.on("error", reject);
+    if (options.deadlineMs) {
+      const deadline = setTimeout(() => request.destroy(new Error("The remote machine did not answer in time.")), options.deadlineMs);
+      deadline.unref();
+      request.on("close", () => clearTimeout(deadline));
+    }
     request.end(payload);
   });
 }
@@ -247,6 +261,16 @@ function parseJson(data: string): Record<string, unknown> | null {
 
 function isSession(value: unknown): value is EmbeddedTerminalSession {
   return Boolean(value) && typeof value === "object" && typeof (value as EmbeddedTerminalSession).id === "string";
+}
+
+function isAgentSession(value: unknown): value is AgentSession {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return ["codex", "claude", "hermes", "opencode", "athena", "grok"].includes(String(row.provider))
+    && ["historical", "running", "exited"].includes(String(row.status))
+    && ["id", "workspace", "title", "createdAt", "updatedAt"].every((key) => typeof row[key] === "string")
+    && ["branch", "model", "agent", "terminalId", "resumeCommand"].every((key) => row[key] === null || typeof row[key] === "string")
+    && (row.pid === null || typeof row.pid === "number");
 }
 
 function isWorkspacePath(value: unknown): value is WorkspacePath {
@@ -761,6 +785,36 @@ export class RemoteClient {
 
   // ---- machine actions ----
 
+  async listAgentSessions(machineId: string, workspace: string, cursor?: string | null): Promise<RemoteSessionPage> {
+    const connection = this.connection(machineId);
+    const query = new URLSearchParams({ workspace });
+    if (cursor) query.set("cursor", cursor);
+    let body: Record<string, unknown>;
+    try {
+      body = await requestJson(`${connection.url}/agent-sessions?${query}`, {
+        token: this.options.tokenFor(machineId), timeoutMs: 50_000, deadlineMs: 50_000, maxResponseBytes: 256 * 1024,
+      });
+    } catch (error) {
+      if (error instanceof RemoteRequestError && error.status === 404) {
+        throw new Error("Update Athena on this device to enable session history.");
+      }
+      throw error;
+    }
+    if (!Array.isArray(body.sessions) || body.sessions.length > 100
+      || !(body.nextCursor === null || typeof body.nextCursor === "string" && body.nextCursor.length < 128)
+      || !(body.warning === null || typeof body.warning === "string" && body.warning.length < 1024)
+      || !body.sessions.every(isAgentSession)) {
+      throw new Error("The remote machine returned invalid session history.");
+    }
+    return {
+      sessions: body.sessions.map((session: AgentSession) => ({
+        ...session, metadata: {},
+        terminalId: session.terminalId ? remoteTerminalId(machineId, session.terminalId) : null,
+      })),
+      nextCursor: body.nextCursor as string | null, warning: body.warning as string | null,
+    };
+  }
+
   async spawn(machineId: string, request: RemoteSpawnRequest): Promise<EmbeddedTerminalSession[]> {
     const connection = this.connection(machineId);
     const body = await requestJson(`${connection.url}/terminals/spawn`, {
@@ -770,6 +824,8 @@ export class RemoteClient {
         kind: request.kind,
         count: request.count ?? 1,
         title: request.title,
+        resume_session_id: request.resumeSessionId,
+        session_label: request.sessionLabel,
         // Open the tab there, but never yank the person at that machine to it.
         open_workspace: true,
         select_workspace: false,

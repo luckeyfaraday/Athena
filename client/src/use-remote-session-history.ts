@@ -53,6 +53,8 @@ export function useRemoteSessionHistory(machineId: string, workspace: string, vi
     document.addEventListener("visibilitychange", open);
     return () => {
       ++sequence.current;
+      // The superseded reply is ignored, so it must not leave Refresh/Load more disabled.
+      setHistory((value) => value.loading ? { ...value, loading: false } : value);
       document.removeEventListener("visibilitychange", open);
     };
   }, [visible, load]);

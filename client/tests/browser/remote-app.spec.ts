@@ -121,6 +121,23 @@ test("resuming descendant history selects its original folder and reveals the pa
   expect(await page.evaluate(() => (window as any).remoteAppTest.spawns[0][1].workspace)).toBe("/remote/project/child");
 });
 
+test("leaving Sessions during a history request never leaves it stuck loading", async ({ page }) => {
+  await selectRemote(page);
+  await page.getByRole("tab", { name: /^Sessions/ }).click();
+  await expect(page.getByText("History desktop:/remote/project:first", { exact: true })).toBeVisible();
+  await page.evaluate(() => { (window as any).remoteAppTest.historyDelay = true; });
+  await page.getByRole("button", { name: "Load more sessions" }).click();
+  await expect(page.getByText("Loading session history…")).toBeVisible();
+  await page.getByRole("tab", { name: /^Terminals/ }).click();
+  await page.evaluate(() => (window as any).remoteAppTest.historyResolvers[0]());
+  await page.getByRole("tab", { name: /^Sessions/ }).click();
+  await expect(page.getByText("Loading session history…")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Refresh sessions" })).toBeEnabled();
+  await page.evaluate(() => { (window as any).remoteAppTest.historyDelay = false; });
+  await page.getByRole("button", { name: "Load more sessions" }).click();
+  await expect(page.getByText("History desktop:/remote/project:page2", { exact: true })).toBeVisible();
+});
+
 test("session shortcut opens remote history from Settings", async ({ page }) => {
   await selectRemote(page);
   await page.getByRole("button", { name: "Settings", exact: true }).click();

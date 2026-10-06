@@ -78,20 +78,29 @@ test("resolveExecutable finds a command the way the panes do, and reports a miss
   assert.equal(await resolveExecutable("athena-no-such-agent", env), null);
 });
 
-test("agentCliStatus reports installed, where, and whether npm is there for npm agents", async () => {
+test("agentCliStatus reports installed, where, and whether npm is there for npm agents", async (t) => {
   const { dir, env } = fakeBin(["codex", "npm"]);
-  const codex = await agentCliStatus("codex", env);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // Login profiles and macOS path_helper can add real agents/npm back to PATH.
+  // Exercise status mapping with controlled lookup results; the integration
+  // test above still checks shell resolution using a unique executable name.
+  const installed = new Map(["codex", "npm"].map((name) => [name, path.join(dir, isWindows ? `${name}.cmd` : name)]));
+  const lookup = async (command, actualEnv) => {
+    assert.equal(actualEnv, env);
+    return installed.get(command) ?? null;
+  };
+  const codex = await agentCliStatus("codex", env, lookup);
   assert.equal(codex.installed, true);
   assert.equal(path.basename(path.dirname(codex.path)), path.basename(dir));
   assert.equal(codex.needsNpm, true);
   assert.equal(codex.npmAvailable, true);
-  const claude = await agentCliStatus("claude", env);
+  const claude = await agentCliStatus("claude", env, lookup);
   assert.equal(claude.installed, false);
   assert.equal(claude.path, null);
   assert.equal(claude.installCommand, agentCommand("claude", "install"));
-  const { env: bare } = fakeBin([]);
-  assert.equal((await agentCliStatus("opencode", bare)).npmAvailable, false);
-  assert.equal((await agentCliStatus("grok", bare)).npmAvailable, true, "installer agents do not need npm");
+  installed.clear();
+  assert.equal((await agentCliStatus("opencode", env, lookup)).npmAvailable, false);
+  assert.equal((await agentCliStatus("grok", env, lookup)).npmAvailable, true, "installer agents do not need npm");
 });
 
 test("privateAgentCopies reports agent packages an older Athena left in ~/.npm-global", () => {

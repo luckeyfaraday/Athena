@@ -264,6 +264,43 @@ export type RemoteMachinesState = {
   refreshedAt: string | null;
 };
 
+// Mirrors RemoteMachineView / RemoteSnapshot / RemoteAttention in electron/remote-client.ts.
+export type RemoteConnectionStatus = "idle" | "connecting" | "connected" | "error";
+
+export type RemoteMachineView = RemoteMachine & {
+  connection: RemoteConnectionStatus;
+  connectionError: string | null;
+  hasToken: boolean;
+  sessions: EmbeddedTerminalSession[];
+  workspaces: WorkspacePath[];
+  activeWorkspace: WorkspacePath | null;
+};
+
+export type RemoteSnapshot = {
+  tailscale: RemoteMachinesState["tailscale"];
+  account: string | null;
+  selfName: string | null;
+  machines: RemoteMachineView[];
+  refreshedAt: string | null;
+};
+
+export type RemoteAttention = {
+  machineId: string;
+  machineName: string;
+  event: TerminalAttentionEvent;
+  session: EmbeddedTerminalSession | null;
+};
+
+export type RemoteSpawnRequest = { workspace: string; kind: EmbeddedTerminalKind; count?: number; title?: string };
+
+export type DirectoryListing = {
+  path: string;
+  parent: string | null;
+  home: string;
+  dirs: Array<{ name: string; path: string }>;
+  truncated: boolean;
+};
+
 export type AthenaLaunchState = {
   pid: number;
   startedAt: string;
@@ -287,6 +324,16 @@ type WorkspaceApi = {
   regenerateRemoteAccessToken: () => Promise<RemoteAccessState>;
   getRemoteAccessToken: () => Promise<string>;
   getRemoteMachines: () => Promise<RemoteMachinesState>;
+  reportWorkspaces: (paths: string[], active: string | null) => void;
+  getRemoteSnapshot: () => Promise<RemoteSnapshot>;
+  refreshRemote: () => Promise<RemoteSnapshot>;
+  spawnRemoteTerminals: (machineId: string, request: RemoteSpawnRequest) => Promise<EmbeddedTerminalSession[]>;
+  listRemoteDirectories: (machineId: string, directory?: string | null) => Promise<DirectoryListing>;
+  openRemoteWorkspace: (machineId: string, workspace: string) => Promise<WorkspacePath>;
+  closeRemoteWorkspace: (machineId: string, workspace: string) => Promise<void>;
+  setRemoteMachineToken: (machineId: string, token: string | null) => Promise<RemoteSnapshot>;
+  onRemoteUpdate: (callback: (snapshot: RemoteSnapshot) => void) => () => void;
+  onRemoteAttention: (callback: (attention: RemoteAttention) => void) => () => void;
   refreshRemoteMachines: () => Promise<RemoteMachinesState>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
@@ -360,6 +407,16 @@ const browserFallback: WorkspaceApi = {
   async regenerateRemoteAccessToken() { return fallbackRemoteAccessState(); },
   async getRemoteAccessToken() { return ""; },
   async getRemoteMachines() { return fallbackRemoteMachinesState(); },
+  reportWorkspaces() { return undefined; },
+  async getRemoteSnapshot() { return fallbackRemoteSnapshot(); },
+  async refreshRemote() { return fallbackRemoteSnapshot(); },
+  async spawnRemoteTerminals() { throw new Error("Remote machines need the desktop app."); },
+  async listRemoteDirectories() { throw new Error("Remote machines need the desktop app."); },
+  async openRemoteWorkspace() { throw new Error("Remote machines need the desktop app."); },
+  async closeRemoteWorkspace() { throw new Error("Remote machines need the desktop app."); },
+  async setRemoteMachineToken() { return fallbackRemoteSnapshot(); },
+  onRemoteUpdate() { return () => undefined; },
+  onRemoteAttention() { return () => undefined; },
   async refreshRemoteMachines() { return fallbackRemoteMachinesState(); },
   async getLaunchState() { return null; },
   async clearTerminalRestorePause() {
@@ -547,6 +604,10 @@ function fallbackRemoteAccessState(): RemoteAccessState {
     lastRequest: null,
     lastRejected: null,
   };
+}
+
+function fallbackRemoteSnapshot(): RemoteSnapshot {
+  return { tailscale: "unavailable", account: null, selfName: null, machines: [], refreshedAt: null };
 }
 
 function fallbackRemoteMachinesState(): RemoteMachinesState {

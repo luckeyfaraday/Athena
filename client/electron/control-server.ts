@@ -12,9 +12,13 @@ import {
   killEmbeddedTerminal,
   listEmbeddedAgentMessages,
   listEmbeddedTerminals,
+  onEmbeddedTerminalEvent,
+  renameEmbeddedTerminal,
+  resizeEmbeddedTerminal,
   sendAgentMessage,
   spawnEmbeddedTerminal,
   submitEmbeddedTerminalInput,
+  writeEmbeddedTerminal,
   writeEmbeddedTerminalInputRaw,
   type EmbeddedTerminalKind,
   type EmbeddedTerminalSession,
@@ -39,6 +43,8 @@ import {
 } from "./terminal-buffer.js";
 import { parseRawTerminalInputRequest, rawInputPreview } from "./terminal-input.js";
 import { toWorkspacePath, type WorkspacePath } from "./platform.js";
+import { listDirectories } from "./remote-fs.js";
+import { onReportedWorkspaces, reportedWorkspaces } from "./workspace-registry.js";
 import type { AgentContextMode } from "./agent-context.js";
 
 type ControlState = {
@@ -342,14 +348,22 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     }
     if (request.method === "GET" && url.pathname === "/machine") {
       // Lets a remote Athena label this machine and check it can drive it.
-      sendJson(response, 200, {
-        hostname: os.hostname(),
-        platform: process.platform,
-        arch: process.arch,
-        version: app.getVersion(),
-        homedir: os.homedir(),
-        via: listener.source,
-      });
+      sendJson(response, 200, { ...machineInfo(), via: listener.source });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/events") {
+      streamControlEvents(request, response);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/workspaces") {
+      sendJson(response, 200, reportedWorkspaces());
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/fs/dirs") {
+      // Folder names only, for a remote Athena's "open folder" picker.
+      sendJson(response, 200, await listDirectories(url.searchParams.get("path") ?? undefined, {
+        includeHidden: booleanValue(url.searchParams.get("hidden")),
+      }));
       return;
     }
     if (request.method === "GET" && url.pathname === "/terminals") {
@@ -383,7 +397,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/stream".length));
       const terminal = requireResolvedTerminal(target);
       const maxChars = boundedTerminalBufferMaxChars(url.searchParams.get("max_chars"));
-      streamEmbeddedTerminal(request, response, terminal.id, maxChars);
+      streamEmbeddedTerminal(request, response, terminal.id, maxChars, url.searchParams.get("format") === "json" ? "json" : "base64");
       return;
     }
     if (request.method === "POST" && url.pathname === "/workspaces/open") {
@@ -428,6 +442,26 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
         throw error;
       });
       sendJson(response, 200, { written: true, terminal: session });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/terminals/keys") {
+      // Interactive keystrokes from a remote pane: the same path as typing into
+      // a local pane, without the per-write control-event record /terminals/input keeps.
+      const payload = parseRawTerminalInputRequest(await readJsonBody(request));
+      const terminal = requireResolvedTerminal(payload.target);
+      sendJson(response, 200, { written: true, terminal: await writeEmbeddedTerminal(terminal.id, payload.data) });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/terminals/resize") {
+      const payload = parseResizeTerminalRequest(await readJsonBody(request));
+      const terminal = requireResolvedTerminal(payload.target);
+      sendJson(response, 200, { resized: true, terminal: await resizeEmbeddedTerminal(terminal.id, payload.cols, payload.rows) });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/terminals/rename") {
+      const payload = parseRenameTerminalRequest(await readJsonBody(request));
+      const terminal = requireResolvedTerminal(payload.target);
+      sendJson(response, 200, { renamed: true, terminal: renameEmbeddedTerminal(terminal.id, payload.title) });
       return;
     }
     if (request.method === "POST" && url.pathname === "/terminals/kill") {
@@ -578,6 +612,29 @@ function parseSendAgentMessageRequest(body: unknown): Parameters<typeof sendAgen
     hopCount: numberValue(request.hop_count ?? request.hopCount),
     source: "electron-control",
   };
+}
+
+const MAX_TERMINAL_COLS = 1_000;
+const MAX_TERMINAL_ROWS = 500;
+const MAX_TERMINAL_TITLE_LENGTH = 200;
+
+function parseResizeTerminalRequest(body: unknown): { target: string; cols: number; rows: number } {
+  const target = targetFromBody(body);
+  if (!target) throw new Error("terminal_id, session_id, or target is required.");
+  const request = body as { cols?: unknown; rows?: unknown };
+  const cols = numberValue(request.cols);
+  const rows = numberValue(request.rows);
+  if (cols === undefined || rows === undefined || cols < 1 || rows < 1) throw new Error("cols and rows must be positive numbers.");
+  return { target, cols: Math.min(cols, MAX_TERMINAL_COLS), rows: Math.min(rows, MAX_TERMINAL_ROWS) };
+}
+
+function parseRenameTerminalRequest(body: unknown): { target: string; title: string } {
+  const target = targetFromBody(body);
+  if (!target) throw new Error("terminal_id, session_id, or target is required.");
+  const title = stringValue((body as { title?: unknown }).title);
+  if (!title) throw new Error("title is required.");
+  if (title.length > MAX_TERMINAL_TITLE_LENGTH) throw new Error(`title must be at most ${MAX_TERMINAL_TITLE_LENGTH} characters.`);
+  return { target, title };
 }
 
 function parseKillTerminalRequest(body: unknown): { target: string } {
@@ -797,6 +854,7 @@ function streamEmbeddedTerminal(
   response: ServerResponse,
   terminalId: string,
   maxChars: number,
+  format: "base64" | "json",
 ): void {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -808,7 +866,7 @@ function streamEmbeddedTerminal(
   // An initial comment flushes headers so EventSource fires `open` right away.
   response.write(": athena-control stream\n\n");
 
-  const send = (event: string, payloadBase64: string, eventId?: string): boolean => {
+  const send = (event: string, payload: string, eventId?: string): boolean => {
     if (closed) return false;
     if (response.writableLength > SSE_MAX_BACKLOG_BYTES) {
       cleanup();
@@ -816,7 +874,7 @@ function streamEmbeddedTerminal(
       return false;
     }
     try {
-      response.write(`${eventId ? `id: ${eventId}\n` : ""}event: ${event}\ndata: ${payloadBase64}\n\n`);
+      response.write(`${eventId ? `id: ${eventId}\n` : ""}event: ${event}\ndata: ${payload}\n\n`);
       return true;
     } catch {
       cleanup();
@@ -841,6 +899,15 @@ function streamEmbeddedTerminal(
     maxChars,
     (delivery) => {
       if (!delivery.data && !delivery.reset) return true;
+      if (format === "json") {
+        return send(
+          delivery.reset ? "snapshot" : "data",
+          JSON.stringify(delivery.reset
+            ? { epoch: delivery.epoch, throughSequence: delivery.sequence, data: delivery.data }
+            : { epoch: delivery.epoch, fromSequence: delivery.fromSequence, sequence: delivery.sequence, data: delivery.data }),
+          `${delivery.epoch}:${delivery.sequence}`,
+        );
+      }
       return send(
         delivery.reset ? "snapshot" : "data",
         Buffer.from(delivery.data, "utf8").toString("base64"),
@@ -850,7 +917,9 @@ function streamEmbeddedTerminal(
     ({ exitCode, epoch, throughSequence }) => {
       send(
         "exit",
-        Buffer.from(JSON.stringify({ exitCode }), "utf8").toString("base64"),
+        format === "json"
+          ? JSON.stringify({ exitCode, epoch, throughSequence })
+          : Buffer.from(JSON.stringify({ exitCode }), "utf8").toString("base64"),
         `${epoch}:${throughSequence}`,
       );
       cleanup();
@@ -860,7 +929,9 @@ function streamEmbeddedTerminal(
   const { snapshot } = stream;
   if (!send(
     "snapshot",
-    Buffer.from(snapshot.buffer, "utf8").toString("base64"),
+    format === "json"
+      ? JSON.stringify({ epoch: snapshot.epoch, throughSequence: snapshot.throughSequence, data: snapshot.buffer })
+      : Buffer.from(snapshot.buffer, "utf8").toString("base64"),
     `${snapshot.epoch}:${snapshot.throughSequence}`,
   )) return;
   stream.start();
@@ -868,6 +939,70 @@ function streamEmbeddedTerminal(
   heartbeat = setInterval(() => response.write(": keep-alive\n\n"), SSE_HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
 
+  request.on("close", cleanup);
+  response.on("close", cleanup);
+  response.on("error", cleanup);
+}
+
+function machineInfo(): { hostname: string; platform: NodeJS.Platform; arch: string; version: string; homedir: string } {
+  return {
+    hostname: os.hostname(),
+    platform: process.platform,
+    arch: process.arch,
+    version: app.getVersion(),
+    homedir: os.homedir(),
+  };
+}
+
+const EVENT_CHANNELS: Record<string, string> = {
+  "embedded-terminal:session": "session",
+  "embedded-terminal:attention": "attention",
+  "embedded-terminal:exit": "exit",
+};
+
+/**
+ * Server-Sent Events for a remote Athena watching this machine: a `hello`
+ * with every terminal and the open workspace tabs, then `session`, `attention`,
+ * `exit`, and `workspaces` as they happen. Payloads are JSON.
+ */
+function streamControlEvents(request: IncomingMessage, response: ServerResponse): void {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  let closed = false;
+  const send = (event: string, payload: unknown): void => {
+    if (closed) return;
+    if (response.writableLength > SSE_MAX_BACKLOG_BYTES) {
+      cleanup();
+      response.destroy(new Error("Event stream backpressure exceeded."));
+      return;
+    }
+    try {
+      response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+    } catch {
+      cleanup();
+    }
+  };
+  const removeTerminalEvents = onEmbeddedTerminalEvent((channel, payload) => {
+    const event = EVENT_CHANNELS[channel];
+    if (event) send(event, payload);
+  });
+  const removeWorkspaceEvents = onReportedWorkspaces((workspaces) => send("workspaces", workspaces));
+  const heartbeat = setInterval(() => {
+    if (!closed) response.write(": keep-alive\n\n");
+  }, SSE_HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
+  function cleanup(): void {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    removeTerminalEvents();
+    removeWorkspaceEvents();
+  }
+  send("hello", { machine: machineInfo(), terminals: listEmbeddedTerminals(), ...reportedWorkspaces() });
   request.on("close", cleanup);
   response.on("close", cleanup);
   response.on("error", cleanup);

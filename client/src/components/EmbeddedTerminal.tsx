@@ -16,6 +16,7 @@ import {
 } from "../electron";
 import { terminalUsesMouseWheelProtocol } from "../embedded-scroll";
 import { subscribeTerminalWindowReturn } from "../terminal-lifecycle";
+import { isRemoteSessionId } from "../remote-view";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = {
@@ -432,29 +433,32 @@ function EmbeddedTerminalView({ session, active = true }: Props) {
     scheduleFitRef.current?.({ refresh: true, focus: active });
   }, [active]);
 
+  // A dropped image becomes a local file path, which means nothing to an agent on another machine.
+  const acceptsImageDrop = !isRemoteSessionId(session.id);
+
   function handleDragEnter(event: DragEvent<HTMLDivElement>) {
-    if (!hasImageFiles(event.dataTransfer)) return;
+    if (!acceptsImageDrop || !hasImageFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepthRef.current += 1;
     setImageDropActive(true);
   }
 
   function handleDragOver(event: DragEvent<HTMLDivElement>) {
-    if (!hasImageFiles(event.dataTransfer)) return;
+    if (!acceptsImageDrop || !hasImageFiles(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setImageDropActive(true);
   }
 
   function handleDragLeave(event: DragEvent<HTMLDivElement>) {
-    if (!hasImageFiles(event.dataTransfer)) return;
+    if (!acceptsImageDrop || !hasImageFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
     if (dragDepthRef.current === 0) setImageDropActive(false);
   }
 
   async function handleDrop(event: DragEvent<HTMLDivElement>) {
-    if (!hasImageFiles(event.dataTransfer)) return;
+    if (!acceptsImageDrop || !hasImageFiles(event.dataTransfer)) return;
     event.preventDefault();
     dragDepthRef.current = 0;
     setImageDropActive(false);

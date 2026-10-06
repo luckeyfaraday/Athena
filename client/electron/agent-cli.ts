@@ -147,11 +147,15 @@ export function agentUpdateCommand(
   return fromNpm ? agentCommand(kind, "update", platform) : spec.selfUpdate;
 }
 
-export async function agentCliStatus(kind: AgentCliKind, env: NodeJS.ProcessEnv = sanitizedTerminalEnv()): Promise<AgentCliStatus> {
+export async function agentCliStatus(
+  kind: AgentCliKind,
+  env: NodeJS.ProcessEnv = sanitizedTerminalEnv(),
+  lookup: typeof resolveExecutable = resolveExecutable,
+): Promise<AgentCliStatus> {
   const spec = AGENT_CLIS[kind];
   const [found, npm] = await Promise.all([
-    resolveExecutable(spec.executable, env),
-    spec.npmPackage ? resolveExecutable("npm", env) : Promise.resolve(null),
+    lookup(spec.executable, env),
+    spec.npmPackage ? lookup("npm", env) : Promise.resolve(null),
   ]);
   return {
     kind,

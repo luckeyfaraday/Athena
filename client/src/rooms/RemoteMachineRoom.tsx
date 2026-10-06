@@ -19,6 +19,9 @@ export type RemoteMachineRoomHandle = {
   switchWorkspaceBy: (offset: number) => void;
   goToWorkspace: (index: number) => void;
   openFolder: () => void;
+  selectWorkspace: (workspace: string) => void;
+  closeWorkspace: (workspace: string) => void;
+  revealPane: (workspace: string, sessionId: string) => void;
 };
 
 export type RemoteRevealRequest = { workspace: string; sessionId: string; nonce: number };
@@ -175,6 +178,15 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
       if (tab) selectWorkspace(tab.nativePath);
     },
     openFolder: () => setFolderDialog(true),
+    selectWorkspace,
+    closeWorkspace: (workspace) => {
+      const tab = tabs.find((candidate) => sameWorkspacePath(candidate.nativePath, workspace));
+      if (tab) void closeWorkspace(tab);
+    },
+    revealPane: (workspace, sessionId) => {
+      selectWorkspace(workspace);
+      setRevealPane({ id: sessionId, nonce: Date.now() });
+    },
   }));
 
   const connectionNotice = machine.status !== "ready"

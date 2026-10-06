@@ -40,7 +40,7 @@ import {
 } from "./electron";
 import { MachineSwitcher } from "./components/MachineSwitcher";
 import { RemoteMachineRoom, type RemoteMachineRoomHandle, type RemoteRevealRequest } from "./rooms/RemoteMachineRoom";
-import { machineWorkspaceAttention, remoteAttentionKey, remoteMachineIdOf, switcherEntries } from "./remote-view";
+import { machineWorkspaceAttention, remoteAttentionKey, remoteMachineIdOf, remoteWorkspaceTabs, sessionsInWorkspace, switcherEntries } from "./remote-view";
 import { useRemoteMachines } from "./use-remote-machines";
 import { AthenaMark } from "./components/AthenaMark";
 import { AgentInstallDialog } from "./components/AgentInstallDialog";
@@ -256,6 +256,7 @@ export function App() {
   const [remoteAttention, setRemoteAttention] = useState<Record<string, WorkspaceAttention>>({});
   const [remoteReveal, setRemoteReveal] = useState<(RemoteRevealRequest & { machineId: string }) | null>(null);
   const remoteRoomRef = useRef<RemoteMachineRoomHandle | null>(null);
+  const pendingRemoteAction = useRef<{ machineId: string; run: (room: RemoteMachineRoomHandle) => void } | null>(null);
   const activeMachineIdRef = useRef<string | null>(null);
   const activeRemoteWorkspaceRef = useRef<string | null>(null);
   const activeMachine = activeMachineId ? remoteSnapshot?.machines.find((machine) => machine.id === activeMachineId) ?? null : null;
@@ -1178,9 +1179,30 @@ export function App() {
     toasts.show(`Terminal text: ${clampTerminalFontSize(fontSize)}px`);
   }
 
+  // Settings unmounts the remote room. Consume its next action only after the
+  // selected machine's room has mounted, and never replay it on another host.
+  useEffect(() => {
+    const pending = pendingRemoteAction.current;
+    if (!pending) return;
+    if (pending.machineId !== activeMachine?.id) {
+      pendingRemoteAction.current = null;
+      return;
+    }
+    if (activeRoom !== "command" || !remoteRoomRef.current) return;
+    pendingRemoteAction.current = null;
+    pending.run(remoteRoomRef.current);
+  }, [activeRoom, activeMachine?.id]);
+
+  function runInRemoteRoom(run: (room: RemoteMachineRoomHandle) => void) {
+    if (!activeMachine) return;
+    showCommandRoom("terminals");
+    if (remoteRoomRef.current) run(remoteRoomRef.current);
+    else pendingRemoteAction.current = { machineId: activeMachine.id, run };
+  }
+
   // Launches go to whichever machine the Command Room is showing.
   function launchInActiveMachine(kind: EmbeddedTerminalKind, count: number) {
-    if (activeMachine) remoteRoomRef.current?.launch(kind, count);
+    if (activeMachine) runInRemoteRoom((room) => room.launch(kind, count));
     else void launchEmbedded(kind, count);
   }
 
@@ -1217,18 +1239,20 @@ export function App() {
         launchInActiveMachine("shell", 1);
       };
       shortcutHandlers.launchAgent = () => openPalette("launch ");
-      shortcutHandlers.toggleSessions = () =>
-        showCommandRoom(activeRoom !== "command" || commandView === "terminals" ? "sessions" : "terminals");
-      shortcutHandlers.toggleInterfaceMode = () => {
-        const next = interfaceMode === "chat" ? "terminal" : "chat";
-        setInterfaceMode(next);
-        toasts.show(next === "chat" ? "Chat view" : "Terminal view");
-      };
-      shortcutHandlers.nextWorkspace = () => (activeMachine ? remoteRoomRef.current?.switchWorkspaceBy(1) : switchWorkspaceBy(1));
-      shortcutHandlers.previousWorkspace = () => (activeMachine ? remoteRoomRef.current?.switchWorkspaceBy(-1) : switchWorkspaceBy(-1));
+      if (!activeMachine) {
+        shortcutHandlers.toggleSessions = () =>
+          showCommandRoom(activeRoom !== "command" || commandView === "terminals" ? "sessions" : "terminals");
+        shortcutHandlers.toggleInterfaceMode = () => {
+          const next = interfaceMode === "chat" ? "terminal" : "chat";
+          setInterfaceMode(next);
+          toasts.show(next === "chat" ? "Chat view" : "Terminal view");
+        };
+      }
+      shortcutHandlers.nextWorkspace = () => (activeMachine ? runInRemoteRoom((room) => room.switchWorkspaceBy(1)) : switchWorkspaceBy(1));
+      shortcutHandlers.previousWorkspace = () => (activeMachine ? runInRemoteRoom((room) => room.switchWorkspaceBy(-1)) : switchWorkspaceBy(-1));
       for (let position = 1; position <= 9; position += 1) {
         shortcutHandlers[`workspace${position}` as ShortcutId] = () => (activeMachine
-          ? remoteRoomRef.current?.goToWorkspace(position - 1)
+          ? runInRemoteRoom((room) => room.goToWorkspace(position - 1))
           : goToWorkspace(workspaceTabs[position - 1]));
       }
     }
@@ -1274,10 +1298,7 @@ export function App() {
           title: `Open a folder on ${activeMachine.name}…`,
           icon: <FolderOpen size={15} />,
           keywords: ["workspace", "project", "remote", "folder"],
-          run: () => {
-            showCommandRoom("terminals");
-            remoteRoomRef.current?.openFolder();
-          },
+          run: () => runInRemoteRoom((room) => room.openFolder()),
         });
       }
     }
@@ -1293,7 +1314,7 @@ export function App() {
       run: launch("shell", 1),
     });
     for (const agent of launchableAgents) {
-      const missing = missingAgents.has(agent.kind);
+      const missing = !activeMachine && missingAgents.has(agent.kind);
       commands.push({
         id: `launch:${agent.kind}`,
         group: "Launch",
@@ -1318,35 +1339,54 @@ export function App() {
       }
     }
 
-    workspaceTabs.forEach((tab, index) => {
-      const current = Boolean(workspacePath && workspaceKey(workspacePath) === workspaceKey(tab));
+    const paletteTabs = activeMachine ? remoteWorkspaceTabs(activeMachine) : workspaceTabs;
+    const paletteWorkspace = activeMachine ? activeRemoteWorkspace : workspace;
+    paletteTabs.forEach((tab, index) => {
+      const current = Boolean(paletteWorkspace && sameWorkspacePath(paletteWorkspace, tab.nativePath));
       commands.push({
-        id: `workspace:${workspaceKey(tab)}`,
+        id: `workspace:${activeMachine ? `${activeMachine.id}:` : ""}${workspaceKey(tab)}`,
         group: "Workspaces",
         title: `Switch to ${workspaceDisplayName(tab)}`,
-        subtitle: current ? `Current · ${tab.nativePath}` : tab.nativePath,
+        subtitle: [current ? "Current" : null, activeMachine?.name, tab.nativePath].filter(Boolean).join(" · "),
         icon: <FolderOpen size={15} />,
         keys: index < 9 ? shortcutKeysFor(`workspace${index + 1}` as ShortcutId) : undefined,
         keywords: ["workspace", "project", "folder", "tab"],
-        run: () => goToWorkspace(tab),
+        run: () => activeMachine ? runInRemoteRoom((room) => room.selectWorkspace(tab.nativePath)) : goToWorkspace(tab),
       });
     });
-    commands.push(
-      { id: "workspace:add", group: "Workspaces", title: "Add a workspace folder…", icon: <FolderOpen size={15} />, keywords: ["open", "project"], run: () => void selectWorkspace() },
-      { id: "workspace:create", group: "Workspaces", title: "Create a new workspace folder…", icon: <FolderPlus size={15} />, keywords: ["new", "mkdir", "project"], run: () => void createWorkspace() },
-    );
-    if (workspacePath) {
-      const current = workspacePath;
+    if (activeMachine) {
+      commands.push({
+        id: "workspace:add", group: "Workspaces", title: "Add a workspace folder…",
+        subtitle: `On ${activeMachine.name}`, icon: <FolderOpen size={15} />, keywords: ["open", "project"],
+        run: () => runInRemoteRoom((room) => room.openFolder()),
+      });
+      if (activeRemoteWorkspace) {
+        const current = activeRemoteWorkspace;
+        commands.push({
+          id: "workspace:close", group: "Workspaces", title: "Close this workspace",
+          subtitle: `Stops its terminals on ${activeMachine.name}`, icon: <XCircle size={15} />,
+          run: () => runInRemoteRoom((room) => room.closeWorkspace(current)),
+        });
+      }
+    } else {
       commands.push(
-        { id: "workspace:rename", group: "Workspaces", title: "Rename this workspace…", icon: <Pencil size={15} />, run: () => void renameWorkspaceTab(current) },
-        { id: "workspace:reveal", group: "Workspaces", title: "Open this workspace in the file manager", icon: <FolderOpen size={15} />, keywords: ["explorer", "finder", "files"], run: () => void openWorkspaceInFiles(current) },
+        { id: "workspace:add", group: "Workspaces", title: "Add a workspace folder…", icon: <FolderOpen size={15} />, keywords: ["open", "project"], run: () => void selectWorkspace() },
+        { id: "workspace:create", group: "Workspaces", title: "Create a new workspace folder…", icon: <FolderPlus size={15} />, keywords: ["new", "mkdir", "project"], run: () => void createWorkspace() },
       );
-      if (workspaceTabs.length > 1) {
-        commands.push({ id: "workspace:close", group: "Workspaces", title: "Close this workspace", subtitle: "Stops its terminals", icon: <XCircle size={15} />, run: () => void requestCloseWorkspaceTab(current) });
+      if (workspacePath) {
+        const current = workspacePath;
+        commands.push(
+          { id: "workspace:rename", group: "Workspaces", title: "Rename this workspace…", icon: <Pencil size={15} />, run: () => void renameWorkspaceTab(current) },
+          { id: "workspace:reveal", group: "Workspaces", title: "Open this workspace in the file manager", icon: <FolderOpen size={15} />, keywords: ["explorer", "finder", "files"], run: () => void openWorkspaceInFiles(current) },
+        );
+        if (workspaceTabs.length > 1) {
+          commands.push({ id: "workspace:close", group: "Workspaces", title: "Close this workspace", subtitle: "Stops its terminals", icon: <XCircle size={15} />, run: () => void requestCloseWorkspaceTab(current) });
+        }
       }
     }
 
-    for (const session of activeEmbeddedSessions) {
+    const paletteSessions = activeMachine ? sessionsInWorkspace(activeMachine.sessions, activeRemoteWorkspace ?? "") : activeEmbeddedSessions;
+    for (const session of paletteSessions) {
       commands.push({
         id: `pane:${session.id}`,
         group: "Panes",
@@ -1358,12 +1398,13 @@ export function App() {
         keywords: ["pane", "terminal", "focus", session.kind],
         run: () => {
           showCommandRoom("terminals");
-          setRevealPaneRequest({ id: session.id, nonce: Date.now() });
+          if (activeMachine) runInRemoteRoom((room) => room.revealPane(session.workspace, session.id));
+          else setRevealPaneRequest({ id: session.id, nonce: Date.now() });
         },
       });
     }
 
-    for (const session of agentSessions.filter((item) => item.resumeCommand).slice(0, 30)) {
+    for (const session of (activeMachine ? [] : agentSessions).filter((item) => item.resumeCommand).slice(0, 30)) {
       commands.push({
         id: `resume:${session.provider}:${session.id}`,
         group: "Sessions",
@@ -1378,6 +1419,9 @@ export function App() {
 
     commands.push(
       { id: "view:terminals", group: "View", title: "Show terminals", icon: <TerminalSquare size={15} />, run: () => showCommandRoom("terminals") },
+      { id: "view:settings", group: "View", title: "Open Settings", icon: <SettingsIcon size={15} />, keys: shortcutKeysFor("settings"), keywords: ["preferences", "options"], run: () => openSettings() },
+    );
+    if (!activeMachine) commands.push(
       { id: "view:sessions", group: "View", title: "Show session history", icon: <Code2 size={15} />, keys: shortcutKeysFor("toggleSessions"), keywords: ["resume", "native", "history"], run: () => showCommandRoom("sessions") },
       {
         id: "view:mode",
@@ -1388,7 +1432,6 @@ export function App() {
         keywords: ["chat", "terminal", "interface", "mode"],
         run: () => setInterfaceMode(interfaceMode === "chat" ? "terminal" : "chat"),
       },
-      { id: "view:settings", group: "View", title: "Open Settings", icon: <SettingsIcon size={15} />, keys: shortcutKeysFor("settings"), keywords: ["preferences", "options"], run: () => openSettings() },
     );
 
     for (const option of ["system", ...themes.map((theme) => theme.id)] as ThemePreference[]) {

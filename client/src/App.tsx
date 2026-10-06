@@ -1239,6 +1239,7 @@ export function App() {
         launchInActiveMachine("shell", 1);
       };
       shortcutHandlers.launchAgent = () => openPalette("launch ");
+      if (activeMachine) shortcutHandlers.toggleSessions = () => runInRemoteRoom((room) => room.toggleSessions());
       if (!activeMachine) {
         shortcutHandlers.toggleSessions = () =>
           showCommandRoom(activeRoom !== "command" || commandView === "terminals" ? "sessions" : "terminals");
@@ -1418,11 +1419,11 @@ export function App() {
     }
 
     commands.push(
-      { id: "view:terminals", group: "View", title: "Show terminals", icon: <TerminalSquare size={15} />, run: () => showCommandRoom("terminals") },
+      { id: "view:terminals", group: "View", title: "Show terminals", icon: <TerminalSquare size={15} />, run: () => activeMachine ? runInRemoteRoom((room) => room.showView("terminals")) : showCommandRoom("terminals") },
       { id: "view:settings", group: "View", title: "Open Settings", icon: <SettingsIcon size={15} />, keys: shortcutKeysFor("settings"), keywords: ["preferences", "options"], run: () => openSettings() },
+      { id: "view:sessions", group: "View", title: "Show session history", icon: <Code2 size={15} />, keys: shortcutKeysFor("toggleSessions"), keywords: ["resume", "native", "history"], run: () => activeMachine ? runInRemoteRoom((room) => room.showView("sessions")) : showCommandRoom("sessions") },
     );
     if (!activeMachine) commands.push(
-      { id: "view:sessions", group: "View", title: "Show session history", icon: <Code2 size={15} />, keys: shortcutKeysFor("toggleSessions"), keywords: ["resume", "native", "history"], run: () => showCommandRoom("sessions") },
       {
         id: "view:mode",
         group: "View",
@@ -1565,6 +1566,7 @@ export function App() {
                 <CommandRoom
                   workspace={workspace}
                   sessions={activeEmbeddedSessions}
+                  sessionHistoryActive={!activeMachine}
                   agentSessions={agentSessions}
                   busy={busy}
                   layoutResetNonce={layoutResetNonce}

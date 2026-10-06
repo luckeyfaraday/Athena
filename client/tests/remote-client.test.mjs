@@ -94,7 +94,7 @@ test("requestJson surfaces the host's error message and status", async () => {
  * A fake host Athena: enough of the control API for the client, with hooks to
  * push events and terminal output and a log of every request.
  */
-async function fakeHost() {
+async function fakeHost({ history } = {}) {
   const requests = [];
   const eventStreams = new Set();
   const terminalStreams = new Map();
@@ -110,6 +110,7 @@ async function fakeHost() {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(payload));
     };
+    if (url.pathname === "/agent-sessions" && history) return history({ url, send });
     if (url.pathname === "/events") {
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(`event: hello\ndata: ${JSON.stringify({ terminals: [...terminals.values()], workspaces, active: workspaces[0] })}\n\n`);
@@ -352,6 +353,73 @@ test("RemoteClient spawns without stealing the host's tab, and renames, kills, a
 
   const listing = await remote.listDirectories("nLAPTOP", "/home/alan/src");
   assert.equal(listing.path, "/home/alan/src");
+  await remote.spawn("nLAPTOP", { workspace: "C:\\Work\\App", kind: "claude", resumeSessionId: "original-id", sessionLabel: "Continue work" });
+  const resume = host.requests.filter((item) => item.path === "/terminals/spawn").at(-1).body;
+  assert.equal(resume.project_dir, "C:\\Work\\App");
+  assert.equal(resume.resume_session_id, "original-id");
+  assert.equal(resume.session_label, "Continue work");
+  assert.equal(resume.count, 1);
+  assert.equal(resume.select_workspace, false);
+});
+
+test("slow remote history does not block input or sequenced output and is never included in machine broadcasts", async (t) => {
+  let finish;
+  const host = await fakeHost({ history: ({ send }) => { finish = () => send(200, { sessions: [], nextCursor: null, warning: null }); } });
+  const { remote, broadcasts } = client(host, { token: "history-token" });
+  t.after(async () => { remote.dispose(); await host.close(); });
+  await remote.refresh();
+  await until(() => remote.snapshot().machines[0]?.connection === "connected", "connection");
+  assert.equal(host.requests.filter((r) => r.path === "/agent-sessions").length, 0);
+  const view = subscriber();
+  remote.subscribe("remote:nLAPTOP:t1", view);
+  await remote.attach("remote:nLAPTOP:t1", view);
+  const history = remote.listAgentSessions("nLAPTOP", "C:\\Work\\Case & space", "next:100");
+  await until(() => finish, "history request");
+  const request = host.requests.find((r) => r.path === "/agent-sessions");
+  assert.equal(new URLSearchParams(request.query).get("workspace"), "C:\\Work\\Case & space");
+  assert.equal(new URLSearchParams(request.query).get("cursor"), "next:100");
+  assert.equal(request.authorization, "Bearer history-token");
+  await remote.write("remote:nLAPTOP:t1", "echo ready\r");
+  for (let sequence = 5; sequence < 105; sequence++) {
+    host.pushOutput("t1", "data", { epoch: "e1", fromSequence: sequence, sequence, data: "streaming\r\n" });
+  }
+  await until(() => view.received.length === 100, "output while history pending");
+  assert.ok(host.requests.some((r) => r.path === "/terminals/keys"));
+  finish();
+  assert.deepEqual(await history, { sessions: [], nextCursor: null, warning: null });
+  assert.ok(broadcasts.filter((b) => b.channel === "remote:update").every((b) => !JSON.stringify(b.payload).includes("nextCursor")));
+});
+
+test("old hosts show an update message without disabling terminals", async (t) => {
+  const host = await fakeHost();
+  const { remote } = client(host);
+  t.after(async () => { remote.dispose(); await host.close(); });
+  await remote.refresh();
+  await assert.rejects(remote.listAgentSessions("nLAPTOP", "/work"), /Update Athena on this device/);
+  assert.equal((await remote.spawn("nLAPTOP", { workspace: "/work", kind: "shell" })).length, 1);
+  assert.equal(host.requests.filter((r) => r.path === "/agent-sessions").length, 1);
+});
+
+test("history response limits and schema validation reject oversized or malformed replies", async (t) => {
+  let payload = { sessions: [{ id: "bad" }], nextCursor: null, warning: null };
+  const host = await fakeHost({ history: ({ send }) => send(200, payload) });
+  const { remote } = client(host);
+  t.after(async () => { remote.dispose(); await host.close(); });
+  await remote.refresh();
+  await assert.rejects(remote.listAgentSessions("nLAPTOP", "/work"), /invalid session history/);
+  payload = { sessions: [], nextCursor: null, warning: "x".repeat(300_000) };
+  await assert.rejects(remote.listAgentSessions("nLAPTOP", "/work"), /size limit/);
+});
+
+test("bounded JSON requests have an absolute deadline even if the peer trickles data", async (t) => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    const timer = setInterval(() => response.write(" "), 5);
+    response.on("close", () => clearInterval(timer));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  await assert.rejects(requestJson(`http://127.0.0.1:${server.address().port}`, { deadlineMs: 80, timeoutMs: 500 }), /did not answer in time/);
 });
 
 test("RemoteClient reconnects a dropped event stream", async (t) => {

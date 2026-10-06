@@ -122,6 +122,20 @@ function fixture({ requestTimeoutMs = 100, restartBackoffMs = 100 } = {}) {
   return { client, clock, children };
 }
 
+test("remote scans opt out of silent stale fallback while local callers retain it", async () => {
+  const { client, clock, children } = fixture();
+  const known = indexedSession("known");
+  const seed = client.listAgentSessions("/work/a");
+  clock.advance(0);
+  children[0].respond(0, { "/work/a": [known] });
+  await seed;
+  const remote = client.listAgentSessions("/work/a", false);
+  const local = client.listAgentSessions("/work/a");
+  clock.advance(100);
+  assert.equal(await remote, null);
+  assert.deepEqual(await local, [known]);
+});
+
 test("a timeout retires its exact worker, resolves all of that worker's requests, and restarts after bounded backoff", async () => {
   const { client, clock, children } = fixture();
   const sessionA = indexedSession("known-a");

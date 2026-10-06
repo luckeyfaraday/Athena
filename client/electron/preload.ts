@@ -7,6 +7,7 @@ import type { ControlState } from "./control-server.js";
 import type { RemoteAccessState } from "./remote-control.js";
 import type { RemoteMachinesState } from "./remote-machines.js";
 import type { RemoteAttention, RemoteSnapshot, RemoteSpawnRequest } from "./remote-client.js";
+import type { RemoteSessionPage } from "./session-index-protocol.js";
 import type { DirectoryListing } from "./remote-fs.js";
 import type { EmbeddedTerminalSession, EmbeddedTerminalSpawnOptions } from "./embedded-terminal.js";
 import type { AthenaLaunchState } from "./launch-state.js";
@@ -144,6 +145,7 @@ export type WorkspaceApi = {
   getRemoteSnapshot: () => Promise<RemoteSnapshot>;
   refreshRemote: () => Promise<RemoteSnapshot>;
   spawnRemoteTerminals: (machineId: string, request: RemoteSpawnRequest) => Promise<EmbeddedTerminalSession[]>;
+  listRemoteAgentSessions: (machineId: string, workspace: string, cursor?: string | null) => Promise<RemoteSessionPage>;
   listRemoteDirectories: (machineId: string, directory?: string | null) => Promise<DirectoryListing>;
   openRemoteWorkspace: (machineId: string, workspace: string) => Promise<WorkspacePath>;
   closeRemoteWorkspace: (machineId: string, workspace: string) => Promise<void>;
@@ -324,6 +326,7 @@ const api: WorkspaceApi = {
   getRemoteSnapshot: () => ipcRenderer.invoke("remote:snapshot"),
   refreshRemote: () => ipcRenderer.invoke("remote:refresh"),
   spawnRemoteTerminals: (machineId, request) => ipcRenderer.invoke("remote:spawn", machineId, request),
+  listRemoteAgentSessions: (machineId, workspace, cursor) => ipcRenderer.invoke("remote:agentSessions", machineId, workspace, cursor),
   listRemoteDirectories: (machineId, directory) => ipcRenderer.invoke("remote:listDirectories", machineId, directory ?? null),
   openRemoteWorkspace: (machineId, workspace) => ipcRenderer.invoke("remote:openWorkspace", machineId, workspace),
   closeRemoteWorkspace: (machineId, workspace) => ipcRenderer.invoke("remote:closeWorkspace", machineId, workspace),

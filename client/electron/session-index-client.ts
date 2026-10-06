@@ -12,6 +12,7 @@ import type {
 } from "./session-index-protocol.js";
 
 type WaitingCall = {
+  allowStale: boolean;
   kind: SessionIndexRequestKind;
   workspace: string;
   resolve: (sessions: unknown[] | null) => void;
@@ -90,19 +91,20 @@ export class SessionIndexClient {
    * Historical sessions from every native provider (Codex, OpenCode, Athena
    * Code, Claude, Hermes, Grok), scanned in the index child. Resolves null
    * only when the child cannot answer and no earlier result is known, so the
-   * caller decides how to degrade.
+   * caller decides how to degrade. Remote history owns a bounded cache and
+   * passes allowStale=false to surface failures without retaining another copy.
    */
-  listAgentSessions(workspace: string): Promise<AgentSession[] | null> {
-    return this.enqueue("list-agent-sessions", workspace) as Promise<AgentSession[] | null>;
+  listAgentSessions(workspace: string, allowStale = true): Promise<AgentSession[] | null> {
+    return this.enqueue("list-agent-sessions", workspace, allowStale) as Promise<AgentSession[] | null>;
   }
 
   getDiagnostics(): HermesIndexDiagnostics | null {
     return this.diagnostics ? { ...this.diagnostics } : null;
   }
 
-  private enqueue(kind: SessionIndexRequestKind, workspace: string): Promise<unknown[] | null> {
+  private enqueue(kind: SessionIndexRequestKind, workspace: string, allowStale = true): Promise<unknown[] | null> {
     return new Promise((resolve) => {
-      this.queued.push({ kind, workspace, resolve });
+      this.queued.push({ kind, workspace, resolve, allowStale });
       if (this.flushTimer) return;
       this.flushTimer = this.schedule(() => this.flush(), 0);
       this.flushTimer.unref?.();
@@ -193,7 +195,11 @@ export class SessionIndexClient {
     this.diagnostics = { ...message.diagnostics };
     for (const call of pending.calls) {
       const sessions = message.sessions?.[call.workspace] ?? [];
-      this.lastKnown.set(lastKnownKey(call), sessions);
+      if (call.allowStale) {
+        this.lastKnown.delete(lastKnownKey(call));
+        this.lastKnown.set(lastKnownKey(call), sessions);
+        while (this.lastKnown.size > 32) this.lastKnown.delete(this.lastKnown.keys().next().value!);
+      }
       call.resolve(sessions);
     }
   }
@@ -241,7 +247,7 @@ export class SessionIndexClient {
   }
 
   private resolveFromLastKnown(calls: WaitingCall[]): void {
-    for (const call of calls) call.resolve(this.lastKnown.get(lastKnownKey(call)) ?? null);
+    for (const call of calls) call.resolve(call.allowStale ? this.lastKnown.get(lastKnownKey(call)) ?? null : null);
   }
 }
 

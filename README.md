@@ -448,6 +448,9 @@ machine and the Command Room shows *that* machine's workspace tabs and terminals
   a pane stops the process on that machine.
 - **New Shell**, **New**, the launch cards, and the command palette launch agents *on that machine*, in its
   folder, with its files and its installed CLIs. If an agent isn't installed there, Athena says so.
+- **Sessions** lists that machine's native history for the selected folder. **Resume** opens a pane there
+  in the session's original folder. **Focus** returns to its live pane; Rename and Hide are saved on the
+  viewing device, separately for each machine and workspace. Both devices need a build with remote history.
 - **Add** opens a folder picker that browses that machine's folders (names only). The folder also opens as a
   tab in that machine's own window, without switching what's on its screen.
 - Terminals started at that machine, or by Hermes or a script there, show up live; so do its tabs.
@@ -455,7 +458,13 @@ machine and the Command Room shows *that* machine's workspace tabs and terminals
   raises a desktop notification like a local one. Clicking it opens that machine and pane.
 - Everything keeps running on that machine when you switch back, close this window, or put this laptop to sleep.
 
-Chat view and native session history are local-only for now: remote panes always use terminal view.
+History loads when you open Sessions or press Refresh, with no background polling. Scans run in the host's
+session-index worker, share a 30-second cache, and return at most 100 sessions / 256 KiB per page. Use
+**Load more sessions** for older results; search filters the loaded rows. The host retains at most eight
+workspace snapshots / 8 MiB of serialized metadata (2 MiB per workspace). A slow or unavailable index
+shows cached history or an error without falling back to scanning in the terminal process.
+
+Chat view remains local-only: remote panes use terminal view.
 
 The `athena` CLI drives other machines too, which works well over SSH or from a phone:
 

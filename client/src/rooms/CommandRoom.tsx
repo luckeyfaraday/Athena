@@ -83,7 +83,8 @@ export type CommandRoomProps = {
   onInterfaceModeChange: (mode: InterfaceMode) => void;
   onLaunch: (kind: EmbeddedTerminalKind, count?: number) => Promise<void>;
   onClose: (id: string) => Promise<void>;
-  onResumeSession: (session: AgentSession) => Promise<void>;
+  onResumeSession: (session: AgentSession) => Promise<void | boolean>;
+  onFocusAgentSession?: (session: AgentSession) => void;
   onRenameEmbeddedSession: (session: EmbeddedTerminalSession) => void;
   onRenameAgentSession: (session: AgentSession) => void;
   onRefreshAgentSessions: (maxAgeMs?: number) => Promise<void>;
@@ -92,8 +93,12 @@ export type CommandRoomProps = {
   // agent CLIs not on PATH: marked in the launch menus (launching one offers to install it)
   missingAgents?: ReadonlySet<EmbeddedTerminalKind>;
   emptyMark: ReactNode;
-  // Showing another machine's terminals: terminal view only, no native session history.
-  remoteMachine?: { name: string };
+  // Remote history is fetched by its owner on opening/Refresh, never by the local poller.
+  remoteMachine?: { id: string; name: string };
+  sessionHistoryLoading?: boolean;
+  sessionHistoryMessage?: string | null;
+  onLoadMoreSessions?: () => Promise<void>;
+  sessionHistoryActive?: boolean;
 };
 
 type LaunchOption = { kind: EmbeddedTerminalKind; label: string; detail: string };
@@ -145,6 +150,7 @@ export function CommandRoom({
   onLaunch,
   onClose,
   onResumeSession,
+  onFocusAgentSession,
   onRenameEmbeddedSession,
   onRenameAgentSession,
   onRefreshAgentSessions,
@@ -153,15 +159,20 @@ export function CommandRoom({
   missingAgents,
   emptyMark,
   remoteMachine,
+  sessionHistoryLoading = false,
+  sessionHistoryMessage,
+  onLoadMoreSessions,
+  sessionHistoryActive = true,
 }: CommandRoomProps) {
   const [paneOrderByWorkspace, setPaneOrderByWorkspace] = useState<Record<string, string[]>>({});
   const [dragState, setDragState] = useState<PaneDragState | null>(null);
   // Falls back to local state when rendered without App (browser harness).
   const [localView, setLocalView] = useState<CommandRoomView>("terminals");
-  const activeView: CommandRoomView = remoteMachine ? "terminals" : view ?? localView;
+  const activeView: CommandRoomView = view ?? localView;
+  const historyStorageKey = remoteMachine ? `remote:${remoteMachine.id}:${workspace}` : workspace;
   const [activeSessionProvider, setActiveSessionProvider] = useState<SessionProviderFilter>("all");
   const [sessionQuery, setSessionQuery] = useState("");
-  const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(workspace));
+  const [deletedSessionKeys, setDeletedSessionKeys] = useState<Set<string>>(() => readDeletedAgentSessions(historyStorageKey));
   const [collapsedPaneIds, setCollapsedPaneIds] = useState<Set<string>>(new Set());
   const [maximizedPaneId, setMaximizedPaneId] = useState<string | null>(null);
   const [activeTerminalPaneByWorkspace, setActiveTerminalPaneByWorkspace] = useState<Record<string, string>>({});
@@ -262,13 +273,13 @@ export function CommandRoom({
   // Opening it (or a live pane starting/exiting) refreshes anything older
   // than a few seconds; while it stays open, refresh at most once a minute.
   useEffect(() => {
-    if (activeView !== "sessions" || !workspace) return undefined;
+    if (!sessionHistoryActive || remoteMachine || activeView !== "sessions" || !workspace) return undefined;
     void onRefreshAgentSessions(5_000);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") void onRefreshAgentSessions();
     }, 60_000);
     return () => window.clearInterval(timer);
-  }, [activeView, workspace, liveSessionSignature, onRefreshAgentSessions]);
+  }, [activeView, workspace, liveSessionSignature, onRefreshAgentSessions, remoteMachine, sessionHistoryActive]);
 
   useEffect(() => {
     const previousSignature = paneSetSignatureByWorkspaceRef.current.get(workspaceOrderKey);
@@ -292,9 +303,9 @@ export function CommandRoom({
   }, [visibleSessionKey, workspaceOrderKey]);
 
   useEffect(() => {
-    setDeletedSessionKeys(readDeletedAgentSessions(workspace));
+    setDeletedSessionKeys(readDeletedAgentSessions(historyStorageKey));
     setSessionQuery("");
-  }, [workspace]);
+  }, [historyStorageKey]);
 
   useEffect(() => {
     setActiveTerminalPaneByWorkspace((current) => {
@@ -505,15 +516,14 @@ export function CommandRoom({
   }
 
   async function resumeSession(session: AgentSession) {
-    await onResumeSession(session);
-    setActiveView("terminals");
+    if (await onResumeSession(session) !== false) setActiveView("terminals");
   }
 
   function hideAgentSession(session: AgentSession) {
     const next = new Set(deletedSessionKeys);
     next.add(agentSessionKey(session));
     setDeletedSessionKeys(next);
-    writeDeletedAgentSessions(workspace, next);
+    writeDeletedAgentSessions(historyStorageKey, next);
   }
 
   async function refreshSessionsNow() {
@@ -550,7 +560,7 @@ export function CommandRoom({
             <TerminalSquare size={14} /> Terminals
             {visibleSessions.length > 0 && <span className="commandTabCount">{visibleSessions.length}</span>}
           </button>
-          {!remoteMachine && <button
+          <button
             type="button"
             className={activeView === "sessions" ? "active" : ""}
             onClick={() => setActiveView("sessions")}
@@ -564,7 +574,7 @@ export function CommandRoom({
                 {runningAgentSessions || visibleAgentSessions.length}
               </span>
             )}
-          </button>}
+          </button>
           {remoteMachine && <span className="remoteMachineLabel" title={`These terminals run on ${remoteMachine.name}`}>on {remoteMachine.name}</span>}
         </div>
         <div className="commandToolbarActions">
@@ -780,13 +790,15 @@ export function CommandRoom({
               type="button"
               className="iconButton outlined sessionRefresh"
               onClick={() => void refreshSessionsNow()}
-              disabled={!workspace || refreshingSessions}
+              disabled={!workspace || refreshingSessions || sessionHistoryLoading}
               aria-label="Refresh sessions"
               title="Rescan native session history"
             >
               <RefreshCw size={13} className={refreshingSessions ? "spinning" : undefined} />
             </button>
           </div>
+          {sessionHistoryLoading && <div className="noticeBar" role="status">Loading session history…</div>}
+          {sessionHistoryMessage && <div className="noticeBar" role="status">{sessionHistoryMessage}</div>}
           <div className="agentSessionList" role="list" aria-label="Agent sessions">
             {filteredAgentSessions.length > 0 && (
               <div className="agentSessionsHeader" aria-hidden="true">
@@ -822,7 +834,7 @@ export function CommandRoom({
                     <button
                       type="button"
                       className="primaryButton small"
-                      onClick={() => { if (session.terminalId) revealTerminalPane(session.terminalId); }}
+                      onClick={() => { if (onFocusAgentSession) onFocusAgentSession(session); else if (session.terminalId) revealTerminalPane(session.terminalId); }}
                       title="Show this session's pane"
                     >
                       <TerminalSquare size={12} /> Focus
@@ -857,7 +869,7 @@ export function CommandRoom({
                 </div>
               </div>
             ))}
-            {filteredAgentSessions.length === 0 && (
+            {filteredAgentSessions.length === 0 && !sessionHistoryLoading && !sessionHistoryMessage && (
               <SessionsEmptyState
                 hasSessions={visibleAgentSessions.length > 0}
                 query={sessionQuery}
@@ -867,6 +879,10 @@ export function CommandRoom({
               />
             )}
           </div>
+          {onLoadMoreSessions && <div className="buttonRow">
+            <button className="ghostButton" disabled={sessionHistoryLoading} onClick={() => void onLoadMoreSessions()}>Load more sessions</button>
+            <span>Search covers loaded sessions.</span>
+          </div>}
         </div>
       )}
 

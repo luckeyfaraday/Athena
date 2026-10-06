@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "../../src/App";
-import { desktop, type EmbeddedTerminalSession, type RemoteMachineView, type WorkspacePath } from "../../src/electron";
+import { desktop, type AgentSession, type EmbeddedTerminalSession, type RemoteMachineView, type RemoteSnapshot, type RemoteSpawnRequest, type WorkspacePath } from "../../src/electron";
 import "../../src/styles/tokens.css";
 import "../../src/styles/themes.css";
 import "../../src/styles.css";
@@ -25,7 +25,13 @@ const machine: RemoteMachineView = {
 };
 const state = (window as any).remoteAppTest = {
   killed: [] as string[], closed: [] as unknown[], spawns: [] as unknown[], directories: [] as unknown[],
+  historyCalls: [] as unknown[], historyDelay: false, historyResolvers: [] as (() => void)[], historyError: null as string | null,
+  spawnError: null as string | null, spawnDelay: false, spawnResolvers: [] as (() => void)[],
+  historySubfolder: false,
 };
+const machines = [machine, { ...machine, id: "second", name: "travel", sessions: [] }];
+const snapshot = (): RemoteSnapshot => ({ tailscale: "running", account: null, selfName: "viewer", refreshedAt: null, machines: machines.map((item) => ({ ...item })) });
+let onUpdate: ((value: RemoteSnapshot) => void) | null = null;
 Object.assign(desktop, {
   getPreferences: async () => ({
     "context-workspace:lastWorkspace": JSON.stringify(local),
@@ -39,9 +45,32 @@ Object.assign(desktop, {
     state.killed.push(id);
     return { ...localSession, status: "exited" };
   },
-  getRemoteSnapshot: async () => ({ tailscale: "running", account: null, selfName: "viewer", refreshedAt: null, machines: [machine] }),
+  getRemoteSnapshot: async () => snapshot(),
+  onRemoteUpdate: (callback: (value: RemoteSnapshot) => void) => { onUpdate = callback; return () => { onUpdate = null; }; },
+  listRemoteAgentSessions: async (machineId: string, path: string, cursor: string | null) => {
+    state.historyCalls.push([machineId, path, cursor]);
+    if (state.historyDelay) await new Promise<void>((resolve) => state.historyResolvers.push(resolve));
+    if (state.historyError) throw new Error(state.historyError);
+    const id = `${path}:${cursor || "first"}`;
+    const row: AgentSession = {
+      id, title: `History ${machineId}:${id}`, provider: "claude", workspace: state.historySubfolder ? `${path}/child` : path, branch: null, model: null, agent: null,
+      status: "historical", terminalId: null, pid: null, resumeCommand: `claude --resume ${id}`,
+      createdAt: "2026-10-01", updatedAt: "2026-10-02", metadata: {},
+    };
+    return { sessions: [row], nextCursor: cursor ? null : "page2", warning: null };
+  },
   closeRemoteWorkspace: async (...args: unknown[]) => { state.closed.push(args); },
-  spawnRemoteTerminals: async (...args: unknown[]) => { state.spawns.push(args); return []; },
+  spawnRemoteTerminals: async (id: string, request: RemoteSpawnRequest) => {
+    state.spawns.push([id, request]);
+    if (state.spawnDelay) await new Promise<void>((resolve) => state.spawnResolvers.push(resolve));
+    if (state.spawnError) throw new Error(state.spawnError);
+    if (!request.resumeSessionId) return [];
+    const created = { ...session(`remote:${id}:resumed`, request.workspace), kind: request.kind, providerSessionId: request.resumeSessionId };
+    const target = machines.find((item) => item.id === id)!;
+    target.sessions = [...target.sessions, created];
+    onUpdate?.(snapshot());
+    return [created];
+  },
   listRemoteDirectories: async (...args: unknown[]) => {
     state.directories.push(args);
     return { path: "/remote", parent: "/", home: "/remote", dirs: [], truncated: false };

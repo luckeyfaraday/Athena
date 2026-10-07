@@ -47,32 +47,40 @@ export type ClaudeMcpConfig = {
   mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }>;
 };
 
-function mcpServerEnv(backendUrl: string, controlUrl: string): Record<string, string> {
+export type McpDiscoveryPaths = { backend: string; control: string };
+
+function mcpServerEnv(backendUrl: string, controlUrl: string, discovery?: McpDiscoveryPaths): Record<string, string> {
   return {
     CONTEXT_WORKSPACE_BACKEND_URL: backendUrl,
     CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: controlUrl,
+    // MCP clients may filter the parent environment. Read the token from this
+    // host's private file instead of relying on inheritance or exposing it in argv.
+    ...(discovery ? {
+      CONTEXT_WORKSPACE_BACKEND_STATE: discovery.backend,
+      CONTEXT_WORKSPACE_ELECTRON_CONTROL_STATE: discovery.control,
+    } : {}),
   };
 }
 
-export function buildClaudeMcpConfig(server: McpServerCommand, backendUrl: string, controlUrl: string): ClaudeMcpConfig {
+export function buildClaudeMcpConfig(server: McpServerCommand, backendUrl: string, controlUrl: string, discovery?: McpDiscoveryPaths): ClaudeMcpConfig {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         command: server.command,
         args: server.args,
-        env: mcpServerEnv(backendUrl, controlUrl),
+        env: mcpServerEnv(backendUrl, controlUrl, discovery),
       },
     },
   };
 }
 
-export function buildCodexMcpConfigArgs(server: McpServerCommand, backendUrl: string, controlUrl: string): string[] {
+export function buildCodexMcpConfigArgs(server: McpServerCommand, backendUrl: string, controlUrl: string, discovery?: McpDiscoveryPaths): string[] {
   // Codex parses the value after each `=` as TOML, falling back to a literal
   // string. Basic (double-quoted) TOML strings share JSON's escaping rules for
   // the paths and URLs used here, so JSON.stringify produces a valid TOML value.
   const toml = (value: string): string => JSON.stringify(value);
   const key = `mcp_servers.${MCP_SERVER_NAME}`;
-  const env = mcpServerEnv(backendUrl, controlUrl);
+  const env = mcpServerEnv(backendUrl, controlUrl, discovery);
   const envTable = Object.entries(env)
     .map(([name, value]) => `${name}=${toml(value)}`)
     .join(",");
@@ -83,7 +91,7 @@ export function buildCodexMcpConfigArgs(server: McpServerCommand, backendUrl: st
   ];
 }
 
-export function buildOpenCodeMcpConfigContent(server: McpServerCommand, backendUrl: string, controlUrl: string): string {
+export function buildOpenCodeMcpConfigContent(server: McpServerCommand, backendUrl: string, controlUrl: string, discovery?: McpDiscoveryPaths): string {
   // opencode (and the athena-code fork) deep-merge OPENCODE_CONFIG_CONTENT over
   // the resolved config, so injecting only the `mcp` block leaves the user's
   // providers, agents, and auth untouched.
@@ -93,7 +101,7 @@ export function buildOpenCodeMcpConfigContent(server: McpServerCommand, backendU
         type: "local",
         command: [server.command, ...server.args],
         enabled: true,
-        environment: mcpServerEnv(backendUrl, controlUrl),
+        environment: mcpServerEnv(backendUrl, controlUrl, discovery),
       },
     },
   });

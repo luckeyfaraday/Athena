@@ -13,6 +13,20 @@ const SERVER = { command: "/opt/app/athena-backend", args: ["--mcp-server"] };
 const BACKEND = "http://127.0.0.1:8123";
 const CONTROL = "http://127.0.0.1:8124";
 
+test("all MCP configurations explicitly forward isolated host discovery paths", () => {
+  const discovery = { backend: "/srv/athena state/backend.json", control: "/srv/athena state/electron-control.json" };
+  const expected = {
+    CONTEXT_WORKSPACE_BACKEND_URL: BACKEND,
+    CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: CONTROL,
+    CONTEXT_WORKSPACE_BACKEND_STATE: discovery.backend,
+    CONTEXT_WORKSPACE_ELECTRON_CONTROL_STATE: discovery.control,
+  };
+  assert.deepEqual(buildClaudeMcpConfig(SERVER, BACKEND, CONTROL, discovery).mcpServers[MCP_SERVER_NAME].env, expected);
+  assert.deepEqual(JSON.parse(buildOpenCodeMcpConfigContent(SERVER, BACKEND, CONTROL, discovery)).mcp[MCP_SERVER_NAME].environment, expected);
+  const codex = buildCodexMcpConfigArgs(SERVER, BACKEND, CONTROL, discovery);
+  assert.ok(codex.includes(`mcp_servers.${MCP_SERVER_NAME}.env={${Object.entries(expected).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(",")}}`));
+});
+
 test("packaged MCP wiring resolves the bundled runtime on every desktop platform", () => {
   assert.deepEqual(
     bundledMcpServerCommand("/opt/ATHENA/resources/app.asar", "linux"),

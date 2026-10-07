@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { IncomingMessage } from "node:http";
-import { app } from "electron";
+import { hostUserData } from "./host-runtime.js";
 import type { ControlAccessDecision } from "./control-access.js";
 import { createControlRequestListener } from "./control-server.js";
 import {
@@ -61,6 +61,7 @@ const ADDRESS_RESCAN_INTERVAL_MS = 15_000;
 
 let config: RemoteAccessConfig | null = null;
 let rescanTimer: NodeJS.Timeout | null = null;
+let accessStarted = false;
 let lastRequest: RemoteAccessState["lastRequest"] = null;
 let lastRejected: RemoteAccessState["lastRejected"] = null;
 const failureLimiter = new AuthFailureLimiter();
@@ -71,7 +72,7 @@ const listeners = new RemoteListenerSet(createControlRequestListener({
 }));
 
 function configPath(): string {
-  return path.join(app.getPath("userData"), "remote-access.json");
+  return path.join(hostUserData(), "remote-access.json");
 }
 
 function currentConfig(): RemoteAccessConfig {
@@ -127,6 +128,7 @@ function reject(peer: string, at: string, decision: Extract<ControlAccessDecisio
 }
 
 export async function startRemoteAccess(): Promise<RemoteAccessState> {
+  accessStarted = true;
   if (currentConfig().enabled) {
     startRescan();
     await syncListeners();
@@ -135,6 +137,7 @@ export async function startRemoteAccess(): Promise<RemoteAccessState> {
 }
 
 export async function stopRemoteAccess(): Promise<boolean> {
+  accessStarted = false;
   stopRescan();
   await listeners.closeAll();
   return true;
@@ -144,6 +147,7 @@ export async function setRemoteAccessEnabled(enabled: boolean): Promise<RemoteAc
   const previous = currentConfig();
   saveConfig({ ...previous, enabled, token: previous.token ?? generateRemoteToken() });
   if (enabled) {
+    accessStarted = true;
     startRescan();
     await syncListeners({ maxAgeMs: 0 });
   } else {
@@ -224,7 +228,7 @@ async function syncListeners(options: { maxAgeMs?: number } = {}): Promise<void>
   // Read the setting after the asynchronous query: disabling access during a
   // status refresh must not reopen listeners when that query completes.
   const current = currentConfig();
-  return listeners.sync(current.enabled ? tailscaleAddresses(status) : [], current.port);
+  return listeners.sync(accessStarted && current.enabled ? tailscaleAddresses(status) : [], current.port);
 }
 
 function startRescan(): void {

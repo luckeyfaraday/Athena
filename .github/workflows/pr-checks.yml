@@ -13,6 +13,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  headless-server:
+    name: Headless Linux server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install service dependencies without the desktop
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r backend/requirements.txt -r mcp_server/requirements.txt
+          npm ci --prefix server
+
+      - name: Test service lifecycle, remote reconnect, chat, and MCP
+        env:
+          ATHENA_TEST_BACKEND: "1"
+        run: npm test --prefix server
+
+      - name: Verify CLI and systemd unit
+        run: |
+          .venv/bin/python -m cli server --help
+          .venv/bin/python -m cli server service-file > "$RUNNER_TEMP/athena-server.service"
+          systemd-analyze --user verify "$RUNNER_TEMP/athena-server.service"
+
   quality:
     name: Tests and regression protection
     runs-on: ubuntu-latest

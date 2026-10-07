@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, dialog, nativeTheme, powerMonitor, shell, nativeImage, type MenuItemConstructorOptions, type NativeImage } from "electron";
 import isDev from "electron-is-dev";
+import { configureHostRuntime } from "./host-runtime.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -41,6 +42,16 @@ import type { IncomingMessage } from "node:http";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const appRoot = path.resolve(__dirname, "..");
+
+configureHostRuntime({
+  version: () => app.getVersion(),
+  userData: () => app.getPath("userData"),
+  broadcast: (channel, payload) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send(channel, payload);
+    }
+  },
+});
 
 let mainWindow: BrowserWindow | null = null;
 let viteProc: ChildProcess | null = null;

@@ -578,7 +578,7 @@ export function CommandRoom({
           {remoteMachine && <span className="remoteMachineLabel" title={`These terminals run on ${remoteMachine.name}`}>on {remoteMachine.name}</span>}
         </div>
         <div className="commandToolbarActions">
-          {!remoteMachine && <div className="segmentedControl viewModeToggle" role="group" aria-label="Pane view">
+          <div className="segmentedControl viewModeToggle" role="group" aria-label="Pane view">
             <button
               type="button"
               className={interfaceMode === "terminal" ? "active" : ""}
@@ -599,7 +599,7 @@ export function CommandRoom({
             >
               <MessageSquare size={14} />
             </button>
-          </div>}
+          </div>
           <button
             type="button"
             className="ghostButton"

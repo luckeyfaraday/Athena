@@ -94,7 +94,7 @@ test("requestJson surfaces the host's error message and status", async () => {
  * A fake host Athena: enough of the control API for the client, with hooks to
  * push events and terminal output and a log of every request.
  */
-async function fakeHost({ history } = {}) {
+async function fakeHost({ history, chat } = {}) {
   const requests = [];
   const eventStreams = new Set();
   const terminalStreams = new Map();
@@ -111,6 +111,7 @@ async function fakeHost({ history } = {}) {
       response.end(JSON.stringify(payload));
     };
     if (url.pathname === "/agent-sessions" && history) return history({ url, send });
+    if (url.pathname === "/terminals/t1/chat" && chat) return chat({ url, send });
     if (url.pathname === "/events") {
       response.writeHead(200, { "content-type": "text/event-stream" });
       response.write(`event: hello\ndata: ${JSON.stringify({ terminals: [...terminals.values()], workspaces, active: workspaces[0] })}\n\n`);
@@ -216,6 +217,20 @@ function subscriber(id = 1) {
   const received = [];
   return Object.assign(new EventEmitter(), { id, received, send: (channel, payload) => received.push({ channel, payload }), isDestroyed: () => false });
 }
+
+test("RemoteClient reads chat from the selected host and validates its response", async (t) => {
+  let payload = { revision: "r1", messages: [{ id: "a", role: "assistant", text: "Remote reply", timestamp: null }] };
+  const host = await fakeHost({ chat: ({ send }) => send(200, payload) });
+  const { remote } = client(host, { token: "athena_remote_chat" });
+  t.after(async () => { remote.dispose(); await host.close(); });
+  await remote.refresh();
+  await until(() => remote.snapshot().machines[0]?.connection === "connected", "connection");
+  assert.deepEqual(await remote.chatMessages("remote:nLAPTOP:t1"), payload);
+  assert.equal(host.requests.find((item) => item.path === "/terminals/t1/chat").authorization, "Bearer athena_remote_chat");
+  payload = { messages: "invalid" };
+  await assert.rejects(remote.chatMessages("remote:nLAPTOP:t1"), /invalid conversation/);
+  await assert.rejects(remote.chatMessages("remote:other:t1"), /not available|Unknown|not found/i);
+});
 
 test("RemoteClient connects to ready machines and mirrors their terminals and tabs", async (t) => {
   const host = await fakeHost();

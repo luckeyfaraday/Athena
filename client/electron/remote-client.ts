@@ -6,6 +6,7 @@ import type { WorkspacePath } from "./platform.js";
 import type { DirectoryListing } from "./remote-fs.js";
 import type { RemoteMachine, RemoteMachinesState } from "./remote-machines.js";
 import type { AgentSession, RemoteSessionPage } from "./session-index-protocol.js";
+import { isNativeChatSnapshot, MAX_CHAT_RESPONSE_BYTES, type NativeChatSnapshot } from "./chat-protocol.js";
 
 // The viewing side of remote machines: keeps one event stream open to every
 // other Athena that is ready for this one, and proxies their terminals into the
@@ -784,6 +785,16 @@ export class RemoteClient {
   }
 
   // ---- machine actions ----
+
+  async chatMessages(id: string): Promise<NativeChatSnapshot> {
+    const { connection, terminalId } = this.resolve(id);
+    const body = await requestJson(`${connection.url}/terminals/${encodeURIComponent(terminalId)}/chat`, {
+      token: this.options.tokenFor(connection.machine.id), timeoutMs: 8_000, deadlineMs: 8_000,
+      maxResponseBytes: MAX_CHAT_RESPONSE_BYTES,
+    });
+    if (!isNativeChatSnapshot(body)) throw new Error("The remote machine returned invalid conversation history.");
+    return body;
+  }
 
   async listAgentSessions(machineId: string, workspace: string, cursor?: string | null): Promise<RemoteSessionPage> {
     const connection = this.connection(machineId);

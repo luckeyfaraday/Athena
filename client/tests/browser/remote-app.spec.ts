@@ -16,6 +16,21 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole("tab", { name: /project 1 running/ })).toBeVisible();
 });
 
+test("remote chat reads the host's conversation and sends through the remote terminal", async ({ page }) => {
+  await selectRemote(page);
+  await page.evaluate(() => (window as any).remoteAppTest.addChatAgent());
+  await page.getByRole("button", { name: "Chat view", exact: true }).filter({ visible: true }).click();
+  await expect(page.getByText("This reply came from the Linux server.", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).remoteAppTest.chatCalls)).toContain("remote:desktop:chat-job");
+  const composer = page.getByRole("textbox", { name: "Message remote:desktop:chat-job", exact: true });
+  await composer.fill("Continue on Linux");
+  await composer.press("Enter");
+  await expect.poll(() => page.evaluate(() => (window as any).remoteAppTest.writes.map((item: string[]) => item[1]).join(""))).toContain("Continue on Linux");
+  expect(await page.evaluate(() => (window as any).remoteAppTest.writes.every((item: string[]) => item[0] === "remote:desktop:chat-job"))).toBe(true);
+  await page.getByRole("button", { name: "Terminal view", exact: true }).filter({ visible: true }).click();
+  await expect(page.locator(".embeddedChatTerminal")).toHaveCount(0);
+});
+
 test("closing a remote workspace from the palette never kills the local job", async ({ page }) => {
   await selectRemote(page);
   await palette(page, "Close this workspace");

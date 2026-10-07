@@ -1,0 +1,15 @@
+{
+  "name": "athena-server",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Athena terminal and agent host for Linux, without Electron",
+  "engines": { "node": ">=22.15.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server-main.js run",
+    "test": "npm run build && node --test tests/*.test.mjs"
+  },
+  "dependencies": { "node-pty": "^1.1.0" },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.8.0" }
+}

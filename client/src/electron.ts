@@ -1,4 +1,5 @@
 import type { BackendStatus, ElectronControlStatus } from "./api";
+import type { NativeChatSnapshot } from "../electron/chat-protocol";
 import type { RemoteSessionPage } from "../electron/session-index-protocol";
 export type { RemoteSessionPage } from "../electron/session-index-protocol";
 import type { TerminalAttentionEvent } from "./workspace-attention";
@@ -331,6 +332,7 @@ type WorkspaceApi = {
   refreshRemote: () => Promise<RemoteSnapshot>;
   spawnRemoteTerminals: (machineId: string, request: RemoteSpawnRequest) => Promise<EmbeddedTerminalSession[]>;
   listRemoteAgentSessions: (machineId: string, workspace: string, cursor?: string | null) => Promise<RemoteSessionPage>;
+  remoteChatMessages: (id: string) => Promise<NativeChatSnapshot>;
   listRemoteDirectories: (machineId: string, directory?: string | null) => Promise<DirectoryListing>;
   openRemoteWorkspace: (machineId: string, workspace: string) => Promise<WorkspacePath>;
   closeRemoteWorkspace: (machineId: string, workspace: string) => Promise<void>;
@@ -415,6 +417,7 @@ const browserFallback: WorkspaceApi = {
   async refreshRemote() { return fallbackRemoteSnapshot(); },
   async spawnRemoteTerminals() { throw new Error("Remote machines need the desktop app."); },
   async listRemoteAgentSessions() { throw new Error("Remote machines need the desktop app."); },
+  async remoteChatMessages() { throw new Error("Remote machines need the desktop app."); },
   async listRemoteDirectories() { throw new Error("Remote machines need the desktop app."); },
   async openRemoteWorkspace() { throw new Error("Remote machines need the desktop app."); },
   async closeRemoteWorkspace() { throw new Error("Remote machines need the desktop app."); },

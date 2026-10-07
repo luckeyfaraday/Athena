@@ -102,6 +102,14 @@ export class SessionIndexClient {
     return this.diagnostics ? { ...this.diagnostics } : null;
   }
 
+  dispose(): void {
+    if (this.flushTimer) this.cancel(this.flushTimer);
+    this.flushTimer = null;
+    this.resolveFromLastKnown(this.queued.splice(0));
+    if (this.child) this.retireChild(this.child);
+    this.lastKnown.clear();
+  }
+
   private enqueue(kind: SessionIndexRequestKind, workspace: string, allowStale = true): Promise<unknown[] | null> {
     return new Promise((resolve) => {
       this.queued.push({ kind, workspace, resolve, allowStale });

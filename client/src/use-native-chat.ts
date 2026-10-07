@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { BackendClient, type NativeChatSnapshot } from "./api";
 import { desktop, type EmbeddedTerminalSession } from "./electron";
+import { isRemoteSessionId } from "./remote-view";
 
 /** Polling for a session whose file does not exist yet (a fresh pane before its first message). */
 const MISSING_POLL_MS = 2_000;
@@ -11,7 +12,7 @@ type NativeChatState = { key: string; snapshot: NativeChatSnapshot; changedAt: n
 const revisionSeenBySession = new Map<string, { key: string; revision: string; changedAt: number }>();
 
 export function useNativeChat(session: EmbeddedTerminalSession) {
-  const key = `${session.kind}:${session.providerSessionId ?? ""}`;
+  const key = `${session.id}:${session.kind}:${session.providerSessionId ?? ""}`;
   const [state, setState] = useState<NativeChatState | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   // Another provider session is another conversation: never show the old one for it.
@@ -30,12 +31,17 @@ export function useNativeChat(session: EmbeddedTerminalSession) {
       let interval = running ? 1_000 : 5_000;
       request = new AbortController();
       try {
-        const backend = await desktop.getBackendState();
-        if (disposed) return;
-        if (!backend.baseUrl) throw new Error("Conversation history is reconnecting. You can continue in the terminal.");
-        const next = await new BackendClient(backend.baseUrl).chatMessages(
-          session.kind, session.providerSessionId!, AbortSignal.any([request.signal, AbortSignal.timeout(5_000)]), session.workspace,
-        );
+        let next: NativeChatSnapshot;
+        if (isRemoteSessionId(session.id)) {
+          next = await desktop.remoteChatMessages(session.id);
+        } else {
+          const backend = await desktop.getBackendState();
+          if (disposed) return;
+          if (!backend.baseUrl) throw new Error("Conversation history is reconnecting. You can continue in the terminal.");
+          next = await new BackendClient(backend.baseUrl).chatMessages(
+            session.kind, session.providerSessionId!, AbortSignal.any([request.signal, AbortSignal.timeout(5_000)]), session.workspace,
+          );
+        }
         if (disposed) return;
         // Not written yet: the terminal transcript stands in, without an error.
         if (next.missing) interval = running ? MISSING_POLL_MS : 10_000;

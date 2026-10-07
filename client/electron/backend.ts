@@ -2,9 +2,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { defaultPythonExecutable } from "./platform.js";
+import { hostStatePath } from "./host-runtime.js";
 import { currentNpmGlobalPrefix, mergePathEntries, npmGlobalBinPath, pathKeyOf } from "./terminal-env.js";
 
 export type BackendState = {
@@ -350,7 +350,7 @@ function writeBackendDiscovery(): void {
     lastError: state.lastError,
   };
   const content = JSON.stringify(discovery);
-  const filePath = path.join(os.homedir(), ".context-workspace", "backend.json");
+  const filePath = hostStatePath("backend.json");
   if (content === lastDiscoveryContent && fileMtimeMs(filePath) === lastDiscoveryMtimeMs) return;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

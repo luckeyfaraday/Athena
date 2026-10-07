@@ -25,6 +25,7 @@ import { ChatTranscriptParser, SNAPSHOT_PARSE_CHARS, type ChatBlock } from "../c
 import { isNearScrollBottom } from "../embedded-scroll";
 import { nativeChatView, nextUnrecordedCheck, unrecordedPrompt, withTerminalTail } from "../native-chat";
 import { useNativeChat } from "../use-native-chat";
+import { isRemoteSessionId } from "../remote-view";
 import "./chat.css";
 
 type Props = {
@@ -379,6 +380,10 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
   }
 
   async function attachImages(images: File[]) {
+    if (isRemoteSessionId(session.id)) {
+      setSendError("Use an image path on the remote machine. Image uploads are not available yet.");
+      return;
+    }
     const paths = await desktop.getDroppedFilePaths(images).catch(() => []);
     const pasted = paths.filter(Boolean).map(quoteTerminalPath).join(" ");
     if (!pasted) { setSendError("Could not attach the image. Try dragging it from your file manager."); return; }
@@ -423,7 +428,7 @@ function EmbeddedChatTerminalView({ session, onOpenTerminal }: Props) {
           void attachImages(Array.from(event.target.files ?? []));
           event.target.value = "";
         }} />
-        <button type="button" title="Attach image" aria-label="Attach image" disabled={session.status !== "running" || sending} onClick={() => attachmentRef.current?.click()}><ImagePlus size={16} /></button>
+        <button type="button" title={isRemoteSessionId(session.id) ? "Use an image path on the remote machine" : "Attach image"} aria-label="Attach image" disabled={isRemoteSessionId(session.id) || session.status !== "running" || sending} onClick={() => attachmentRef.current?.click()}><ImagePlus size={16} /></button>
         <textarea
           ref={composerRef}
           aria-label={`Message ${session.title}`}

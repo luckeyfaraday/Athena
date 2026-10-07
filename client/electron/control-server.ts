@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { app, BrowserWindow } from "electron";
+import { broadcastHostEvent, hostStatePath, hostVersion } from "./host-runtime.js";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import os from "node:os";
@@ -44,10 +44,11 @@ import {
 import { parseRawTerminalInputRequest, rawInputPreview } from "./terminal-input.js";
 import { toWorkspacePath, type WorkspacePath } from "./platform.js";
 import { listDirectories } from "./remote-fs.js";
-import { onReportedWorkspaces, reportedWorkspaces } from "./workspace-registry.js";
+import { closeHostWorkspace, openHostWorkspace, onReportedWorkspaces, reportedWorkspaces } from "./workspace-registry.js";
 import type { AgentContextMode } from "./agent-context.js";
 import { sessionIndexClient } from "./session-index-client.js";
 import { RemoteSessionHistory, SessionHistoryError } from "./remote-session-history.js";
+import { terminalChatSnapshot } from "./host-chat.js";
 
 const remoteSessionHistory = new RemoteSessionHistory((workspace) => sessionIndexClient.listAgentSessions(workspace, false));
 
@@ -395,6 +396,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
       const payload = parseSendAgentMessageRequest(await readJsonBody(request));
       const result = await sendAgentMessage(payload);
       sendJson(response, 200, result);
+      return;
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/chat")) {
+      const target = decodeURIComponent(url.pathname.slice("/terminals/".length, -"/chat".length));
+      const terminal = requireResolvedTerminal(target);
+      try { sendJson(response, 200, await terminalChatSnapshot(terminal)); }
+      catch (error) { sendJson(response, 503, { error: String(error) }); }
       return;
     }
     if (request.method === "GET" && url.pathname.startsWith("/terminals/") && url.pathname.endsWith("/buffer")) {
@@ -755,9 +763,8 @@ function parseCloseWorkspaceRequest(body: unknown): { workspace: string } {
 
 function openWorkspaceInRenderer(workspace: string, select: boolean): WorkspacePath {
   const workspacePath = toWorkspacePath(workspace);
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send("workspace:open", { workspace: workspacePath, select });
-  }
+  openHostWorkspace(workspacePath.nativePath, select);
+  broadcastHostEvent("workspace:open", { workspace: workspacePath, select });
   return workspacePath;
 }
 
@@ -766,9 +773,8 @@ async function closeWorkspaceInRenderer(workspace: string): Promise<{ closed: tr
   const killed = await Promise.all(listEmbeddedTerminals()
     .filter((terminal) => sameControlPath(terminal.workspace, workspacePath.nativePath))
     .map((terminal) => killEmbeddedTerminal(terminal.id)));
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send("workspace:close", { workspace: workspacePath });
-  }
+  closeHostWorkspace(workspacePath.nativePath);
+  broadcastHostEvent("workspace:close", { workspace: workspacePath });
   return { closed: true, workspace: workspacePath, killed };
 }
 
@@ -964,7 +970,7 @@ function machineInfo(): { hostname: string; platform: NodeJS.Platform; arch: str
     hostname: os.hostname(),
     platform: process.platform,
     arch: process.arch,
-    version: app.getVersion(),
+    version: hostVersion(),
     homedir: os.homedir(),
   };
 }
@@ -1103,7 +1109,7 @@ function writeControlDiscovery(): void {
     token: controlToken,
   };
   const content = JSON.stringify(discovery);
-  const filePath = path.join(os.homedir(), ".context-workspace", "electron-control.json");
+  const filePath = hostStatePath("electron-control.json");
   if (content === lastDiscoveryContent && fileMtimeMs(filePath) === lastDiscoveryMtimeMs) return;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });

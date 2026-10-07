@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type { NativeChatSnapshot } from "./chat-protocol.js";
 import type { AgentCliKind, AgentCliStatus, PrivateAgentCopies } from "./agent-cli.js";
 import type { AgentSession } from "./agent-sessions.js";
 import type { AttentionActivatePayload, AttentionNotificationRequest } from "./attention-notifications.js";
@@ -146,6 +147,7 @@ export type WorkspaceApi = {
   refreshRemote: () => Promise<RemoteSnapshot>;
   spawnRemoteTerminals: (machineId: string, request: RemoteSpawnRequest) => Promise<EmbeddedTerminalSession[]>;
   listRemoteAgentSessions: (machineId: string, workspace: string, cursor?: string | null) => Promise<RemoteSessionPage>;
+  remoteChatMessages: (id: string) => Promise<NativeChatSnapshot>;
   listRemoteDirectories: (machineId: string, directory?: string | null) => Promise<DirectoryListing>;
   openRemoteWorkspace: (machineId: string, workspace: string) => Promise<WorkspacePath>;
   closeRemoteWorkspace: (machineId: string, workspace: string) => Promise<void>;
@@ -327,6 +329,7 @@ const api: WorkspaceApi = {
   refreshRemote: () => ipcRenderer.invoke("remote:refresh"),
   spawnRemoteTerminals: (machineId, request) => ipcRenderer.invoke("remote:spawn", machineId, request),
   listRemoteAgentSessions: (machineId, workspace, cursor) => ipcRenderer.invoke("remote:agentSessions", machineId, workspace, cursor),
+  remoteChatMessages: (id) => ipcRenderer.invoke("remote:chatMessages", id),
   listRemoteDirectories: (machineId, directory) => ipcRenderer.invoke("remote:listDirectories", machineId, directory ?? null),
   openRemoteWorkspace: (machineId, workspace) => ipcRenderer.invoke("remote:openWorkspace", machineId, workspace),
   closeRemoteWorkspace: (machineId, workspace) => ipcRenderer.invoke("remote:closeWorkspace", machineId, workspace),

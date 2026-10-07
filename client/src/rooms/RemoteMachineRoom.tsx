@@ -54,6 +54,8 @@ function rememberWorkspace(machineId: string, workspace: string | null): void {
 // same EmbeddedTerminal components, fed by "remote:<machine>:<terminal>" ids.
 export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
   machine: RemoteMachineView;
+  interfaceMode: "terminal" | "chat";
+  onInterfaceModeChange: (mode: "terminal" | "chat") => void;
   switcher: ReactNode;
   attentionByWorkspace: Record<string, WorkspaceAttention>;
   revealRequest: RemoteRevealRequest | null;
@@ -66,6 +68,8 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
   emptyMark: ReactNode;
 }>(function RemoteMachineRoom({
   machine,
+  interfaceMode,
+  onInterfaceModeChange,
   switcher,
   attentionByWorkspace,
   revealRequest,
@@ -286,12 +290,12 @@ export const RemoteMachineRoom = forwardRef<RemoteMachineRoomHandle, {
         agentSessions={agentSessions}
         busy={busy}
         layoutResetNonce={layoutResetNonce}
-        interfaceMode="terminal"
+        interfaceMode={interfaceMode}
         view={view}
         onViewChange={setView}
         revealPaneRequest={revealPane}
         onRevealPaneHandled={() => setRevealPane(null)}
-        onInterfaceModeChange={() => undefined}
+        onInterfaceModeChange={onInterfaceModeChange}
         onToast={onToast}
         onAddWorkspace={() => setFolderDialog(true)}
         onLaunch={launch}

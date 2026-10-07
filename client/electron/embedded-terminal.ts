@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { BrowserWindow, type WebContents } from "electron";
+import { broadcastHostEvent, hostStatePath, type TerminalRenderer as WebContents } from "./host-runtime.js";
 import { buildAgentContextPrompt, resolveAgentContextMode, type AgentContextMode } from "./agent-context.js";
 import {
   buildClaudeMcpConfig,
@@ -1284,11 +1284,11 @@ function emitTerminalExit(id: string, exitCode: number | null): void {
 }
 
 function restoreFilePath(): string {
-  return path.join(os.homedir(), ".context-workspace", "embedded-terminals.json");
+  return hostStatePath("embedded-terminals.json");
 }
 
 function restoreAttemptsFilePath(): string {
-  return path.join(os.homedir(), ".context-workspace", "embedded-terminal-restore-attempts.json");
+  return hostStatePath("embedded-terminal-restore-attempts.json");
 }
 
 function readRestoreEntries(): RestorableTerminal[] {
@@ -1965,9 +1965,7 @@ export function onEmbeddedTerminalEvent(listener: EmbeddedTerminalEventListener)
 }
 
 function emit(channel: string, payload: unknown): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(channel, payload);
-  }
+  broadcastHostEvent(channel, payload);
   for (const listener of embeddedTerminalEventListeners) {
     try {
       listener(channel, payload);

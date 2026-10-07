@@ -416,6 +416,7 @@ export function registerIpcHandlers(appRoot: string): void {
     remoteClient.spawn(String(machineId), request));
   handle("remote:agentSessions", (_event, machineId: string, workspace: string, cursor?: string | null) =>
     remoteClient.listAgentSessions(String(machineId), String(workspace), cursor));
+  handle("remote:chatMessages", (_event, id: string) => remoteClient.chatMessages(String(id)));
   handle("remote:listDirectories", (_event, machineId: string, directory?: string | null): Promise<DirectoryListing> =>
     remoteClient.listDirectories(String(machineId), typeof directory === "string" ? directory : null));
   handle("remote:openWorkspace", (_event, machineId: string, workspace: string): Promise<WorkspacePath> =>

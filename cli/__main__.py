@@ -1,8 +1,6 @@
 """Athena CLI entrypoint.
 
-Prototype scope: Tier-1 (headless) commands only — everything reachable through
-the FastAPI backend without the Electron desktop app. Visible-terminal /
-workspace remote-control commands are intentionally out of scope here.
+Backend commands, remote control clients, and the standalone Node service.
 """
 
 from __future__ import annotations
@@ -312,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(sub, "status", help="Hermes installation + memory status.").set_defaults(func=cmd_status)
     leaf(sub, "snapshot", help="One-shot overview of everything.").set_defaults(func=cmd_snapshot)
     leaf(sub, "tui", help="Interactive command room (SSH-friendly).").set_defaults(func=cmd_tui)
+    sub.add_parser("server", help="Run the persistent Node agent host (see athena server --help).")
     p = leaf(sub, "install-cli", help="Install an `athena` shim on PATH (run from anywhere).")
     p.add_argument("--bin-dir", default=None, help="Target bin directory (default ~/.local/bin).")
     p.add_argument("--python", default=None, help="Python executable to embed (default: current).")
@@ -377,6 +376,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "server":
+        from .server import run_server
+
+        return run_server(arguments[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
     # Apply defaults for the SUPPRESS-ed shared flags (see build_parser).

@@ -1240,14 +1240,14 @@ export function App() {
       };
       shortcutHandlers.launchAgent = () => openPalette("launch ");
       if (activeMachine) shortcutHandlers.toggleSessions = () => runInRemoteRoom((room) => room.toggleSessions());
+      shortcutHandlers.toggleInterfaceMode = () => {
+        const next = interfaceMode === "chat" ? "terminal" : "chat";
+        setInterfaceMode(next);
+        toasts.show(next === "chat" ? "Chat view" : "Terminal view");
+      };
       if (!activeMachine) {
         shortcutHandlers.toggleSessions = () =>
           showCommandRoom(activeRoom !== "command" || commandView === "terminals" ? "sessions" : "terminals");
-        shortcutHandlers.toggleInterfaceMode = () => {
-          const next = interfaceMode === "chat" ? "terminal" : "chat";
-          setInterfaceMode(next);
-          toasts.show(next === "chat" ? "Chat view" : "Terminal view");
-        };
       }
       shortcutHandlers.nextWorkspace = () => (activeMachine ? runInRemoteRoom((room) => room.switchWorkspaceBy(1)) : switchWorkspaceBy(1));
       shortcutHandlers.previousWorkspace = () => (activeMachine ? runInRemoteRoom((room) => room.switchWorkspaceBy(-1)) : switchWorkspaceBy(-1));
@@ -1423,7 +1423,7 @@ export function App() {
       { id: "view:settings", group: "View", title: "Open Settings", icon: <SettingsIcon size={15} />, keys: shortcutKeysFor("settings"), keywords: ["preferences", "options"], run: () => openSettings() },
       { id: "view:sessions", group: "View", title: "Show session history", icon: <Code2 size={15} />, keys: shortcutKeysFor("toggleSessions"), keywords: ["resume", "native", "history"], run: () => activeMachine ? runInRemoteRoom((room) => room.showView("sessions")) : showCommandRoom("sessions") },
     );
-    if (!activeMachine) commands.push(
+    commands.push(
       {
         id: "view:mode",
         group: "View",
@@ -1548,6 +1548,8 @@ export function App() {
                   ref={remoteRoomRef}
                   key={activeMachine.id}
                   machine={activeMachine}
+                  interfaceMode={interfaceMode}
+                  onInterfaceModeChange={setInterfaceMode}
                   switcher={machineSwitcher}
                   attentionByWorkspace={machineWorkspaceAttention(remoteAttention, activeMachine.id)}
                   revealRequest={remoteReveal?.machineId === activeMachine.id ? remoteReveal : null}

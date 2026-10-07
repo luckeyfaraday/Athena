@@ -73,6 +73,7 @@ Otherwise the CLI auto-discovers a backend already started by Athena via
 | `tui` | Interactive command room (SSH-friendly) |
 | `install-cli` | Install an `athena` shim on PATH (run from anywhere) |
 | `serve` | Launch the backend headlessly |
+| `server` | Run the persistent terminal/agent API host; see [server setup](../server/README.md) |
 | `remote …` | Drive Athena terminals on your other machines ([below](#remote-machines)) |
 
 Global flags: `--json` (machine output), `--backend-url`, `--project-dir`.

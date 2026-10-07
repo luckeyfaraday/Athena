@@ -464,7 +464,17 @@ session-index worker, share a 30-second cache, and return at most 100 sessions /
 workspace snapshots / 8 MiB of serialized metadata (2 MiB per workspace). A slow or unavailable index
 shows cached history or an error without falling back to scanning in the terminal process.
 
-Chat view remains local-only: remote panes use terminal view.
+Remote panes support terminal and chat view. Both machines need a build with
+remote conversation history for native chat messages; older hosts can still
+stream terminals. Images must already be on the remote machine.
+
+### Linux servers without a desktop
+
+Use `athena server` to run the same terminal engine and remote API as a persistent
+Node.js service, without Electron or a display. Your desktop's machine switcher
+connects over Tailscale; jobs keep running when a viewing computer disconnects.
+See [Athena server](server/README.md) for installation, pairing, and systemd setup.
+`athena serve` continues to start only the Python backend.
 
 The `athena` CLI drives other machines too, which works well over SSH or from a phone:
 

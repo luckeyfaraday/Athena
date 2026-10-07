@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { hostStatePath } from "./host-runtime.js";
 
 export type AthenaLaunchState = {
   pid: number;
@@ -20,13 +21,13 @@ type ProcessInfo = {
 let currentState: AthenaLaunchState | null = null;
 
 export function launchStateFilePath(): string {
-  return path.join(os.homedir(), ".context-workspace", "athena-launch.json");
+  return hostStatePath("athena-launch.json");
 }
 
-export function beginAthenaLaunch(options: { restoreAttemptPending?: boolean } = {}): AthenaLaunchState {
+export function beginAthenaLaunch(options: { restoreAttemptPending?: boolean; cleanupStaleProcesses?: boolean } = {}): AthenaLaunchState {
   const previous = readAthenaLaunchState();
   currentState = nextAthenaLaunchState(previous, process.pid, new Date().toISOString(), Boolean(options.restoreAttemptPending));
-  if (previous && !previous.cleanExit) cleanupStaleAthenaProcesses();
+  if (previous && !previous.cleanExit && options.cleanupStaleProcesses !== false) cleanupStaleAthenaProcesses();
   writeAthenaLaunchState(currentState);
   return currentState;
 }

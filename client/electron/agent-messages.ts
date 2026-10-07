@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { hostStatePath } from "./host-runtime.js";
 import type { EmbeddedTerminalKind } from "./embedded-terminal.js";
 export { agentHandle, agentHandleMap } from "./agent-routing.js";
 
@@ -71,7 +71,7 @@ let persistRetryDelayMs = 0;
 const retainedTemporaryFiles = new Set<string>();
 
 export function agentMessageStorePath(): string {
-  return path.join(os.homedir(), ".context-workspace", "agent-messages.json");
+  return hostStatePath("agent-messages.json");
 }
 
 export function listAgentMessages(workspace?: string | null, limit = 100): AgentMessage[] {

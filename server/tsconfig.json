@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "rootDir": "../client/electron",
+    "types": ["node"],
+    "typeRoots": ["node_modules/@types"],
+    "paths": { "node-pty": ["./node_modules/node-pty/typings/node-pty.d.ts"] }
+  },
+  "include": ["../client/electron/server-main.ts", "../client/electron/pty-host.ts", "../client/electron/session-index-host.ts"]
+}

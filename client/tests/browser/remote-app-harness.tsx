@@ -28,6 +28,11 @@ const state = (window as any).remoteAppTest = {
   historyCalls: [] as unknown[], historyDelay: false, historyResolvers: [] as (() => void)[], historyError: null as string | null,
   spawnError: null as string | null, spawnDelay: false, spawnResolvers: [] as (() => void)[],
   historySubfolder: false,
+  chatCalls: [] as string[], writes: [] as [string, string][],
+  addChatAgent: () => {
+    machine.sessions = [{ ...session("remote:desktop:chat-job", remote.nativePath), kind: "claude", providerSessionId: "server-conversation" }];
+    onUpdate?.(snapshot());
+  },
 };
 const machines = [machine, { ...machine, id: "second", name: "travel", sessions: [] }];
 const snapshot = (): RemoteSnapshot => ({ tailscale: "running", account: null, selfName: "viewer", refreshedAt: null, machines: machines.map((item) => ({ ...item })) });
@@ -46,6 +51,14 @@ Object.assign(desktop, {
     return { ...localSession, status: "exited" };
   },
   getRemoteSnapshot: async () => snapshot(),
+  remoteChatMessages: async (id: string) => {
+    state.chatCalls.push(id);
+    return { revision: "server-reply", messages: [{ id: "reply", role: "assistant", text: "This reply came from the Linux server.", timestamp: null }] };
+  },
+  writeEmbeddedTerminal: async (id: string, data: string) => {
+    state.writes.push([id, data]);
+    return machine.sessions.find((item) => item.id === id);
+  },
   onRemoteUpdate: (callback: (value: RemoteSnapshot) => void) => { onUpdate = callback; return () => { onUpdate = null; }; },
   listRemoteAgentSessions: async (machineId: string, path: string, cursor: string | null) => {
     state.historyCalls.push([machineId, path, cursor]);

@@ -127,6 +127,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('Claude fixture'); process.exit(0); }
+const mcpConfig = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'));
+fs.writeFileSync(path.join(process.env.HOME, 'launched-mcp.json'), JSON.stringify(mcpConfig.mcpServers.context_workspace));
 const id = args[args.indexOf('--session-id') + 1] || args[args.indexOf('--resume') + 1];
 const folder = path.join(process.env.HOME, '.claude', 'projects', process.cwd().replace(/[^a-zA-Z0-9]/g, '-'));
 fs.mkdirSync(folder, { recursive: true });
@@ -155,11 +157,11 @@ process.stdin.resume();
   assert.equal(snapshot.messages[0].text, "Native reply from the server backend.");
   const history = await remote.listAgentSessions("server", project);
   assert.ok(history.sessions.some((row) => row.id === session.providerSessionId));
-  const repoRoot = path.resolve(path.dirname(entry), "../..");
-  const bridge = spawn(path.join(repoRoot, ".venv/bin/python"), [path.join(repoRoot, "mcp_server/server.py")], {
-    env: { ...process.env, HOME: root, CONTEXT_WORKSPACE_ELECTRON_CONTROL_STATE: path.join(root, "state", "electron-control.json"),
-      CONTEXT_WORKSPACE_ELECTRON_CONTROL_URL: host.discovery.baseUrl, CONTEXT_WORKSPACE_ELECTRON_CONTROL_TOKEN: host.discovery.token,
-      CONTEXT_WORKSPACE_BACKEND_STATE: path.join(root, "state", "backend.json") },
+  // Use the actual generated configuration with no inherited Athena variables.
+  // MCP clients such as Codex only forward explicitly allowed environment data.
+  const mcpConfig = JSON.parse(await fs.readFile(path.join(root, "launched-mcp.json"), "utf8"));
+  const bridge = spawn(mcpConfig.command, mcpConfig.args, {
+    env: { HOME: root, PATH: process.env.PATH, ...mcpConfig.env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   t.after(() => bridge.kill());
@@ -174,7 +176,7 @@ process.stdin.resume();
   ].map((item) => JSON.stringify(item)).join("\n") + "\n");
   assert.equal((await bridgeExit)[0], 0, rpcError);
   const reply = rpcOutput.trim().split("\n").map((line) => JSON.parse(line)).find((item) => item.id === 2);
-  assert.equal(reply.result.isError, false);
+  assert.equal(reply.result.isError, false, JSON.stringify(reply.result));
   assert.match(reply.result.content[0].text, new RegExp(session.providerSessionId));
   const backendDiscovery = JSON.parse(await fs.readFile(path.join(root, "state", "backend.json"), "utf8"));
   await host.stop();

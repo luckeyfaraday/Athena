@@ -1647,15 +1647,16 @@ function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | 
   if (!isAgentKind(kind) || !backendUrl || !controlUrl) return empty;
   const server = resolveMcpServerCommand();
   if (!server) return empty;
+  const discovery = { backend: hostStatePath("backend.json"), control: hostStatePath("electron-control.json") };
   try {
     if (kind === "claude") {
       return { launch: { configPath: writeClaudeMcpConfigFile(server, backendUrl, controlUrl) }, env: {} };
     }
     if (kind === "codex") {
-      return { launch: { codexConfigArgs: buildCodexMcpConfigArgs(server, backendUrl, controlUrl) }, env: {} };
+      return { launch: { codexConfigArgs: buildCodexMcpConfigArgs(server, backendUrl, controlUrl, discovery) }, env: {} };
     }
     if (kind === "opencode" || kind === "athena") {
-      return { launch: null, env: { OPENCODE_CONFIG_CONTENT: buildOpenCodeMcpConfigContent(server, backendUrl, controlUrl) } };
+      return { launch: null, env: { OPENCODE_CONFIG_CONTENT: buildOpenCodeMcpConfigContent(server, backendUrl, controlUrl, discovery) } };
     }
     // Hermes is intentionally unwired: the context_workspace server proxies into
     // the backend (i.e. Hermes itself), so its memory/ask tools would be circular.
@@ -1673,7 +1674,9 @@ function resolveAgentMcpWiring(kind: EmbeddedTerminalKind, backendUrl: string | 
 
 function writeClaudeMcpConfigFile(server: McpServerCommand, backendUrl: string, controlUrl: string): string {
   const configPath = path.join(tempWorkspaceDirectory(), `athena-claude-mcp-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
-  const config = buildClaudeMcpConfig(server, backendUrl, controlUrl);
+  const config = buildClaudeMcpConfig(server, backendUrl, controlUrl, {
+    backend: hostStatePath("backend.json"), control: hostStatePath("electron-control.json"),
+  });
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: "utf8", mode: 0o600 });
   return configPath;
 }

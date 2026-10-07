@@ -219,6 +219,29 @@ function agentSession(id) {
   };
 }
 
+test("disposal resolves queued and active scans and never restarts the worker", async () => {
+  const { client, clock, children } = fixture();
+  const active = client.listAgentSessions("/work/active", false);
+  clock.advance(0);
+  const queued = client.listHermes("/work/queued");
+  client.dispose();
+  assert.equal(await active, null);
+  assert.deepEqual(await queued, []);
+  assert.equal(children[0].killCalls, 1);
+  assert.equal(children[0].disconnectCalls, 1);
+  assert.equal(clock.timers.size, 0);
+
+  // A late response or request during shutdown must not revive the worker.
+  children[0].respond(0, { "/work/active": [agentSession("late")] });
+  clock.advance(10_000);
+  const late = client.listAgentSessions("/work/active");
+  clock.advance(0);
+  assert.equal(children.length, 1);
+  assert.equal(await late, null);
+  client.dispose();
+  assert.equal(children[0].killCalls, 1);
+});
+
 test("agent-session and Hermes requests share one worker but keep separate last-known results", async () => {
   const { client, clock, children } = fixture();
   const hermes = client.listHermes("/work/a");

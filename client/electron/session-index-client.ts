@@ -61,6 +61,7 @@ export class SessionIndexClient {
   private readonly requestTimeoutMs: number;
   private readonly restartBackoffMs: number;
   private child: ChildProcess | null = null;
+  private disposed = false;
   private queued: WaitingCall[] = [];
   private flushTimer: TimerHandle | null = null;
   private pending = new Map<string, PendingRequest>();
@@ -103,6 +104,7 @@ export class SessionIndexClient {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.flushTimer) this.cancel(this.flushTimer);
     this.flushTimer = null;
     this.resolveFromLastKnown(this.queued.splice(0));
@@ -111,6 +113,7 @@ export class SessionIndexClient {
   }
 
   private enqueue(kind: SessionIndexRequestKind, workspace: string, allowStale = true): Promise<unknown[] | null> {
+    if (this.disposed) return Promise.resolve(null);
     return new Promise((resolve) => {
       this.queued.push({ kind, workspace, resolve, allowStale });
       if (this.flushTimer) return;

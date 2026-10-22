@@ -369,6 +369,28 @@ def test_machines_json_skips_self_phones_and_offline_probes(tailnet, capsys) -> 
     assert [seen.path for seen in tailnet[0].requests] == ["/machine"]
 
 
+def test_machines_lists_android_peers_only_when_athena_answers(tailnet, monkeypatch, capsys) -> None:
+    # Athena can run on Android from a Linux userland; ordinary phones must stay out of the list.
+    ready, _locked, probed = tailnet
+    status = _status()
+    base = status["Peer"]["k3"]
+    status["Peer"]["k7"] = {**base, "ID": "n7", "HostName": "Galaxy A6", "DNSName": "galaxy-a6.tail1234.ts.net.",
+                            "OS": "android", "TailscaleIPs": ["100.64.0.8"]}
+    status["Peer"]["k8"] = {**base, "ID": "n8", "HostName": "Pixel", "DNSName": "pixel.tail1234.ts.net.",
+                            "OS": "android", "TailscaleIPs": ["100.64.0.9"]}
+    monkeypatch.setattr(remote, "tailscale_status", lambda: status)
+    fixture_url = remote.peer_url
+    monkeypatch.setattr(remote, "peer_url", lambda peer, port: (
+        f"http://127.0.0.1:{ready.port}" if peer.name == "galaxy-a6" else fixture_url(peer, port)
+    ))
+    assert run("remote", "machines", "--json") == 0
+    by_name = {row["name"]: row for row in json.loads(capsys.readouterr().out)}
+    assert by_name["galaxy-a6"]["status"] == "ready"
+    assert by_name["galaxy-a6"]["os"] == "android"
+    assert "pixel" in probed and "pixel" not in by_name  # probed, but no Athena there
+    assert "iphone" not in probed
+
+
 def test_machines_never_broadcasts_the_token(tailnet, capsys) -> None:
     # A token belongs to one machine; `machines` contacts every peer, so it must not send it.
     assert run("remote", "--token", "s3cret", "machines", "--json") == 0

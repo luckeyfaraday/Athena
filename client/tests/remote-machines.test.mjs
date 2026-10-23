@@ -7,6 +7,7 @@ import { parseTailscaleStatus } from "../dist-electron/remote-access.js";
 import {
   classifyProbe,
   discoverMachines,
+  isAnswerOnlyNode,
   isDesktopNode,
   machineName,
   probeMachine,
@@ -52,6 +53,9 @@ test("isDesktopNode and machineName", () => {
   assert.equal(isDesktopNode({ os: "macOS" }), true);
   assert.equal(isDesktopNode({ os: "iOS" }), false);
   assert.equal(isDesktopNode({ os: "android" }), false);
+  assert.equal(isAnswerOnlyNode({ os: "Android" }), true);
+  assert.equal(isAnswerOnlyNode({ os: "iOS" }), false);
+  assert.equal(isAnswerOnlyNode({ os: "linux" }), false);
   assert.equal(isDesktopNode({ os: null }), false);
   assert.equal(machineName({ dnsName: "laptop-nrstvp85-1.tail1234.ts.net", hostName: "LAPTOP-NRSTVP85", addresses: [] }), "laptop-nrstvp85-1");
   assert.equal(machineName({ dnsName: null, hostName: "box", addresses: [] }), "box");
@@ -105,6 +109,34 @@ test("discoverMachines probes online desktops, skips phones and offline devices,
   assert.equal(byName.friend.detail, "Not on your Tailscale account, so it needs its access token.");
   assert.equal(byName.ci.ownDevice, false, "tagged devices are never your own");
   assert.equal(byName["old-book"].checkedAt, null);
+});
+
+test("discoverMachines lists Android peers only when Athena answers there", async () => {
+  const probed = [];
+  const state = await discoverMachines({
+    status: status([
+      peer({ HostName: "Galaxy A6", DNSName: "galaxy-a6.tail1234.ts.net.", OS: "android", TailscaleIPs: ["100.95.0.1"] }),
+      peer({ HostName: "Pixel", DNSName: "pixel.tail1234.ts.net.", OS: "android", TailscaleIPs: ["100.95.0.2"] }),
+      peer({ HostName: "Tab", DNSName: "tab.tail1234.ts.net.", OS: "android", TailscaleIPs: ["100.95.0.3"] }),
+      peer({ HostName: "Old phone", DNSName: "old-phone.tail1234.ts.net.", OS: "android", Online: false, TailscaleIPs: ["100.95.0.4"] }),
+    ]),
+    port: 47821,
+    now: NOW,
+    probe: async (url) => {
+      probed.push(url);
+      if (url.includes("100.95.0.1")) return { kind: "http", status: 401, error: null };
+      if (url.includes("100.95.0.3")) return { kind: "http", status: 404, error: null };
+      return { kind: "unreachable", code: "ECONNREFUSED" };
+    },
+  });
+  assert.deepEqual(state.machines.map((machine) => [machine.name, machine.status, machine.os]), [
+    ["galaxy-a6", "needs-token", "android"],
+  ]);
+  assert.deepEqual(probed.sort(), [
+    "http://100.95.0.1:47821",
+    "http://100.95.0.2:47821",
+    "http://100.95.0.3:47821",
+  ]);
 });
 
 test("discoverMachines explains a token request from one of your own machines", async () => {

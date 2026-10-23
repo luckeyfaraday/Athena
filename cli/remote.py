@@ -53,6 +53,10 @@ MAX_SPAWN_COUNT = 8
 
 # Athena runs on desktops; phones and appliances on the tailnet are left out.
 DESKTOP_OS = frozenset({"linux", "windows", "macos", "darwin"})
+# Android can host Athena from a Linux userland (Termux). Those peers are probed
+# too, but listed only when Athena answers, so ordinary phones stay out of the list.
+ANSWER_ONLY_OS = frozenset({"android"})
+ATHENA_ANSWERED = frozenset({"ready", "needs-token", "refused"})
 TERMINAL_KINDS = ("shell", "claude", "codex", "opencode", "athena", "grok", "hermes")
 STATUS_ORDER = {"ready": 0, "needs-token": 1, "refused": 2, "error": 3, "not-answering": 4, "offline": 5}
 
@@ -161,6 +165,11 @@ class Peer:
     @property
     def is_desktop(self) -> bool:
         return self.os.lower() in DESKTOP_OS
+
+    @property
+    def is_candidate(self) -> bool:
+        """Worth probing for Athena: a desktop, or an Android peer that may run it."""
+        return self.is_desktop or self.os.lower() in ANSWER_ONLY_OS
 
 
 def _is_ipv4(value: str) -> bool:
@@ -807,7 +816,7 @@ def remote_path(host: RemoteHost, path: str) -> str:
 def _machine_rows(status: dict[str, Any], port: int, token: str | None) -> list[dict[str, Any]]:
     peers = parse_peers(status)
     me = next((peer for peer in peers if peer.is_self), None)
-    others = [peer for peer in peers if not peer.is_self and peer.is_desktop]
+    others = [peer for peer in peers if not peer.is_self and peer.is_candidate]
 
     def check(peer: Peer) -> dict[str, Any]:
         own = _own_device(peer, me)
@@ -852,7 +861,11 @@ def _machine_rows(status: dict[str, Any], port: int, token: str | None) -> list[
             row["detail"] = getattr(result, "text", None) or str(result)
         return row
 
-    rows = _parallel(check, others)
+    rows = [
+        row
+        for peer, row in zip(others, _parallel(check, others))
+        if peer.is_desktop or row["status"] in ATHENA_ANSWERED
+    ]
     rows.sort(key=lambda row: (STATUS_ORDER.get(row["status"], 9), row["name"].lower()))
     return rows
 
@@ -864,7 +877,7 @@ def cmd_remote_machines(args: argparse.Namespace) -> int:
         _print_json(rows)
         return 0
     if not rows:
-        print("No other computers on your tailnet (phones and tablets are not listed).")
+        print("No other computers on your tailnet (phones are listed only when Athena answers there).")
         return 0
     print(_table(
         ["NAME", "STATUS", "OS", "ADDRESS", "DETAIL"],
@@ -887,7 +900,7 @@ def cmd_remote_ls(args: argparse.Namespace) -> int:
         peers = [
             peer
             for peer in parse_peers(_require_tailscale())
-            if not peer.is_self and peer.is_desktop and peer.online and peer.address
+            if not peer.is_self and peer.is_candidate and peer.online and peer.address
         ]
         if not peers:
             raise RemoteError("none of your other computers is online on Tailscale.")
@@ -900,7 +913,7 @@ def cmd_remote_ls(args: argparse.Namespace) -> int:
             if status_name == "ready":
                 terminals = result.get("terminals") if isinstance(result, dict) else None
                 groups.append((host.machine, [item for item in terminals or [] if isinstance(item, dict)]))
-            else:
+            elif host.machine.peer is None or host.machine.peer.is_desktop or status_name in ATHENA_ANSWERED:
                 skipped.append(f"{host.machine.name} ({status_name.replace('-', ' ')})")
         if skipped:
             print(f"note: not shown: {', '.join(skipped)}", file=sys.stderr)

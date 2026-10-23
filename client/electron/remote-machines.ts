@@ -57,6 +57,10 @@ export type MachineProbe = (url: string, token: string | null) => Promise<Machin
 const PROBE_TIMEOUT_MS = 2_500;
 // Athena runs on desktops; phones and appliances on the tailnet are left out.
 const DESKTOP_OS = new Set(["linux", "windows", "macos", "darwin"]);
+// Android can host Athena from a Linux userland (Termux). Those peers are probed
+// too, but listed only when Athena answers, so ordinary phones stay out of the list.
+const ANSWER_ONLY_OS = new Set(["android"]);
+const ATHENA_ANSWERED = new Set<RemoteMachineStatus>(["ready", "needs-token", "refused"]);
 const STATUS_ORDER: Record<RemoteMachineStatus, number> = {
   ready: 0,
   "needs-token": 1,
@@ -68,6 +72,11 @@ const STATUS_ORDER: Record<RemoteMachineStatus, number> = {
 
 export function isDesktopNode(node: TailscaleNode): boolean {
   return Boolean(node.os && DESKTOP_OS.has(node.os.toLowerCase()));
+}
+
+/** Not a desktop, but probed in case Athena runs there; listed only if it answers. */
+export function isAnswerOnlyNode(node: TailscaleNode): boolean {
+  return Boolean(node.os && ANSWER_ONLY_OS.has(node.os.toLowerCase()));
 }
 
 export function machineName(node: TailscaleNode): string {
@@ -98,7 +107,7 @@ export function classifyProbe(result: MachineProbeResult): Pick<RemoteMachine, "
   return { ...none, status: "unknown", detail: result.error ?? `Unexpected answer (HTTP ${result.status}).` };
 }
 
-/** The other desktops on the tailnet, each probed on `port` (offline ones are not probed). */
+/** The other desktops on the tailnet (plus Android peers running Athena), each probed on `port` (offline ones are not probed). */
 export async function discoverMachines(options: {
   status: TailscaleStatus | null;
   port: number;
@@ -111,7 +120,7 @@ export async function discoverMachines(options: {
   const status = options.status;
   if (!status) return { tailscale: "unavailable", account: null, port: options.port, machines: [], refreshedAt: now().toISOString() };
   const self = status.self;
-  const peers = status.peers.filter((peer) => peer.id && peer.id !== self?.id && isDesktopNode(peer));
+  const peers = status.peers.filter((peer) => peer.id && peer.id !== self?.id && (isDesktopNode(peer) || isAnswerOnlyNode(peer)));
   const machines = await Promise.all(peers.map(async (peer): Promise<RemoteMachine> => {
     const address = peer.addresses.find((candidate) => net.isIPv4(candidate)) ?? peer.addresses[0] ?? null;
     const url = address ? remoteUrl(address, options.port) : null;
@@ -141,12 +150,13 @@ export async function discoverMachines(options: {
     }
     return { ...base, ...classified, checkedAt: now().toISOString() };
   }));
-  machines.sort((left, right) => STATUS_ORDER[left.status] - STATUS_ORDER[right.status] || left.name.localeCompare(right.name));
+  const listed = machines.filter((machine, index) => isDesktopNode(peers[index]) || ATHENA_ANSWERED.has(machine.status));
+  listed.sort((left, right) => STATUS_ORDER[left.status] - STATUS_ORDER[right.status] || left.name.localeCompare(right.name));
   return {
     tailscale: status.backendState && status.backendState !== "Running" ? "stopped" : "running",
     account: self?.loginName ?? null,
     port: options.port,
-    machines,
+    machines: listed,
     refreshedAt: now().toISOString(),
   };
 }

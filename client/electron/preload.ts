@@ -6,6 +6,7 @@ import type { AttentionActivatePayload, AttentionNotificationRequest } from "./a
 import type { BackendState } from "./backend.js";
 import type { ControlState } from "./control-server.js";
 import type { RemoteAccessState } from "./remote-control.js";
+import type { JarvisState } from "./jarvis-companion.js";
 import type { RemoteMachinesState } from "./remote-machines.js";
 import type { RemoteAttention, RemoteSnapshot, RemoteSpawnRequest } from "./remote-client.js";
 import type { RemoteSessionPage } from "./session-index-protocol.js";
@@ -154,6 +155,12 @@ export type WorkspaceApi = {
   setRemoteMachineToken: (machineId: string, token: string | null) => Promise<RemoteSnapshot>;
   onRemoteUpdate: (callback: (snapshot: RemoteSnapshot) => void) => () => void;
   onRemoteAttention: (callback: (attention: RemoteAttention) => void) => () => void;
+  getJarvisState: () => Promise<JarvisState>;
+  refreshJarvis: () => Promise<JarvisState>;
+  launchJarvis: () => Promise<JarvisState>;
+  setJarvisMic: (state: "on" | "off" | "toggle") => Promise<JarvisState>;
+  askJarvis: (text: string) => Promise<JarvisState>;
+  onJarvisState: (callback: (state: JarvisState) => void) => () => void;
   refreshRemoteMachines: () => Promise<RemoteMachinesState>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
@@ -308,6 +315,7 @@ const onWorkspaceOpen = createIpcSubscription<{ workspace: WorkspacePath; select
 const onWorkspaceClose = createIpcSubscription<{ workspace: WorkspacePath }>("workspace:close");
 const onRemoteUpdate = createIpcSubscription<RemoteSnapshot>("remote:update");
 const onRemoteAttention = createIpcSubscription<RemoteAttention>("remote:attention");
+const onJarvisState = createIpcSubscription<JarvisState>("jarvis:state");
 
 const api: WorkspaceApi = {
   getBackendState: () => ipcRenderer.invoke("backend:getState"),
@@ -336,6 +344,12 @@ const api: WorkspaceApi = {
   setRemoteMachineToken: (machineId, token) => ipcRenderer.invoke("remote:setToken", machineId, token),
   onRemoteUpdate,
   onRemoteAttention,
+  getJarvisState: () => ipcRenderer.invoke("jarvis:getState"),
+  refreshJarvis: () => ipcRenderer.invoke("jarvis:refresh"),
+  launchJarvis: () => ipcRenderer.invoke("jarvis:launch"),
+  setJarvisMic: (state) => ipcRenderer.invoke("jarvis:setMic", state),
+  askJarvis: (text) => ipcRenderer.invoke("jarvis:ask", text),
+  onJarvisState,
   refreshRemoteMachines: () => ipcRenderer.invoke("remoteMachines:refresh"),
   getLaunchState: () => ipcRenderer.invoke("launchState:get"),
   clearTerminalRestorePause: () => ipcRenderer.invoke("launchState:clearTerminalRestorePause"),

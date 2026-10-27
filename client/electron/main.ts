@@ -17,6 +17,7 @@ import {
 import { startBackend, stopBackend } from "./backend.js";
 import { startControlServer, stopControlServer } from "./control-server.js";
 import { startRemoteAccess, stopRemoteAccess } from "./remote-control.js";
+import { startJarvisCompanion, stopJarvisCompanion } from "./jarvis-host.js";
 import { normalizeExternalUrl } from "./external-links.js";
 import { beginAthenaLaunch, markAthenaCleanExit, pauseTerminalRestore } from "./launch-state.js";
 import { checkDiskSpace, formatBytes, DISK_WARN_BYTES } from "./disk-guard.js";
@@ -361,6 +362,8 @@ if (singleInstanceLock) {
     void startRemoteAccess().catch((error) => {
       console.error("Remote access failed to start:", error);
     });
+    // Idle until a licensed Jarvis publishes a session on this machine.
+    startJarvisCompanion();
     await createWindow();
     startAutoUpdates();
 
@@ -451,6 +454,7 @@ app.on("before-quit", (event) => {
     viteProc = null;
   }
   disposeRemoteClient();
+  stopJarvisCompanion();
   const shutdown = Promise.all([
     Promise.resolve(prepareEmbeddedTerminalRestoreForQuit()).then(() => true, () => false),
     stopBackend().catch(() => false),

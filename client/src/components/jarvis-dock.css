@@ -1,0 +1,192 @@
+/* Jarvis dock (components/JarvisDock.tsx): a strip under the Command Room's
+   terminals, framed like the workspace tab strip above them. Tokens only. */
+
+.jarvisDock {
+  container: jarvisDock / inline-size;
+  flex: 0 0 auto;
+  margin: 0 var(--space-2) var(--space-2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+  animation: athenaRiseIn var(--dur-2) var(--ease);
+}
+
+/* ── BAR ──────────────────────────────────────────────────────────────────── */
+.jarvisBar {
+  min-height: 40px;
+  padding: 4px 4px 4px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.jarvisIdentity {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  white-space: nowrap;
+}
+.jarvisIdentity strong {
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: var(--weight-strong);
+}
+.jarvisIdentity span {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  font-weight: var(--weight-medium);
+}
+.jarvisPreview {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+.jarvisPreview > span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.jarvisPreview > span.live {
+  color: var(--text-2);
+  font-style: italic;
+}
+.jarvisPreview > span.live > svg { margin-right: 6px; vertical-align: -2px; color: var(--info); }
+.jarvisDock .jarvisAsk {
+  flex: 0 1 340px;
+  min-width: 150px;
+  padding-right: 4px;
+}
+.jarvisDock .jarvisAsk .iconButton { width: 22px; height: 22px; }
+.jarvisDock .jarvisMic.on {
+  border-color: color-mix(in srgb, var(--info) 45%, transparent);
+  background: var(--info-soft);
+  color: var(--info);
+}
+.jarvisDockError {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+/* ── ORB: Jarvis's activity at a glance ───────────────────────────────────── */
+.jarvisOrb {
+  --orb: var(--info);
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  background: var(--orb);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--orb) 20%, transparent);
+}
+.jarvisOrb.offline {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-faint);
+}
+.jarvisOrb.listening {
+  --ring-color: color-mix(in srgb, var(--info) 55%, transparent);
+  animation: athenaRing 1.4s ease-out infinite;
+}
+.jarvisOrb.thinking {
+  --orb: var(--accent);
+  animation: athenaPulse 1.1s ease-in-out infinite;
+}
+.jarvisOrb.speaking {
+  --orb: var(--ok);
+  animation: jarvisSpeak .9s ease-in-out infinite;
+}
+@keyframes jarvisSpeak { 50% { transform: scale(1.3); } }
+
+/* ── FEED ─────────────────────────────────────────────────────────────────── */
+.jarvisFeed {
+  max-height: clamp(84px, 22vh, 200px);
+  margin: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+}
+.jarvisFeed[hidden] { display: none; }
+.jarvisFeedItem {
+  max-width: min(720px, 86%);
+  padding: 6px 10px 7px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  animation: athenaRiseIn var(--dur-2) var(--ease);
+}
+.jarvisFeedItem p {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.jarvisFeedLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-family: var(--font-label);
+  font-size: var(--fs-2xs);
+  font-weight: var(--label-weight);
+  letter-spacing: var(--label-tracking);
+  text-transform: var(--label-transform);
+}
+.jarvisFeedLabel time {
+  margin-left: 4px;
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+  font-weight: var(--weight-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+/* The user, spoken or typed: on the right, in the accent like a chat bubble. */
+.jarvisFeedItem.user {
+  align-self: flex-end;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.jarvisFeedItem.user .jarvisFeedLabel { color: var(--accent); }
+.jarvisFeedItem.asked { border-style: dashed; }
+.jarvisFeedItem.live { border-style: dashed; opacity: .75; }
+.jarvisFeedItem.live p { font-style: italic; }
+.jarvisFeedItem.jarvis { align-self: flex-start; }
+.jarvisFeedItem.jarvis .jarvisFeedLabel { color: var(--info); }
+/* Announcements and agent events: quieter, full width, no bubble. */
+.jarvisFeedItem.system {
+  max-width: none;
+  padding: 1px 0 1px 10px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--info) 45%, transparent);
+  border-radius: 0;
+  background: transparent;
+}
+.jarvisFeedItem.system p { color: var(--text-2); font-size: var(--fs-xs); }
+.jarvisFeedEmpty {
+  padding: 4px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+/* ── NARROW ───────────────────────────────────────────────────────────────── */
+@container jarvisDock (max-width: 640px) {
+  .jarvisPreview { display: none; }
+  .jarvisDock .jarvisAsk { flex: 1 1 auto; }
+}
+@container jarvisDock (max-width: 420px) {
+  .jarvisIdentity span { display: none; }
+}

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
+  AudioLines,
   Bell,
   Code2,
   Command,
@@ -8,6 +9,8 @@ import {
   FolderPlus,
   Keyboard,
   MessageSquare,
+  Mic,
+  MicOff,
   Minus,
   Monitor,
   Palette,
@@ -42,6 +45,9 @@ import { MachineSwitcher } from "./components/MachineSwitcher";
 import { RemoteMachineRoom, type RemoteMachineRoomHandle, type RemoteRevealRequest } from "./rooms/RemoteMachineRoom";
 import { machineWorkspaceAttention, remoteAttentionKey, remoteMachineIdOf, remoteWorkspaceTabs, sessionsInWorkspace, switcherEntries } from "./remote-view";
 import { useRemoteMachines } from "./use-remote-machines";
+import { useJarvis } from "./use-jarvis";
+import { jarvisErrorMessage } from "./jarvis-view";
+import { JarvisDock } from "./components/JarvisDock";
 import { AthenaMark } from "./components/AthenaMark";
 import { AgentInstallDialog } from "./components/AgentInstallDialog";
 import athenaMarkUrl from "./assets/athena-mark.png";
@@ -101,13 +107,16 @@ import {
 import {
   densityStorageKey,
   interfaceModeStorageKey,
+  jarvisDockStorageKey,
   notificationsStorageKey,
   parseDensity,
   parseInterfaceMode,
+  parseJarvisDockCollapsed,
   parseStoredWorkspace,
   parseUiTheme,
   readDensity,
   readInterfaceMode,
+  readJarvisDockCollapsed,
   readNotificationPreferences,
   readUiTheme,
   readWorkspaceList,
@@ -119,6 +128,7 @@ import {
   workspaceStorageKey,
   writeDensity,
   writeInterfaceMode,
+  writeJarvisDockCollapsed,
   writeNotificationPreferences,
   writeStorageValue,
   writeStoredWorkspace,
@@ -262,6 +272,11 @@ export function App() {
   const activeMachine = activeMachineId ? remoteSnapshot?.machines.find((machine) => machine.id === activeMachineId) ?? null : null;
   activeMachineIdRef.current = activeMachine ? activeMachineId : null;
   activeRemoteWorkspaceRef.current = activeRemoteWorkspace;
+  // Jarvis on this computer. Its dock and palette commands exist only for license holders.
+  const [jarvis, applyJarvis] = useJarvis();
+  const jarvisLicensed = Boolean(jarvis?.license.licensed);
+  const [jarvisDockCollapsed, setJarvisDockCollapsedState] = useState(() => readJarvisDockCollapsed());
+  const [jarvisAskRequest, setJarvisAskRequest] = useState<number | null>(null);
   const missingAgents = useMemo<ReadonlySet<EmbeddedTerminalKind>>(
     () => new Set((agentClis?.agents ?? []).filter((agent) => !agent.installed).map((agent) => agent.kind)),
     [agentClis],
@@ -298,6 +313,11 @@ export function App() {
   function setDensity(next: Density) {
     setDensityState(next);
     writeDensity(next);
+  }
+
+  function setJarvisDockCollapsed(collapsed: boolean) {
+    setJarvisDockCollapsedState(collapsed);
+    writeJarvisDockCollapsed(collapsed);
   }
 
   function setTerminalAppearance(next: TerminalAppearance) {
@@ -595,6 +615,12 @@ export function App() {
       else {
         const fallbackDensity = parseDensity(storedValue(densityStorageKey));
         if (fallbackDensity) writeDensity(fallbackDensity);
+      }
+      const preferredJarvisDock = parseJarvisDockCollapsed(preferences[jarvisDockStorageKey] ?? null);
+      if (preferredJarvisDock !== null) setJarvisDockCollapsedState(preferredJarvisDock);
+      else {
+        const fallbackJarvisDock = parseJarvisDockCollapsed(storedValue(jarvisDockStorageKey));
+        if (fallbackJarvisDock !== null) writeJarvisDockCollapsed(fallbackJarvisDock);
       }
       if (preferences[terminalFontStorageKey] || preferences[terminalFontSizeStorageKey]) {
         setTerminalAppearanceState(readTerminalAppearancePreference((key) => preferences[key] ?? storedValue(key)));
@@ -1173,6 +1199,23 @@ export function App() {
     toasts.show(`Theme: ${themeLabel(theme)}`);
   }
 
+  // The dock lives in the Command Room: show it open, then focus its ask box.
+  function askJarvis() {
+    showCommandRoom();
+    setJarvisDockCollapsed(false);
+    setJarvisAskRequest(Date.now());
+  }
+
+  async function toggleJarvisMic() {
+    try {
+      const next = await desktop.setJarvisMic("toggle");
+      applyJarvis(next);
+      toasts.show(next.micOpen ? "Jarvis is listening" : "Jarvis microphone off");
+    } catch (err) {
+      toasts.show(jarvisErrorMessage(err), "warn");
+    }
+  }
+
   function nudgeTerminalFontSize(delta: number) {
     const fontSize = delta === 0 ? defaultTerminalAppearance.fontSize : terminalAppearance.fontSize + delta;
     setTerminalAppearance({ ...terminalAppearance, fontSize });
@@ -1435,6 +1478,39 @@ export function App() {
       },
     );
 
+    if (jarvis && jarvisLicensed) {
+      commands.push(
+        {
+          id: "jarvis:ask",
+          group: "Jarvis",
+          title: "Ask Jarvis…",
+          subtitle: jarvis.running ? undefined : "Jarvis is not running: open it from the dock",
+          icon: <AudioLines size={15} />,
+          keywords: ["voice", "assistant", "say", "request"],
+          run: askJarvis,
+        },
+        {
+          id: "jarvis:mic",
+          group: "Jarvis",
+          title: "Jarvis: toggle microphone",
+          subtitle: jarvis.connected && jarvis.micOpen !== null ? `Microphone is ${jarvis.micOpen ? "on" : "off"}` : undefined,
+          icon: jarvis.micOpen ? <MicOff size={15} /> : <Mic size={15} />,
+          keywords: ["mute", "unmute", "listen", "voice"],
+          ...(jarvis.connected ? {} : { disabled: true, disabledReason: jarvis.running ? "Connecting to Jarvis…" : "Jarvis is not running" }),
+          run: () => void toggleJarvisMic(),
+        },
+      );
+    }
+    commands.push({
+      id: "jarvis:settings",
+      group: "Jarvis",
+      title: "Open Jarvis settings",
+      subtitle: settingsSections.find((section) => section.id === "jarvis")?.description,
+      icon: <AudioLines size={15} />,
+      keywords: ["voice", "assistant", "license", "preferences"],
+      run: () => openSettings("jarvis"),
+    });
+
     for (const option of ["system", ...themes.map((theme) => theme.id)] as ThemePreference[]) {
       const definition = option === "system" ? null : themes.find((theme) => theme.id === option);
       commands.push({
@@ -1485,7 +1561,8 @@ export function App() {
       keywords: ["notifications", "sound", "alerts", "quiet"],
       run: () => setNotificationPreferences({ ...notificationPreferences, level: notificationPreferences.level === "off" ? "all" : "off" }),
     });
-    for (const section of settingsSections) {
+    // Jarvis's section already has "Open Jarvis settings" above.
+    for (const section of settingsSections.filter((item) => item.id !== "jarvis")) {
       commands.push({
         id: `settings:${section.id}`,
         group: "Settings",
@@ -1590,6 +1667,17 @@ export function App() {
                   emptyMark={<AthenaMark />}
                 />
                 </div>
+              )}
+              {/* Jarvis works with every machine, so its dock stays under whichever machine's room is shown. */}
+              {activeRoom === "command" && jarvis && jarvisLicensed && (
+                <JarvisDock
+                  state={jarvis}
+                  collapsed={jarvisDockCollapsed}
+                  focusRequest={jarvisAskRequest}
+                  onCollapsedChange={setJarvisDockCollapsed}
+                  onFocusHandled={() => setJarvisAskRequest(null)}
+                  onState={applyJarvis}
+                />
               )}
               {activeRoom === "settings" && (
                 <Suspense fallback={<section className="roomPanel" aria-busy="true" />}>

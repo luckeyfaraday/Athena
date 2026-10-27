@@ -296,6 +296,52 @@ export type RemoteAttention = {
 
 export type RemoteSpawnRequest = { workspace: string; kind: EmbeddedTerminalKind; count?: number; title?: string; resumeSessionId?: string; sessionLabel?: string };
 
+// Mirrors JarvisLicenseState in electron/jarvis-license.ts.
+export type JarvisLicenseState = {
+  licensed: boolean;
+  detail: string | null;
+  offlineUntil: number | null;
+  licenseId: string | null;
+  keyMasked: string | null;
+  instanceName: string | null;
+};
+
+// Mirrors JarvisFeedItem / JarvisAgent / JarvisState in electron/jarvis-companion.ts.
+export type JarvisFeedItem = {
+  id: number;
+  at: number;
+  kind: "heard" | "said" | "announce" | "agent" | "asked";
+  text: string;
+  agent?: string;
+};
+
+export type JarvisAgent = {
+  name: string;
+  cwd: string | null;
+  task: string | null;
+  working: boolean;
+  focused: boolean;
+  status: string | null;
+};
+
+export type JarvisActivity = "idle" | "listening" | "thinking" | "speaking";
+
+export type JarvisState = {
+  license: JarvisLicenseState;
+  installPath: string | null;
+  running: boolean;
+  connected: boolean;
+  micOpen: boolean | null;
+  activity: JarvisActivity;
+  partial: string | null;
+  provider: string | null;
+  model: string | null;
+  agents: JarvisAgent[];
+  feed: JarvisFeedItem[];
+  lastError: string | null;
+  updatedAt: number;
+};
+
 export type DirectoryListing = {
   path: string;
   parent: string | null;
@@ -339,6 +385,13 @@ type WorkspaceApi = {
   setRemoteMachineToken: (machineId: string, token: string | null) => Promise<RemoteSnapshot>;
   onRemoteUpdate: (callback: (snapshot: RemoteSnapshot) => void) => () => void;
   onRemoteAttention: (callback: (attention: RemoteAttention) => void) => () => void;
+  // The Jarvis link; invokes reject with a readable reason (not licensed, not running).
+  getJarvisState: () => Promise<JarvisState>;
+  refreshJarvis: () => Promise<JarvisState>;
+  launchJarvis: () => Promise<JarvisState>;
+  setJarvisMic: (state: "on" | "off" | "toggle") => Promise<JarvisState>;
+  askJarvis: (text: string) => Promise<JarvisState>;
+  onJarvisState: (callback: (state: JarvisState) => void) => () => void;
   refreshRemoteMachines: () => Promise<RemoteMachinesState>;
   getLaunchState: () => Promise<AthenaLaunchState | null>;
   clearTerminalRestorePause: () => Promise<AthenaLaunchState>;
@@ -424,6 +477,12 @@ const browserFallback: WorkspaceApi = {
   async setRemoteMachineToken() { return fallbackRemoteSnapshot(); },
   onRemoteUpdate() { return () => undefined; },
   onRemoteAttention() { return () => undefined; },
+  async getJarvisState() { return fallbackJarvisState(); },
+  async refreshJarvis() { return fallbackJarvisState(); },
+  async launchJarvis() { throw new Error("Jarvis needs the desktop app."); },
+  async setJarvisMic() { throw new Error("Jarvis needs the desktop app."); },
+  async askJarvis() { throw new Error("Jarvis needs the desktop app."); },
+  onJarvisState() { return () => undefined; },
   async refreshRemoteMachines() { return fallbackRemoteMachinesState(); },
   async getLaunchState() { return null; },
   async clearTerminalRestorePause() {
@@ -619,6 +678,24 @@ function fallbackRemoteSnapshot(): RemoteSnapshot {
 
 function fallbackRemoteMachinesState(): RemoteMachinesState {
   return { tailscale: "unavailable", account: null, port: 47821, machines: [], refreshedAt: null };
+}
+
+function fallbackJarvisState(): JarvisState {
+  return {
+    license: { licensed: false, detail: "Jarvis needs the desktop app.", offlineUntil: null, licenseId: null, keyMasked: null, instanceName: null },
+    installPath: null,
+    running: false,
+    connected: false,
+    micOpen: null,
+    activity: "idle",
+    partial: null,
+    provider: null,
+    model: null,
+    agents: [],
+    feed: [],
+    lastError: null,
+    updatedAt: Date.now(),
+  };
 }
 
 export const desktop = window.contextWorkspace ?? browserFallback;

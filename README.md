@@ -489,6 +489,40 @@ athena remote keys surface:claude --key down --key enter
 
 See `cli/README.md` for every command.
 
+### Other machines for local tools
+
+Local control API clients (Jarvis, scripts) can work on your other machines
+through this Athena instead of pairing with each one: `GET /machines` lists them
+with their agents, and `/machines/<id>/<route>` forwards terminals, spawn,
+messages, chat and `/hermes/ask` to that machine with the token Athena already
+holds. Only the local listener offers this, so a remote caller never hops
+through one machine to a third. `POST /hermes/ask` puts each machine's Hermes
+behind the control API's auth, which is how the relay reaches it.
+
+## Jarvis
+
+Owners of a [Jarvis](https://jarvis.luckeysystems.com) license get Jarvis inside
+Athena. When the Jarvis desktop app is running on the same computer, Athena
+attaches to it through the session file Jarvis publishes
+(`~/.config/jarvis/session.json`, user-only). It then adds a dock under the
+terminals with what Jarvis hears and says, the microphone switch, and an "Ask
+Jarvis…" box for typed requests. Settings → Jarvis shows the license, the
+link status, and an Open Jarvis button.
+
+- **License:** Athena never sees the key. It re-verifies the signed Keygen
+  machine file that Jarvis keeps in `~/.config/jarvis/license.json`, with the
+  same public key, product, policy and machine fingerprint Jarvis uses. A
+  license file copied from another computer does not count.
+- **Your phone:** the same Jarvis is on the control API (`GET /jarvis`,
+  `GET /jarvis/events`, `POST /jarvis/ask`, `POST /jarvis/mic`,
+  `POST /jarvis/launch`). Remote access over Tailscale therefore carries it to
+  Athena Mobile with no extra setup.
+- **Alerts:** Athena tells Jarvis when an agent finishes or needs approval, on
+  this computer or any machine in the switcher, so Jarvis can say it out loud.
+- **Jarvis drives Athena:** Jarvis 0.3.3 and later use the control API and
+  `/machines` to start, message, read and stop agents on any of your machines,
+  and to ask Hermes.
+
 ## Hermes Memory
 
 The backend uses `HermesManager` and `HermesMemoryStore` to find Hermes status and read/write memory.

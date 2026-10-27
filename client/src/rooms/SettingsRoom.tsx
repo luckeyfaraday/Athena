@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   Activity,
+  AudioLines,
   Bell,
   BellOff,
   Bot,
@@ -10,13 +11,17 @@ import {
   FolderOpen,
   Globe,
   Keyboard,
+  Megaphone,
   MessageSquare,
+  Mic,
+  MicOff,
   Minus,
   Palette,
   Plus,
   RefreshCw,
   RotateCcw,
   Server,
+  Smartphone,
   TerminalSquare,
   Volume2,
 } from "lucide-react";
@@ -34,7 +39,14 @@ import type {
   GraphicsRuntimeStatus,
   PerformanceDiagnostics,
 } from "../electron";
-import { desktop, type RemoteAccessState, type RemoteMachinesState } from "../electron";
+import { desktop, type JarvisState, type RemoteAccessState, type RemoteMachinesState } from "../electron";
+import {
+  jarvisConnectionSummary,
+  jarvisErrorMessage,
+  jarvisLicenseSummary,
+  jarvisLicenseView,
+  jarvisStatusView,
+} from "../jarvis-view";
 import {
   machineDetail,
   machinesSummary,
@@ -58,6 +70,7 @@ import {
 } from "../terminal-appearance";
 import { systemThemes, themeDefinition, themes, type ThemeId, type ThemePreference } from "../themes";
 import type { Density } from "../ui-preferences";
+import { useJarvis } from "../use-jarvis";
 import type {
   AttentionSoundStyle,
   NotificationLevel,
@@ -72,6 +85,7 @@ const sectionIcons: Record<SettingsSection, ReactNode> = {
   workspace: <FolderOpen size={15} />,
   notifications: <Bell size={15} />,
   agents: <Bot size={15} />,
+  jarvis: <AudioLines size={15} />,
   system: <Server size={15} />,
   diagnostics: <Activity size={15} />,
   shortcuts: <Keyboard size={15} />,
@@ -315,6 +329,8 @@ export function SettingsRoom({
               onInstallHermes={onInstallHermes}
             />
           )}
+
+          {activeSection.id === "jarvis" && <JarvisSection onOpenRemoteAccess={() => onSectionChange("system")} />}
 
           {activeSection.id === "system" && (
             <>
@@ -855,6 +871,116 @@ function AgentsSection({
             </button>
           </div>
         </details>
+      </SettingsGroup>
+    </>
+  );
+}
+
+// Jarvis keeps its own license; main verifies it offline and pushes the link's
+// state on every change, so this section only listens and offers the actions.
+function JarvisSection({ onOpenRemoteAccess }: { onOpenRemoteAccess: () => void }) {
+  const [state, apply] = useJarvis();
+  const [pending, setPending] = useState<"refresh" | "launch" | "mic" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(kind: "refresh" | "launch" | "mic", action: () => Promise<JarvisState>) {
+    setPending(kind);
+    setError(null);
+    try {
+      apply(await action());
+    } catch (caught) {
+      setError(jarvisErrorMessage(caught));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  const license = state?.license ?? null;
+  const licensed = Boolean(license?.licensed);
+  const licenseView = jarvisLicenseView(license);
+  const status = jarvisStatusView(state);
+  const micOpen = state?.micOpen === true;
+
+  return (
+    <>
+      <SettingsGroup title="License" actions={<StatusPill tone={licenseView.tone}>{licenseView.label}</StatusPill>}>
+        {license && !licensed && (
+          <p className="settingsGroupIntro">
+            Jarvis is a separate app with its own license. Once Jarvis is activated on this computer, that license
+            unlocks it here too.
+          </p>
+        )}
+        <SettingsRow label="Jarvis license" help={license ? jarvisLicenseSummary(license) : "Looking for a Jarvis license on this computer…"}>
+          {licensed && license?.keyMasked ? <code className="settingsPath" title="License key, masked">{license.keyMasked}</code> : null}
+        </SettingsRow>
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Jarvis on this computer"
+        actions={(
+          <button className="ghostButton small" type="button" disabled={pending !== null} onClick={() => void run("refresh", () => desktop.refreshJarvis())}>
+            <RefreshCw size={13} className={pending === "refresh" ? "spinning" : undefined} /> {pending === "refresh" ? "Checking" : "Check again"}
+          </button>
+        )}
+      >
+        <SettingsRow
+          label="App"
+          help={state?.installPath ? <code className="settingsPath">{state.installPath}</code> : "Not found on this computer. Install Jarvis, then check again."}
+        >
+          {licensed && state?.installPath && !state.running ? (
+            <button className="primaryButton small" type="button" disabled={pending !== null} onClick={() => void run("launch", () => desktop.launchJarvis())}>
+              <AudioLines size={13} /> {pending === "launch" ? "Opening…" : "Open Jarvis"}
+            </button>
+          ) : null}
+        </SettingsRow>
+        <SettingsRow
+          label="Status"
+          help={(
+            <>
+              {jarvisConnectionSummary(state)}
+              {state?.lastError ? <span className="jarvisWarning">{state.lastError}</span> : null}
+            </>
+          )}
+        >
+          <StatusPill tone={status.tone}>{status.label}</StatusPill>
+        </SettingsRow>
+        {state?.connected && (
+          <SettingsRow
+            label="Microphone"
+            help={state.micOpen === null ? "Jarvis has not reported its microphone yet." : micOpen ? "Jarvis is listening for you." : "Muted. Jarvis hears nothing until you turn it back on."}
+            labelId="jarvisMicLabel"
+          >
+            <div className="segmentedControl" role="group" aria-labelledby="jarvisMicLabel">
+              <button type="button" className={micOpen ? "active" : ""} aria-pressed={micOpen} disabled={pending !== null} onClick={() => void run("mic", () => desktop.setJarvisMic("on"))}>
+                <Mic size={14} /> On
+              </button>
+              <button type="button" className={state.micOpen === false ? "active" : ""} aria-pressed={state.micOpen === false} disabled={pending !== null} onClick={() => void run("mic", () => desktop.setJarvisMic("off"))}>
+                <MicOff size={14} /> Off
+              </button>
+            </div>
+          </SettingsRow>
+        )}
+        {error && <p className="settingsGroupIntro jarvisError" role="alert">{error}</p>}
+      </SettingsGroup>
+
+      <SettingsGroup title="What Jarvis can do here">
+        <ul className="jarvisAbilities">
+          <li>
+            <Megaphone size={15} aria-hidden="true" />
+            <span>Hears and speaks Athena agent alerts from all your machines.</span>
+          </li>
+          <li>
+            <Bot size={15} aria-hidden="true" />
+            <span>Starts and drives agents on any of your tailnet machines, and asks Hermes.</span>
+          </li>
+          <li>
+            <Smartphone size={15} aria-hidden="true" />
+            <span>
+              Reachable from your phone through Athena remote access (Settings &gt; System &gt; Remote access).{" "}
+              <button className="linkButton" type="button" onClick={onOpenRemoteAccess}>Open Remote access</button>
+            </span>
+          </li>
+        </ul>
       </SettingsGroup>
     </>
   );

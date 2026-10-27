@@ -17,6 +17,7 @@ register(`data:text/javascript,${encodeURIComponent(`
 `)}`);
 
 const {
+  compareAppImageVersions,
   findJarvisInstall,
   initialJarvisState,
   jarvisAlertEvent,
@@ -191,6 +192,25 @@ test("agent alerts become events Jarvis can announce", () => {
   assert.equal(jarvisAlertEvent(alert({ reason: "bell" })), null, "housekeeping stays quiet");
   assert.equal(jarvisAlertEvent(alert({ reason: "exit" })), null);
   assert.equal(jarvisAlertEvent(alert({ agentKind: "shell" })), null, "shells are not agents");
+});
+
+test("a Linux AppImage is found under its release name, newest version first", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "athena-jarvis-appimage-"));
+  try {
+    assert.equal(findJarvisInstall({ HOME: home }, "linux"), null);
+    fs.mkdirSync(path.join(home, "Applications"));
+    fs.mkdirSync(path.join(home, "Downloads"));
+    fs.writeFileSync(path.join(home, "Applications", "Jarvis.AI_0.3.2_amd64.AppImage"), "");
+    assert.equal(findJarvisInstall({ HOME: home }, "linux"), path.join(home, "Applications", "Jarvis.AI_0.3.2_amd64.AppImage"));
+    fs.writeFileSync(path.join(home, "Downloads", "Jarvis.AI_0.3.10_amd64.AppImage"), "");
+    fs.writeFileSync(path.join(home, "Applications", "Jarvis.AI_0.3.9_amd64.AppImage"), "");
+    fs.writeFileSync(path.join(home, "Applications", "Obsidian-1.9.12.AppImage"), "");
+    assert.equal(findJarvisInstall({ HOME: home }, "linux"), path.join(home, "Downloads", "Jarvis.AI_0.3.10_amd64.AppImage"));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+  assert.ok(compareAppImageVersions("Jarvis.AI_0.3.10_amd64.AppImage", "Jarvis.AI_0.3.9_amd64.AppImage") > 0);
+  assert.ok(compareAppImageVersions("Jarvis-AI.AppImage", "Jarvis.AI_0.3.2_amd64.AppImage") < 0, "unversioned sorts last");
 });
 
 test("the Jarvis install is found where its installer puts it", () => {

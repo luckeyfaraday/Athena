@@ -205,12 +205,40 @@ export function findJarvisInstall(env: NodeJS.ProcessEnv = process.env, platform
     candidates.push("/Applications/Jarvis AI.app");
     if (env.HOME) candidates.push(path.join(env.HOME, "Applications", "Jarvis AI.app"));
   } else {
-    if (env.HOME) {
-      candidates.push(path.join(env.HOME, "Applications", "Jarvis-AI.AppImage"), path.join(env.HOME, ".local", "bin", "jarvis-hud"));
-    }
+    // The AppImage keeps its release file name (Jarvis.AI_0.3.3_amd64.AppImage),
+    // so look for any Jarvis AppImage and prefer the newest version.
+    const appImages = [
+      ...(env.HOME ? [path.join(env.HOME, "Applications"), path.join(env.HOME, ".local", "bin"), path.join(env.HOME, "Downloads")] : []),
+      "/opt",
+    ].flatMap((dir) => jarvisAppImages(dir));
+    const newest = appImages.sort((a, b) => compareAppImageVersions(b, a))[0];
+    if (newest) return newest;
+    if (env.HOME) candidates.push(path.join(env.HOME, ".local", "bin", "jarvis-hud"));
     candidates.push("/usr/bin/jarvis-hud", "/opt/Jarvis AI/jarvis-hud");
   }
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+const JARVIS_APPIMAGE = /^jarvis[ ._-]?ai.*\.appimage$/i;
+
+function jarvisAppImages(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir).filter((name) => JARVIS_APPIMAGE.test(name)).map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+}
+
+/** Orders AppImages by the version in their name (0.3.10 > 0.3.9), unversioned last. */
+export function compareAppImageVersions(a: string, b: string): number {
+  const version = (file: string) => /(\d+)\.(\d+)\.(\d+)/.exec(path.basename(file))?.slice(1).map(Number) ?? null;
+  const left = version(a);
+  const right = version(b);
+  if (!left || !right) return left ? 1 : right ? -1 : 0;
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
 }
 
 const QUIET_EVENTS = new Set(["tts.level", "vad.level", "system.level", "gesture.state", "vision.look"]);

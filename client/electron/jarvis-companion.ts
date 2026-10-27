@@ -76,6 +76,9 @@ export type JarvisAudioChunk = { wav: Buffer; sampleRate: number };
 /** A sentence (or the end of a reply) as announced to listeners: never the audio itself. */
 export type JarvisAudioEvent = { turn: string; seq: number; final: boolean; interrupted: boolean };
 
+/** How loud Jarvis's voice (`out`, tts.level) and what its microphone hears (`mic`, vad.level) are, 0..1. */
+export type JarvisLevels = { out: number; mic: number };
+
 export const JARVIS_FEED_LIMIT = 60;
 // Reply audio waits here until the phone fetches it, which is within a second
 // or two; a few recent replies are plenty, and a bound keeps memory flat.
@@ -83,6 +86,10 @@ export const JARVIS_AUDIO_TURNS = 8;
 export const JARVIS_AUDIO_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_TURN_ID_CHARS = 128;
 const MAX_AUDIO_SEQ = 100_000;
+// Jarvis sends each level 20 times a second; a phone's orb needs fewer, and
+// only the ones that move it.
+export const JARVIS_LEVEL_HZ = 15;
+const LEVEL_STEP = 0.02;
 const MAX_FEED_TEXT = 4_000;
 const SESSION_POLL_MS = 2_000;
 const LICENSE_RECHECK_MS = 10 * 60_000;
@@ -357,6 +364,58 @@ export class JarvisAudioStore {
   }
 }
 
+/**
+ * Jarvis's live levels for listeners that animate with them (a phone's orb):
+ * at most `hz` sends a second, only when a level moved noticeably since the
+ * last send, and the latest always goes out once the rate allows (a trailing
+ * send), so the orb settles where Jarvis did. Never part of JarvisState.
+ */
+export class JarvisLevelStream {
+  private latest: JarvisLevels = { out: 0, mic: 0 };
+  private sent: JarvisLevels = { out: 0, mic: 0 };
+  private sentAt = -Infinity;
+  private timer: NodeJS.Timeout | null = null;
+
+  constructor(private readonly emit: (levels: JarvisLevels) => void, private readonly hz = JARVIS_LEVEL_HZ) {}
+
+  /** One tts.level or vad.level bus event; anything else is ignored. */
+  take(event: unknown): void {
+    if (!isRecord(event) || typeof event.level !== "number" || !Number.isFinite(event.level)) return;
+    const level = Math.round(Math.min(1, Math.max(0, event.level)) * 1000) / 1000;
+    if (event.t === "tts.level") this.latest = { ...this.latest, out: level };
+    else if (event.t === "vad.level") this.latest = { ...this.latest, mic: level };
+    else return;
+    this.flush();
+  }
+
+  /** Forget everything, for when nobody is listening. */
+  reset(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.latest = this.sent = { out: 0, mic: 0 };
+    this.sentAt = -Infinity;
+  }
+
+  private flush(): void {
+    if (this.timer) return; // a send is already due
+    const wait = this.sentAt + 1000 / this.hz - Date.now();
+    if (wait > 0) {
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.flush();
+      }, wait);
+      this.timer.unref?.();
+      return;
+    }
+    const moved = (key: keyof JarvisLevels) =>
+      Math.abs(this.latest[key] - this.sent[key]) >= LEVEL_STEP || (this.latest[key] === 0) !== (this.sent[key] === 0);
+    if (!moved("out") && !moved("mic")) return;
+    this.sent = this.latest;
+    this.sentAt = Date.now();
+    this.emit(this.latest);
+  }
+}
+
 // A tts.audio sentence's WAV bytes, or null unless it is one.
 function decodeWav(event: Record<string, unknown>): Buffer | null {
   if (event.format !== "wav" || typeof event.data !== "string") return null;
@@ -422,19 +481,23 @@ export function initialJarvisState(license: JarvisLicenseState): JarvisState {
 
 type Listener = (state: JarvisState) => void;
 type AudioListener = (event: JarvisAudioEvent) => void;
+type LevelListener = (levels: JarvisLevels) => void;
 
 /**
  * The live link. `start` begins watching for a session (cheap: one small file
  * read every couple of seconds) and only opens the bus once the license checks
  * out. Listeners get a fresh state on every meaningful change; audio listeners
  * hear about each reply sentence Jarvis spoke for a companion, which stays out
- * of the state and is fetched with `audioChunk`.
+ * of the state and is fetched with `audioChunk`; level listeners get Jarvis's
+ * voice and microphone levels, throttled, and only while there are any.
  */
 export class JarvisBridge {
   private state: JarvisState;
   private readonly listeners = new Set<Listener>();
   private readonly audioListeners = new Set<AudioListener>();
+  private readonly levelListeners = new Set<LevelListener>();
   private readonly audio = new JarvisAudioStore();
+  private readonly levels = new JarvisLevelStream((levels) => this.emitLevels(levels));
   private session: JarvisSession | null = null;
   private socket: WebSocket | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -464,6 +527,14 @@ export class JarvisBridge {
     return () => this.audioListeners.delete(listener);
   }
 
+  subscribeLevels(listener: LevelListener): () => void {
+    this.levelListeners.add(listener);
+    return () => {
+      this.levelListeners.delete(listener);
+      if (!this.levelListeners.size) this.levels.reset();
+    };
+  }
+
   /** One sentence of a companion reply while it is still held; null once evicted or never seen. */
   audioChunk(turn: string, seq: number): JarvisAudioChunk | null {
     this.requireLicense();
@@ -486,6 +557,7 @@ export class JarvisBridge {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = null;
     this.closeSocket();
+    this.levels.reset();
   }
 
   async refreshLicense(): Promise<JarvisState> {
@@ -594,6 +666,10 @@ export class JarvisBridge {
         if (announced) this.emitAudio(announced);
         return;
       }
+      if (isRecord(event) && (event.t === "tts.level" || event.t === "vad.level")) {
+        if (this.levelListeners.size) this.levels.take(event);
+        return;
+      }
       const next = reduceJarvisEvent(this.state, event, () => ++this.feedId);
       if (next) this.emit(next);
     });
@@ -640,6 +716,16 @@ export class JarvisBridge {
     for (const listener of this.audioListeners) {
       try {
         listener(event);
+      } catch {
+        // as for state listeners
+      }
+    }
+  }
+
+  private emitLevels(levels: JarvisLevels): void {
+    for (const listener of this.levelListeners) {
+      try {
+        listener(levels);
       } catch {
         // as for state listeners
       }

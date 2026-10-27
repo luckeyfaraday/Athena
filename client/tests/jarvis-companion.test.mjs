@@ -29,7 +29,9 @@ const {
   reduceJarvisEvent,
   JarvisAudioStore,
   JarvisBridge,
+  JarvisLevelStream,
   JARVIS_AUDIO_MAX_BYTES,
+  JARVIS_LEVEL_HZ,
   JARVIS_AUDIO_TURNS,
   JARVIS_FEED_LIMIT,
 } = await import("../dist-electron/jarvis-companion.js");
@@ -319,6 +321,43 @@ test("a companion reply keeps its turn in the feed, and its audio stays out of t
   assert.equal(JSON.stringify(state).includes("UklGR"), false, "no WAV in the state");
 });
 
+test("Jarvis's levels reach listeners throttled, only when they move, and settle on the latest", async () => {
+  assert.equal(JARVIS_LEVEL_HZ, 15);
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const sent = [];
+  const stream = new JarvisLevelStream((levels) => sent.push(levels), 20);
+  stream.take({ t: "tts.level", level: 0.5 });
+  assert.deepEqual(sent, [{ out: 0.5, mic: 0 }]);
+  stream.take({ t: "vad.level", level: 0.3 });
+  stream.take({ t: "tts.level", level: 0.61234 });
+  assert.equal(sent.length, 1, "within 1/20 s of the last send");
+  await sleep(90);
+  assert.deepEqual(sent, [{ out: 0.5, mic: 0 }, { out: 0.612, mic: 0.3 }], "the latest goes out once the rate allows");
+  await sleep(60);
+  stream.take({ t: "tts.level", level: 0.62 });
+  await sleep(90);
+  assert.equal(sent.length, 2, "too small a move to send");
+  stream.take({ t: "tts.level", level: 0 });
+  assert.deepEqual(sent.at(-1), { out: 0, mic: 0.3 }, "falling silent always goes out");
+  for (const ignored of [{ t: "tts.level", level: "loud" }, { t: "vad.level", level: Number.NaN }, { t: "system.level", level: 0.9 }, null]) stream.take(ignored);
+  stream.take({ t: "vad.level", level: 7 });
+  await sleep(90);
+  assert.deepEqual(sent.at(-1), { out: 0, mic: 1 }, "clamped to 0..1");
+  assert.equal(sent.length, 4);
+  stream.reset();
+  // Nobody listening: a pending send is dropped, and the next one starts afresh.
+  const quiet = [];
+  const dropped = new JarvisLevelStream((levels) => quiet.push(levels), 20);
+  dropped.take({ t: "vad.level", level: 0.1 });
+  dropped.take({ t: "vad.level", level: 0.2 });
+  dropped.reset();
+  await sleep(90);
+  assert.deepEqual(quiet, [{ out: 0, mic: 0.1 }]);
+  dropped.take({ t: "vad.level", level: 0.2 });
+  assert.deepEqual(quiet, [{ out: 0, mic: 0.1 }, { out: 0, mic: 0.2 }]);
+  dropped.reset();
+});
+
 /**
  * A stand-in Jarvis: its session.json in a temporary config dir, a UI bus (a
  * bare WebSocket server that only sends text frames) and the TCP control
@@ -403,6 +442,8 @@ test("the bridge asks Jarvis for a companion reply and holds its audio for the p
   await bridge.ask("lights off", "athena");
   assert.deepEqual(JSON.parse(jarvis.commands.at(-1).slice(4)), { text: "lights off", from: "athena", reply: "local" });
 
+  // Nobody is listening for levels yet: this one is dropped.
+  jarvis.publish({ t: "tts.level", level: 0.5 });
   jarvis.publish({ t: "tts.text", text: "Sunny.", turn: "t-7" });
   jarvis.publish(sentence("t-7", 0, 70_000));
   jarvis.publish(sentence("t-7", 1));
@@ -415,6 +456,12 @@ test("the bridge asks Jarvis for a companion reply and holds its audio for the p
   ]);
   assert.deepEqual(bridge.audioChunk("t-7", 0).wav, wav(70_000));
   assert.equal(bridge.audioChunk("t-7", 2), null);
+  const levels = [];
+  const stopLevels = bridge.subscribeLevels((value) => levels.push(value));
+  jarvis.publish({ t: "vad.level", level: 0.25 });
+  await until(() => levels.length === 1, "a level");
+  assert.deepEqual(levels, [{ out: 0, mic: 0.25 }], "the voice level from before anyone listened was dropped");
+  stopLevels();
   assert.equal(states.length, 1, "only the reply's text changed the state");
   assert.deepEqual(bridge.getState().feed.map((item) => [item.kind, item.text, item.turn]), [["said", "Sunny.", "t-7"]]);
 });
@@ -481,10 +528,12 @@ test("the control API asks for companion replies, streams their sentences and se
   const events = await fetch(`${base}/jarvis/events`, { signal: controller.signal });
   t.after(() => controller.abort());
   const reading = readStream(events, (text) => text.includes('"final":true'));
+  jarvis.publish({ t: "tts.level", level: 0.42 });
   jarvis.publish(sentence("t-7", 0, 5_000));
   jarvis.publish(ending("t-7", 1, true));
   const stream = await reading;
   assert.match(stream, /^event: jarvis\ndata: \{/);
+  assert.match(stream, /event: jarvis-level\ndata: \{"out":0\.42,"mic":0\}\n\n/);
   assert.match(stream, /event: jarvis-audio\ndata: \{"turn":"t-7","seq":0,"final":false,"interrupted":false\}\n\n/);
   assert.match(stream, /event: jarvis-audio\ndata: \{"turn":"t-7","seq":1,"final":true,"interrupted":true\}\n\n/);
   assert.equal(stream.includes("UklGR"), false, "no audio in the stream");

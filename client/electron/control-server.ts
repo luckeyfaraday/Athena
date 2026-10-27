@@ -1123,9 +1123,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * `jarvis` with the whole state on every change, and `jarvis-audio`
+ * `jarvis` with the whole state on every change, `jarvis-audio`
  * ({ turn, seq, final, interrupted }) as each sentence of a companion reply
- * arrives; the audio itself is fetched from /jarvis/audio/<turn>/<seq>.
+ * arrives (the audio itself is fetched from /jarvis/audio/<turn>/<seq>), and
+ * `jarvis-level` ({ out, mic }, 0..1) as Jarvis's voice and microphone levels
+ * move, at most 15 times a second.
  */
 function streamJarvisEvents(request: IncomingMessage, response: ServerResponse): void {
   response.writeHead(200, {
@@ -1150,6 +1152,7 @@ function streamJarvisEvents(request: IncomingMessage, response: ServerResponse):
   };
   const unsubscribe = jarvisBridge().subscribe((state: JarvisState) => send("jarvis", state));
   const unsubscribeAudio = jarvisBridge().subscribeAudio((audio) => send("jarvis-audio", audio));
+  const unsubscribeLevels = jarvisBridge().subscribeLevels((levels) => send("jarvis-level", levels));
   const heartbeat = setInterval(() => {
     if (!closed) response.write(": keep-alive\n\n");
   }, SSE_HEARTBEAT_INTERVAL_MS);
@@ -1160,6 +1163,7 @@ function streamJarvisEvents(request: IncomingMessage, response: ServerResponse):
     clearInterval(heartbeat);
     unsubscribe();
     unsubscribeAudio();
+    unsubscribeLevels();
   }
   send("jarvis", jarvisBridge().getState());
   request.on("close", cleanup);

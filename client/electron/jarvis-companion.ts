@@ -264,7 +264,10 @@ export function jarvisAlertEvent(alert: JarvisAlert): Record<string, unknown> | 
   if (!alert.agentKind || alert.agentKind === "shell") return null;
   const type = alert.reason === "turn-complete" ? "stop" : alert.kind === "action" ? "notification" : null;
   if (!type) return null;
-  const where = alert.machine ? ` on ${alert.machine}` : alert.workspace ? ` in ${path.basename(alert.workspace.replace(/[\\/]+$/, ""))}` : "";
+  // Split on both separators: the folder name must not depend on which OS
+  // reads a Windows or POSIX workspace path.
+  const folder = alert.workspace?.split(/[\\/]+/).filter(Boolean).at(-1);
+  const where = alert.machine ? ` on ${alert.machine}` : folder ? ` in ${folder}` : "";
   return {
     type,
     source: "athena",

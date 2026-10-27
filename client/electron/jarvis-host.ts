@@ -3,9 +3,10 @@ import { broadcastHostEvent } from "./host-runtime.js";
 import { jarvisBridge } from "./jarvis-companion.js";
 import type { RemoteAttention } from "./remote-client.js";
 
-// Hooks the Jarvis bridge into this host: windows get its state as it changes,
-// and agents finishing or needing the user here are passed to Jarvis to say out
-// loud. Shared by the desktop app and the headless server. No `electron` import.
+// Hooks the Jarvis bridge into this host: windows get its state as it changes
+// (and word of each companion reply sentence, though the dock doesn't play
+// them), and agents finishing or needing the user here are passed to Jarvis to
+// say out loud. Shared by the desktop app and the headless server. No `electron` import.
 
 let started = false;
 
@@ -14,6 +15,7 @@ export function startJarvisCompanion(): void {
   started = true;
   const bridge = jarvisBridge();
   bridge.subscribe((state) => broadcastHostEvent("jarvis:state", state));
+  bridge.subscribeAudio((event) => broadcastHostEvent("jarvis:audio", event));
   onEmbeddedTerminalEvent((channel, payload) => {
     if (channel !== "embedded-terminal:attention" || typeof payload !== "object" || payload === null) return;
     const event = payload as { id?: unknown; kind?: unknown; reason?: unknown; message?: unknown };

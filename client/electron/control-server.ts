@@ -49,7 +49,7 @@ import type { AgentContextMode } from "./agent-context.js";
 import { sessionIndexClient } from "./session-index-client.js";
 import { RemoteSessionHistory, SessionHistoryError } from "./remote-session-history.js";
 import { terminalChatSnapshot } from "./host-chat.js";
-import { jarvisBridge, type JarvisState } from "./jarvis-companion.js";
+import { jarvisBridge, type JarvisAudioChunk, type JarvisState } from "./jarvis-companion.js";
 import { listRelayMachines, relayToMachine } from "./machine-relay.js";
 import { RemoteRequestError, requestJson } from "./remote-client.js";
 import { getBackendState } from "./backend.js";
@@ -1036,12 +1036,13 @@ const EVENT_CHANNELS: Record<string, string> = {
 // Jarvis rides the same listeners as everything else, so a phone on the tailnet
 // reaches it with the remote token exactly like the desktop panel does locally.
 // Status is always readable (it says whether the license is there); acting on
-// Jarvis requires the license, which the bridge enforces.
+// Jarvis requires the license, which the bridge enforces. That includes the
+// audio of replies Jarvis spoke for the phone instead of on this computer.
 async function handleJarvisRequest(request: IncomingMessage, response: ServerResponse, url: URL, source: ControlListener["source"]): Promise<void> {
   const bridge = jarvisBridge();
-  const act = async (run: () => Promise<JarvisState> | JarvisState): Promise<void> => {
+  const act = async (run: () => Promise<Record<string, unknown>> | Record<string, unknown>): Promise<void> => {
     try {
-      sendJson(response, 200, { jarvis: await run() });
+      sendJson(response, 200, await run());
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(response, bridge.getState().license.licensed ? 409 : 403, { error: message, jarvis: bridge.getState() });
@@ -1062,7 +1063,7 @@ async function handleJarvisRequest(request: IncomingMessage, response: ServerRes
       sendJson(response, 400, { error: "state must be \"on\", \"off\" or \"toggle\"" });
       return;
     }
-    await act(() => bridge.setMic(state));
+    await act(async () => ({ jarvis: await bridge.setMic(state) }));
     return;
   }
   if (request.method === "POST" && url.pathname === "/jarvis/ask") {
@@ -1071,16 +1072,47 @@ async function handleJarvisRequest(request: IncomingMessage, response: ServerRes
       sendJson(response, 400, { error: "text is required" });
       return;
     }
+    const reply = body.reply ?? "local";
+    if (reply !== "local" && reply !== "companion") {
+      sendJson(response, 400, { error: "reply must be \"local\" or \"companion\"" });
+      return;
+    }
     const text = body.text;
-    await act(() => bridge.ask(text, source === "remote" ? "remote" : "athena"));
+    // { jarvis, turn }: the turn names the reply's tts.audio (null from an older Jarvis).
+    await act(() => bridge.ask(text, source === "remote" ? "remote" : "athena", reply));
+    return;
+  }
+  const audio = /^\/jarvis\/audio\/([^/]+)\/(\d{1,6})$/.exec(url.pathname);
+  if (request.method === "GET" && audio) {
+    let chunk: JarvisAudioChunk | null;
+    try {
+      chunk = bridge.audioChunk(decodeURIComponent(audio[1]), Number(audio[2]));
+    } catch (error) {
+      if (error instanceof URIError) chunk = null;
+      else {
+        sendJson(response, 403, { error: error instanceof Error ? error.message : String(error), jarvis: bridge.getState() });
+        return;
+      }
+    }
+    if (!chunk) {
+      sendJson(response, 404, { error: "That reply audio is gone or was never here." });
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "audio/wav",
+      "Content-Length": chunk.wav.length,
+      "Cache-Control": "no-store",
+      "X-Jarvis-Sample-Rate": String(chunk.sampleRate),
+    });
+    response.end(chunk.wav);
     return;
   }
   if (request.method === "POST" && url.pathname === "/jarvis/launch") {
-    await act(() => bridge.launch());
+    await act(() => ({ jarvis: bridge.launch() }));
     return;
   }
   if (request.method === "POST" && url.pathname === "/jarvis/refresh") {
-    await act(() => bridge.refreshLicense());
+    await act(async () => ({ jarvis: await bridge.refreshLicense() }));
     return;
   }
   sendJson(response, 404, { error: `Unknown Jarvis endpoint: ${request.method} ${url.pathname}` });
@@ -1090,6 +1122,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * `jarvis` with the whole state on every change, and `jarvis-audio`
+ * ({ turn, seq, final, interrupted }) as each sentence of a companion reply
+ * arrives; the audio itself is fetched from /jarvis/audio/<turn>/<seq>.
+ */
 function streamJarvisEvents(request: IncomingMessage, response: ServerResponse): void {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -1098,7 +1135,7 @@ function streamJarvisEvents(request: IncomingMessage, response: ServerResponse):
     "X-Accel-Buffering": "no",
   });
   let closed = false;
-  const send = (state: JarvisState): void => {
+  const send = (event: string, payload: unknown): void => {
     if (closed) return;
     if (response.writableLength > SSE_MAX_BACKLOG_BYTES) {
       cleanup();
@@ -1106,12 +1143,13 @@ function streamJarvisEvents(request: IncomingMessage, response: ServerResponse):
       return;
     }
     try {
-      response.write(`event: jarvis\ndata: ${JSON.stringify(state)}\n\n`);
+      response.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
     } catch {
       cleanup();
     }
   };
-  const unsubscribe = jarvisBridge().subscribe(send);
+  const unsubscribe = jarvisBridge().subscribe((state: JarvisState) => send("jarvis", state));
+  const unsubscribeAudio = jarvisBridge().subscribeAudio((audio) => send("jarvis-audio", audio));
   const heartbeat = setInterval(() => {
     if (!closed) response.write(": keep-alive\n\n");
   }, SSE_HEARTBEAT_INTERVAL_MS);
@@ -1121,8 +1159,9 @@ function streamJarvisEvents(request: IncomingMessage, response: ServerResponse):
     closed = true;
     clearInterval(heartbeat);
     unsubscribe();
+    unsubscribeAudio();
   }
-  send(jarvisBridge().getState());
+  send("jarvis", jarvisBridge().getState());
   request.on("close", cleanup);
   response.on("close", cleanup);
   response.on("error", cleanup);

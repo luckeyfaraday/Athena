@@ -26,6 +26,8 @@ export type JarvisFeedItem = {
   kind: "heard" | "said" | "announce" | "agent" | "asked";
   text: string;
   agent?: string;
+  /** The turn Jarvis gave a typed request and its reply, when it names one. */
+  turn?: string;
 };
 
 export type JarvisAgent = {
@@ -58,7 +60,29 @@ export type JarvisState = {
   updatedAt: number;
 };
 
+/**
+ * Where Jarvis says its answer to an ask: out loud on its own computer
+ * ("local"), or only as audio for the companion that asked ("companion"),
+ * which Jarvis publishes on its bus sentence by sentence as tts.audio.
+ */
+export type JarvisReply = "local" | "companion";
+
+/** An ask's answer: the state, and the turn of the reply (null from a Jarvis that predates turns). */
+export type JarvisAskResult = { jarvis: JarvisState; turn: string | null };
+
+/** A spoken reply sentence, held for /jarvis/audio. */
+export type JarvisAudioChunk = { wav: Buffer; sampleRate: number };
+
+/** A sentence (or the end of a reply) as announced to listeners: never the audio itself. */
+export type JarvisAudioEvent = { turn: string; seq: number; final: boolean; interrupted: boolean };
+
 export const JARVIS_FEED_LIMIT = 60;
+// Reply audio waits here until the phone fetches it, which is within a second
+// or two; a few recent replies are plenty, and a bound keeps memory flat.
+export const JARVIS_AUDIO_TURNS = 8;
+export const JARVIS_AUDIO_MAX_BYTES = 16 * 1024 * 1024;
+const MAX_TURN_ID_CHARS = 128;
+const MAX_AUDIO_SEQ = 100_000;
 const MAX_FEED_TEXT = 4_000;
 const SESSION_POLL_MS = 2_000;
 const LICENSE_RECHECK_MS = 10 * 60_000;
@@ -201,17 +225,20 @@ export function reduceJarvisEvent(state: JarvisState, event: unknown, nextId: ()
       // Jarvis marks typed requests (from this panel or a phone) so the feed can
       // show them as typed rather than heard.
       const kind = event.source === "typed" ? "asked" : "heard";
-      return next({ partial: null, feed: appendFeed(state.feed, { id: nextId(), at: now, kind, text }) });
+      return next({ partial: null, feed: appendFeed(state.feed, { id: nextId(), at: now, kind, text, ...turnOf(event) }) });
     }
     case "tts.text": {
       if (!text) return null;
       // Jarvis streams a reply sentence by sentence; one reply is one feed item.
+      // A reply that names its turn continues only that turn's item.
       const last = state.feed.at(-1);
-      if (last?.kind === "said" && now - last.at < 30_000) {
+      const turn = turnOf(event).turn;
+      const sameReply = last?.kind === "said" && (turn || last.turn ? last.turn === turn : now - last.at < 30_000);
+      if (last && sameReply) {
         const merged = { ...last, text: `${last.text} ${text}`.slice(0, MAX_FEED_TEXT) };
         return next({ feed: [...state.feed.slice(0, -1), merged] });
       }
-      return next({ feed: appendFeed(state.feed, { id: nextId(), at: now, kind: "said", text }) });
+      return next({ feed: appendFeed(state.feed, { id: nextId(), at: now, kind: "said", text, ...turnOf(event) }) });
     }
     case "announce":
       return text ? next({ feed: appendFeed(state.feed, { id: nextId(), at: now, kind: "announce", text }) }) : null;
@@ -240,6 +267,102 @@ export function reduceJarvisEvent(state: JarvisState, event: unknown, nextId: ()
     default:
       return null;
   }
+}
+
+/** The turn a newer Jarvis gives an ask (`ok {"turn": "<id>"}`); null from one that answers `ok asked`. */
+export function jarvisAskTurn(reply: string): string | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(reply);
+  } catch {
+    return null;
+  }
+  return isRecord(value) ? (turnOf(value).turn ?? null) : null;
+}
+
+type AudioTurn = { chunks: Map<number, JarvisAudioChunk>; done: boolean };
+
+/**
+ * The audio of replies Jarvis kept off its own speakers for a companion
+ * (a phone), until the companion fetches it. Bounded by turns and bytes: the
+ * oldest reply goes first, and a reply too long for the budget on its own
+ * lets its earliest sentences go, which the companion fetched as they came.
+ * A reply ends with its final marker; anything later for it is ignored.
+ */
+export class JarvisAudioStore {
+  private readonly turns = new Map<string, AudioTurn>();
+  private bytes = 0;
+
+  constructor(private readonly limits = { turns: JARVIS_AUDIO_TURNS, bytes: JARVIS_AUDIO_MAX_BYTES }) {}
+
+  /** Take one tts.audio bus event. Returns what to announce, or null for a malformed or late one. */
+  add(event: unknown): JarvisAudioEvent | null {
+    if (!isRecord(event) || event.t !== "tts.audio") return null;
+    const { turn: id } = turnOf(event);
+    const seq = event.seq;
+    if (!id || !Number.isSafeInteger(seq) || (seq as number) < 0 || (seq as number) > MAX_AUDIO_SEQ) return null;
+    const announced: JarvisAudioEvent = { turn: id, seq: seq as number, final: event.final === true, interrupted: event.interrupted === true };
+    const existing = this.turns.get(id);
+    if (existing?.done) return null;
+    if (announced.final) {
+      this.turnFor(id, existing).done = true;
+      this.trim(id);
+      return announced;
+    }
+    const wav = decodeWav(event);
+    if (!wav) return null;
+    const turn = this.turnFor(id, existing);
+    this.bytes -= turn.chunks.get(announced.seq)?.wav.length ?? 0;
+    turn.chunks.set(announced.seq, { wav, sampleRate: event.sample_rate as number });
+    this.bytes += wav.length;
+    this.trim(id);
+    return announced;
+  }
+
+  get(turn: string, seq: number): JarvisAudioChunk | null {
+    return this.turns.get(turn)?.chunks.get(seq) ?? null;
+  }
+
+  /** Held turns and bytes, for tests and diagnostics. */
+  size(): { turns: number; bytes: number } {
+    return { turns: this.turns.size, bytes: this.bytes };
+  }
+
+  clear(): void {
+    this.turns.clear();
+    this.bytes = 0;
+  }
+
+  private turnFor(id: string, existing: AudioTurn | undefined): AudioTurn {
+    if (existing) return existing;
+    const turn: AudioTurn = { chunks: new Map(), done: false };
+    this.turns.set(id, turn);
+    return turn;
+  }
+
+  private trim(keep: string): void {
+    for (const [id, turn] of this.turns) {
+      if (this.turns.size <= this.limits.turns && this.bytes <= this.limits.bytes) return;
+      if (id === keep) continue;
+      this.turns.delete(id);
+      for (const chunk of turn.chunks.values()) this.bytes -= chunk.wav.length;
+    }
+    const current = this.turns.get(keep);
+    if (!current) return;
+    for (const [seq, chunk] of current.chunks) {
+      if (this.bytes <= this.limits.bytes) return;
+      current.chunks.delete(seq);
+      this.bytes -= chunk.wav.length;
+    }
+  }
+}
+
+// A tts.audio sentence's WAV bytes, or null unless it is one.
+function decodeWav(event: Record<string, unknown>): Buffer | null {
+  if (event.format !== "wav" || typeof event.data !== "string") return null;
+  if (!Number.isSafeInteger(event.sample_rate) || (event.sample_rate as number) <= 0) return null;
+  const wav = Buffer.from(event.data, "base64");
+  return wav.length > 12 && wav.toString("latin1", 0, 4) === "RIFF" && wav.toString("latin1", 8, 12) === "WAVE" ? wav : null;
 }
 
 /** An Athena pane (here or on another machine) that finished or needs the user. */
@@ -298,15 +421,20 @@ export function initialJarvisState(license: JarvisLicenseState): JarvisState {
 }
 
 type Listener = (state: JarvisState) => void;
+type AudioListener = (event: JarvisAudioEvent) => void;
 
 /**
  * The live link. `start` begins watching for a session (cheap: one small file
  * read every couple of seconds) and only opens the bus once the license checks
- * out. Listeners get a fresh state on every meaningful change.
+ * out. Listeners get a fresh state on every meaningful change; audio listeners
+ * hear about each reply sentence Jarvis spoke for a companion, which stays out
+ * of the state and is fetched with `audioChunk`.
  */
 export class JarvisBridge {
   private state: JarvisState;
   private readonly listeners = new Set<Listener>();
+  private readonly audioListeners = new Set<AudioListener>();
+  private readonly audio = new JarvisAudioStore();
   private session: JarvisSession | null = null;
   private socket: WebSocket | null = null;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -315,7 +443,10 @@ export class JarvisBridge {
   private feedId = 0;
   private started = false;
 
-  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {
+  constructor(
+    private readonly env: NodeJS.ProcessEnv = process.env,
+    private readonly readLicense: (env: NodeJS.ProcessEnv) => Promise<JarvisLicenseState> = (env) => readJarvisLicense({ env }),
+  ) {
     this.state = initialJarvisState({ licensed: false, detail: "checking the Jarvis license", offlineUntil: null, licenseId: null, keyMasked: null, instanceName: null });
   }
 
@@ -326,6 +457,17 @@ export class JarvisBridge {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeAudio(listener: AudioListener): () => void {
+    this.audioListeners.add(listener);
+    return () => this.audioListeners.delete(listener);
+  }
+
+  /** One sentence of a companion reply while it is still held; null once evicted or never seen. */
+  audioChunk(turn: string, seq: number): JarvisAudioChunk | null {
+    this.requireLicense();
+    return this.audio.get(turn, seq);
   }
 
   async start(): Promise<JarvisState> {
@@ -347,7 +489,7 @@ export class JarvisBridge {
   }
 
   async refreshLicense(): Promise<JarvisState> {
-    const license = await readJarvisLicense({ env: this.env });
+    const license = await this.readLicense(this.env);
     this.licenseCheckedAt = Date.now();
     this.update({ license, installPath: findJarvisInstall(this.env) });
     if (!license.licensed) this.closeSocket();
@@ -363,16 +505,19 @@ export class JarvisBridge {
 
   /**
    * Hand Jarvis a typed request as if it had been spoken: from the Athena panel
-   * or a phone. The reply arrives on the bus like any other.
+   * or a phone. The reply's text arrives on the bus like any other; a
+   * "companion" reply is not spoken on this computer but sent as tts.audio for
+   * the asker to play. A Jarvis that predates replies ignores `reply`, speaks
+   * aloud, and names no turn.
    */
-  async ask(text: string, from: string): Promise<JarvisState> {
+  async ask(text: string, from: string, reply: JarvisReply = "local"): Promise<JarvisAskResult> {
     const trimmed = text.trim();
     if (!trimmed) throw new Error("say something for Jarvis to do");
     if (trimmed.length > MAX_ASK_CHARS) throw new Error(`keep requests under ${MAX_ASK_CHARS} characters`);
     // The request comes back on the bus as a typed stt.final, which is what
     // puts it in the feed; adding it here too would show it twice.
-    await jarvisControl(this.requireSession(), `ask ${JSON.stringify({ text: trimmed, from })}`);
-    return this.state;
+    const answer = await jarvisControl(this.requireSession(), `ask ${JSON.stringify({ text: trimmed, from, reply })}`);
+    return { jarvis: this.state, turn: jarvisAskTurn(answer) };
   }
 
   /** Tell Jarvis an Athena agent finished or needs the user, so it can say so. Best effort. */
@@ -413,6 +558,8 @@ export class JarvisBridge {
     const changed = !sameSession(session, this.session);
     if (changed) {
       this.closeSocket();
+      // Another Jarvis may number its turns afresh.
+      this.audio.clear();
       this.session = session;
       this.update({ running: session !== null, connected: false, activity: "idle", partial: null, ...(session ? {} : { micOpen: null, agents: [] }) });
     }
@@ -439,6 +586,12 @@ export class JarvisBridge {
       try {
         event = JSON.parse(message.data);
       } catch {
+        return;
+      }
+      if (isRecord(event) && event.t === "tts.audio") {
+        // A companion reply's sentence: held for /jarvis/audio, never in the state.
+        const announced = this.audio.add(event);
+        if (announced) this.emitAudio(announced);
         return;
       }
       const next = reduceJarvisEvent(this.state, event, () => ++this.feedId);
@@ -482,6 +635,16 @@ export class JarvisBridge {
       }
     }
   }
+
+  private emitAudio(event: JarvisAudioEvent): void {
+    for (const listener of this.audioListeners) {
+      try {
+        listener(event);
+      } catch {
+        // as for state listeners
+      }
+    }
+  }
 }
 
 let bridge: JarvisBridge | null = null;
@@ -494,6 +657,12 @@ export function jarvisBridge(): JarvisBridge {
 
 function appendFeed(feed: JarvisFeedItem[], item: JarvisFeedItem): JarvisFeedItem[] {
   return [...feed, item].slice(-JARVIS_FEED_LIMIT);
+}
+
+// The turn an event names, spread into a feed item only when it has one.
+function turnOf(event: Record<string, unknown>): { turn?: string } {
+  const turn = event.turn;
+  return typeof turn === "string" && turn && turn.length <= MAX_TURN_ID_CHARS ? { turn } : {};
 }
 
 function rosterEntry(value: unknown): JarvisAgent | null {

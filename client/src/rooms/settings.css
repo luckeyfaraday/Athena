@@ -648,6 +648,34 @@
   white-space: nowrap;
 }
 
+/* ── JARVIS ───────────────────────────────────────────────────────────────── */
+.settingsRowLabel > span .jarvisWarning {
+  margin-top: 4px;
+  display: block;
+  color: var(--warn);
+}
+.settingsGroupIntro.jarvisError {
+  border-top: 1px solid var(--border);
+  color: var(--danger);
+}
+.jarvisAbilities {
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+}
+.jarvisAbilities li {
+  padding: 8px 16px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+.jarvisAbilities li > svg { margin-top: 3px; color: var(--info); }
+.jarvisAbilities .linkButton { font-size: inherit; }
+
 /* ── AGENTS ───────────────────────────────────────────────────────────────── */
 .agentCliList {
   margin: 0;

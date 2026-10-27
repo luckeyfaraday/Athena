@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { configureHostRuntime, hostStatePath } from "./host-runtime.js";
 import { acquireServerLock, parseServerOptions, serverServiceFile } from "./server-options.js";
 import { readRemoteAccessConfig, writeRemoteAccessConfig, generateRemoteToken } from "./remote-access.js";
+import type { RemoteAttention } from "./remote-client.js";
 
 const entry = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(entry), "../..");
@@ -79,6 +81,7 @@ service-file prints a systemd user unit. See server/README.md for installation.`
   const { resolveNpmGlobalPrefix } = await import("./terminal-env.js");
   let stopping = false;
   let startup: Promise<void>;
+  let machines: import("./remote-client.js").RemoteClient | null = null;
   async function shutdown(code: number): Promise<void> {
     if (stopping) return;
     stopping = true;
@@ -87,6 +90,7 @@ service-file prints a systemd user unit. See server/README.md for installation.`
       // Finish startup before tearing down, so it cannot reopen a listener.
       await startup?.catch(() => undefined);
       sessionIndexClient.dispose();
+      machines?.dispose();
       const results = await Promise.allSettled([
         remote.stopRemoteAccess(), control.stopControlServer(),
         engine.prepareEmbeddedTerminalRestoreForQuit(), backend.stopBackend(),
@@ -132,6 +136,38 @@ service-file prints a systemd user unit. See server/README.md for installation.`
     });
     const state = await remote.startRemoteAccess();
     if (stopping) return;
+    // Local clients (Jarvis, the CLI) reach the user's other machines through
+    // this service exactly as through the desktop: same discovery, and a token
+    // file of its own under the data dir.
+    const { RemoteClient, RemoteTokenStore } = await import("./remote-client.js");
+    const { discoverMachines, RemoteMachineDirectory } = await import("./remote-machines.js");
+    const { tailscaleStatus } = await import("./tailscale.js");
+    const { setMachineRelaySource } = await import("./machine-relay.js");
+    const jarvis = await import("./jarvis-host.js");
+    const tokens = new RemoteTokenStore(path.join(options.dataDir, "remote-tokens.json"));
+    const directory = new RemoteMachineDirectory(async (fresh) => discoverMachines({
+      status: await tailscaleStatus(fresh ? { maxAgeMs: 0 } : {}),
+      port: remote.getRemoteAccessPort(),
+      tokenFor: (machineId) => tokens.get(machineId),
+    }));
+    machines = new RemoteClient({
+      discover: (fresh) => directory.refresh(fresh),
+      tokenFor: (machineId) => tokens.get(machineId),
+      broadcast: (channel, payload) => {
+        if (channel === "remote:attention") jarvis.relayRemoteAttentionToJarvis(payload as RemoteAttention);
+      },
+      selfName: () => os.hostname(),
+    });
+    const relayClient = machines;
+    setMachineRelaySource({
+      snapshot: async () => {
+        relayClient.start();
+        return directory.state ? relayClient.snapshot() : relayClient.refresh(false);
+      },
+      tokenFor: (machineId) => tokens.get(machineId),
+    });
+    // A Linux box running Jarvis gets the same companion as the desktop.
+    jarvis.startJarvisCompanion();
     if (options.restore) await engine.restoreEmbeddedTerminals();
     console.log(`Athena server ready. State: ${options.dataDir}`);
     for (const url of state.urls) console.log(`Tailscale: ${url}`);

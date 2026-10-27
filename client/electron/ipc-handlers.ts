@@ -22,6 +22,9 @@ import {
   type ControlState,
 } from "./control-server.js";
 import { normalizeExternalUrl } from "./external-links.js";
+import { jarvisBridge, type JarvisState } from "./jarvis-companion.js";
+import { relayRemoteAttentionToJarvis } from "./jarvis-host.js";
+import { setMachineRelaySource } from "./machine-relay.js";
 import { discoverMachines, RemoteMachineDirectory, type RemoteMachinesState } from "./remote-machines.js";
 import { reportWorkspaces } from "./workspace-registry.js";
 import { cachedTailscaleStatus, tailscaleStatus } from "./tailscale.js";
@@ -29,6 +32,7 @@ import {
   isRemoteTerminalId,
   RemoteClient,
   RemoteTokenStore,
+  type RemoteAttention,
   type RemoteSnapshot,
   type RemoteSpawnRequest,
 } from "./remote-client.js";
@@ -198,6 +202,7 @@ const remoteClient = new RemoteClient({
   discover: (fresh) => machineDirectory.refresh(fresh),
   tokenFor: (machineId) => remoteTokens().get(machineId),
   broadcast: (channel, payload) => {
+    if (channel === "remote:attention") relayRemoteAttentionToJarvis(payload as RemoteAttention);
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send(channel, payload);
     }
@@ -208,7 +213,18 @@ const remoteClient = new RemoteClient({
   },
 });
 
+// Jarvis (and other local control clients) reach the same machines through
+// /machines; discovery starts on first use, as it does for the renderer.
+setMachineRelaySource({
+  snapshot: async () => {
+    remoteClient.start();
+    return machineDirectory.state ? remoteClient.snapshot() : remoteClient.refresh(false);
+  },
+  tokenFor: (machineId) => remoteTokens().get(machineId),
+});
+
 export function disposeRemoteClient(): void {
+  setMachineRelaySource(null);
   remoteClient.dispose();
 }
 
@@ -412,6 +428,14 @@ export function registerIpcHandlers(appRoot: string): void {
     return machineDirectory.state ? remoteClient.snapshot() : remoteClient.refresh(false);
   });
   handle("remote:refresh", (): Promise<RemoteSnapshot> => remoteClient.refresh(true));
+  handle("jarvis:getState", (): JarvisState => jarvisBridge().getState());
+  handle("jarvis:refresh", (): Promise<JarvisState> => jarvisBridge().refreshLicense());
+  handle("jarvis:launch", (): JarvisState => jarvisBridge().launch());
+  handle("jarvis:setMic", (_event, state: unknown): Promise<JarvisState> => {
+    if (state !== "on" && state !== "off" && state !== "toggle") throw new Error("mic state must be on, off or toggle");
+    return jarvisBridge().setMic(state);
+  });
+  handle("jarvis:ask", (_event, text: unknown): Promise<JarvisState> => jarvisBridge().ask(String(text ?? ""), "athena"));
   handle("remote:spawn", (_event, machineId: string, request: RemoteSpawnRequest): Promise<EmbeddedTerminalSession[]> =>
     remoteClient.spawn(String(machineId), request));
   handle("remote:agentSessions", (_event, machineId: string, workspace: string, cursor?: string | null) =>
@@ -498,6 +522,7 @@ const IPC_HOT_CHANNELS = new Set([
   "remoteAccess:getState",
   "remoteMachines:get",
   "remote:snapshot",
+  "jarvis:getState",
   "launchState:get",
   "preferences:get",
   "graphics:getStatus",

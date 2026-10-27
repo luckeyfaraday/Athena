@@ -49,6 +49,10 @@ import type { AgentContextMode } from "./agent-context.js";
 import { sessionIndexClient } from "./session-index-client.js";
 import { RemoteSessionHistory, SessionHistoryError } from "./remote-session-history.js";
 import { terminalChatSnapshot } from "./host-chat.js";
+import { jarvisBridge, type JarvisState } from "./jarvis-companion.js";
+import { listRelayMachines, relayToMachine } from "./machine-relay.js";
+import { RemoteRequestError, requestJson } from "./remote-client.js";
+import { getBackendState } from "./backend.js";
 
 const remoteSessionHistory = new RemoteSessionHistory((workspace) => sessionIndexClient.listAgentSessions(workspace, false));
 
@@ -358,6 +362,49 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
     }
     if (request.method === "GET" && url.pathname === "/events") {
       streamControlEvents(request, response);
+      return;
+    }
+    if (url.pathname === "/jarvis" || url.pathname.startsWith("/jarvis/")) {
+      await handleJarvisRequest(request, response, url, listener.source);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/machines" && listener.source === "local") {
+      const relayed = await listRelayMachines();
+      sendJson(response, 200, {
+        self: { id: "self", name: os.hostname(), platform: process.platform, homedir: os.homedir() },
+        ...relayed,
+      });
+      return;
+    }
+    if (url.pathname.startsWith("/machines/") && listener.source === "local") {
+      const rest = url.pathname.slice("/machines/".length);
+      const slash = rest.indexOf("/");
+      if (slash <= 0) {
+        sendJson(response, 404, { error: "Use /machines/<id>/<route>." });
+        return;
+      }
+      const machineId = decodeURIComponent(rest.slice(0, slash));
+      const body = request.method === "GET" ? undefined : await readJsonBody(request);
+      const result = await relayToMachine(machineId, request.method ?? "GET", `${rest.slice(slash)}${url.search}`, body);
+      sendJson(response, result.status, result.body);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/hermes/ask") {
+      // The backend is loopback-only and unauthenticated; this puts Hermes
+      // behind the control API's auth so other machines (and Jarvis) can ask.
+      const backendUrl = getBackendState().baseUrl;
+      if (!backendUrl) {
+        sendJson(response, 503, { error: "Athena's backend isn't running, so Hermes can't be asked here." });
+        return;
+      }
+      const body = await readJsonBody(request);
+      const seconds = isRecord(body) && typeof body.timeout_seconds === "number" ? Math.min(Math.max(body.timeout_seconds, 1), 600) : 120;
+      try {
+        sendJson(response, 200, await requestJson(`${backendUrl}/hermes/ask`, { method: "POST", body, timeoutMs: (seconds + 5) * 1000 }));
+      } catch (error) {
+        if (error instanceof RemoteRequestError) sendJson(response, error.status || 502, error.body ?? { error: error.message });
+        else sendJson(response, 502, { error: `Hermes did not answer: ${error instanceof Error ? error.message : String(error)}` });
+      }
       return;
     }
     if (request.method === "GET" && url.pathname === "/workspaces") {
@@ -986,6 +1033,101 @@ const EVENT_CHANNELS: Record<string, string> = {
  * with every terminal and the open workspace tabs, then `session`, `attention`,
  * `exit`, and `workspaces` as they happen. Payloads are JSON.
  */
+// Jarvis rides the same listeners as everything else, so a phone on the tailnet
+// reaches it with the remote token exactly like the desktop panel does locally.
+// Status is always readable (it says whether the license is there); acting on
+// Jarvis requires the license, which the bridge enforces.
+async function handleJarvisRequest(request: IncomingMessage, response: ServerResponse, url: URL, source: ControlListener["source"]): Promise<void> {
+  const bridge = jarvisBridge();
+  const act = async (run: () => Promise<JarvisState> | JarvisState): Promise<void> => {
+    try {
+      sendJson(response, 200, { jarvis: await run() });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendJson(response, bridge.getState().license.licensed ? 409 : 403, { error: message, jarvis: bridge.getState() });
+    }
+  };
+  if (request.method === "GET" && url.pathname === "/jarvis") {
+    sendJson(response, 200, { jarvis: bridge.getState() });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/jarvis/events") {
+    streamJarvisEvents(request, response);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/jarvis/mic") {
+    const body = await readJsonBody(request);
+    const state = isRecord(body) ? body.state : undefined;
+    if (state !== "on" && state !== "off" && state !== "toggle") {
+      sendJson(response, 400, { error: "state must be \"on\", \"off\" or \"toggle\"" });
+      return;
+    }
+    await act(() => bridge.setMic(state));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/jarvis/ask") {
+    const body = await readJsonBody(request);
+    if (!isRecord(body) || typeof body.text !== "string") {
+      sendJson(response, 400, { error: "text is required" });
+      return;
+    }
+    const text = body.text;
+    await act(() => bridge.ask(text, source === "remote" ? "remote" : "athena"));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/jarvis/launch") {
+    await act(() => bridge.launch());
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/jarvis/refresh") {
+    await act(() => bridge.refreshLicense());
+    return;
+  }
+  sendJson(response, 404, { error: `Unknown Jarvis endpoint: ${request.method} ${url.pathname}` });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function streamJarvisEvents(request: IncomingMessage, response: ServerResponse): void {
+  response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  let closed = false;
+  const send = (state: JarvisState): void => {
+    if (closed) return;
+    if (response.writableLength > SSE_MAX_BACKLOG_BYTES) {
+      cleanup();
+      response.destroy(new Error("Event stream backpressure exceeded."));
+      return;
+    }
+    try {
+      response.write(`event: jarvis\ndata: ${JSON.stringify(state)}\n\n`);
+    } catch {
+      cleanup();
+    }
+  };
+  const unsubscribe = jarvisBridge().subscribe(send);
+  const heartbeat = setInterval(() => {
+    if (!closed) response.write(": keep-alive\n\n");
+  }, SSE_HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
+  function cleanup(): void {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+  }
+  send(jarvisBridge().getState());
+  request.on("close", cleanup);
+  response.on("close", cleanup);
+  response.on("error", cleanup);
+}
+
 function streamControlEvents(request: IncomingMessage, response: ServerResponse): void {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",

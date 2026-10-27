@@ -18,6 +18,7 @@ export const interfaceModeStorageKey = "context-workspace:interfaceMode";
 export const uiThemeStorageKey = "context-workspace:uiTheme";
 export const notificationsStorageKey = "context-workspace:notifications";
 export const densityStorageKey = "context-workspace:density";
+export const jarvisDockStorageKey = "context-workspace:jarvisDock";
 
 const maxWorkspaceTabs = 12;
 
@@ -125,6 +126,21 @@ export function readDensity(): Density {
 
 export function writeDensity(density: Density): void {
   writeStorageValue(densityStorageKey, density);
+}
+
+// The Command Room's Jarvis dock: just its bar ("collapsed"), or the bar and the feed ("open").
+export function parseJarvisDockCollapsed(value: string | null): boolean | null {
+  if (value === "collapsed") return true;
+  if (value === "open") return false;
+  return null;
+}
+
+export function readJarvisDockCollapsed(): boolean {
+  return parseJarvisDockCollapsed(storedValue(jarvisDockStorageKey)) ?? false;
+}
+
+export function writeJarvisDockCollapsed(collapsed: boolean): void {
+  writeStorageValue(jarvisDockStorageKey, collapsed ? "collapsed" : "open");
 }
 
 export function readNotificationPreferences(): NotificationPreferences {

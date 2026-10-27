@@ -313,6 +313,7 @@ export type JarvisFeedItem = {
   kind: "heard" | "said" | "announce" | "agent" | "asked";
   text: string;
   agent?: string;
+  turn?: string;
 };
 
 export type JarvisAgent = {

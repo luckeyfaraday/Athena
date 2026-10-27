@@ -435,7 +435,8 @@ export function registerIpcHandlers(appRoot: string): void {
     if (state !== "on" && state !== "off" && state !== "toggle") throw new Error("mic state must be on, off or toggle");
     return jarvisBridge().setMic(state);
   });
-  handle("jarvis:ask", (_event, text: unknown): Promise<JarvisState> => jarvisBridge().ask(String(text ?? ""), "athena"));
+  // The desktop asks for a local reply: Jarvis answers on this computer's speakers.
+  handle("jarvis:ask", async (_event, text: unknown): Promise<JarvisState> => (await jarvisBridge().ask(String(text ?? ""), "athena", "local")).jarvis);
   handle("remote:spawn", (_event, machineId: string, request: RemoteSpawnRequest): Promise<EmbeddedTerminalSession[]> =>
     remoteClient.spawn(String(machineId), request));
   handle("remote:agentSessions", (_event, machineId: string, workspace: string, cursor?: string | null) =>

@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -293,12 +297,141 @@ test("PowerShell builder escapes embedded double-quotes in the prompt for the na
   // Windows PowerShell 5.1 does not escape embedded double-quotes when building a native
   // command line, so npm agent shims (codex.ps1 / claude) that re-forward $args to node would
   // otherwise shatter a quote-containing prompt into multiple argv tokens (e.g. a stray
-  // "hermes" subcommand). The prompt must be read with embedded `"` pre-escaped as `\"`.
+  // "hermes" subcommand). The prompt must be read with embedded `"` pre-escaped as `\"` there,
+  // but not on pwsh 7.3+, which escapes them itself and would pass the agent a literal `\"`.
   for (const kind of ["codex", "claude", "opencode"]) {
     const command = launchPowerShellCommand(kind, "C:\\ws", "C:\\tmp\\p.md", null);
-    assert.match(command, /\$prompt = \(Get-Content -LiteralPath \$promptPath -Raw\)\.Replace\('"', '\\"'\)/);
+    assert.match(command, /\$prompt = Get-Content -LiteralPath \$promptPath -Raw -Encoding UTF8/);
+    assert.match(command, /-notin @\('Standard', 'Windows'\)\) \{ \$prompt = \$prompt\.Replace\('"', '\\"'\) \}/);
   }
 });
+
+test("PowerShell builders never hand launch arguments to a batch shim when another candidate exists", () => {
+  // cmd.exe cuts `%*` at the first newline, so a Scoop shims\claude.cmd ahead of npm's
+  // claude.ps1 on PATH delivered only "# Athena Task".
+  for (const command of [
+    launchPowerShellCommand("claude", "C:\\ws", "C:\\tmp\\p.md", null),
+    launchPowerShellCommand("codex", "C:\\ws", "C:\\tmp\\p.md", null),
+    launchResumePowerShellCommand("claude", "C:\\ws", "sess-1", null),
+  ]) {
+    assert.match(command, /Get-Command \$agentCommand -All .*\\\.\(exe\|ps1\)\$/);
+    // The batch check must run before the per-agent repair, which reads $resolvedAgent.Path.
+    assert.ok(command.indexOf("$nonBatchAgent") < command.indexOf("$agentArgs"));
+  }
+  const claude = launchPowerShellCommand("claude", "C:\\ws", "C:\\tmp\\p.md", null);
+  assert.ok(claude.indexOf("$nonBatchAgent") < claude.indexOf("$claudeBinDirs"));
+  // Only a batch shim left: pass the prompt file path, never the multi-line prompt.
+  assert.match(claude, /Read the Athena task file at \$promptPath and follow it\./);
+  assert.ok(claude.indexOf("Read the Athena task file") < claude.indexOf("$prompt.Replace"));
+  assert.doesNotMatch(launchPowerShellCommand("claude", "C:\\ws", null, null), /Read the Athena task file/);
+});
+
+const windowsShells = process.platform === "win32" ? resolveWindowsShells() : [];
+
+function resolveWindowsShells() {
+  return ["pwsh.exe", "powershell.exe"].flatMap((name) => {
+    try {
+      const found = execFileSync("where.exe", [name], { encoding: "utf8", windowsHide: true }).split(/\r?\n/)[0].trim();
+      return found ? [{ name, path: found }] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+// Runs the real Windows launch script against fake agent shims and returns the argv each
+// agent invocation received. `shims` maps a PATH directory name to the shim files in it.
+function runWindowsAgentLaunch(shell, kind, prompt, shims) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "athena-launch-"));
+  try {
+    const log = path.join(root, "argv.jsonl");
+    const agent = path.join(root, "agent.cjs");
+    fs.writeFileSync(agent, [
+      "const fs = require('node:fs');",
+      "const args = process.argv.slice(2);",
+      "if (args[0] === '--version') { console.log('1.0.0'); process.exit(0); }",
+      "fs.appendFileSync(process.env.FAKE_AGENT_LOG, JSON.stringify({ shim: process.env.FAKE_AGENT_SHIM, args }) + '\\n');",
+    ].join("\n"));
+    const pathDirs = [];
+    for (const [dirName, files] of Object.entries(shims)) {
+      const dir = path.join(root, dirName);
+      fs.mkdirSync(dir);
+      pathDirs.push(dir);
+      for (const file of files) {
+        const shimName = `${dirName}/${path.extname(file).slice(1)}`;
+        const body = file.endsWith(".ps1")
+          // npm's .ps1 shim shape: re-forward $args to a native executable.
+          ? `$env:FAKE_AGENT_SHIM = '${shimName}'\r\n& "${process.execPath}" "${agent}" $args\r\nexit $LASTEXITCODE\r\n`
+          : `@echo off\r\nset FAKE_AGENT_SHIM=${shimName}\r\n"${process.execPath}" "${agent}" %*\r\n`;
+        fs.writeFileSync(path.join(dir, file), body);
+      }
+    }
+    const promptPath = path.join(root, "prompt.md");
+    fs.writeFileSync(promptPath, prompt, "utf8");
+    const workspace = path.join(root, "workspace");
+    fs.mkdirSync(workspace);
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    const output = execFileSync(shell.path, [
+      "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+      launchPowerShellCommand(kind, workspace, promptPath, { configPath: path.join(root, "mcp.json") }, kind === "claude" ? "sess-1" : null, null, shell.name),
+    ], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 60000,
+      env: {
+        ...process.env,
+        // Only the fake shims resolve; USERPROFILE moves $HOME so Claude's launch probe cache stays in the sandbox.
+        PATH: [...pathDirs, path.join(systemRoot, "System32"), systemRoot].join(";"),
+        USERPROFILE: root,
+        FAKE_AGENT_LOG: log,
+      },
+    });
+    const calls = fs.existsSync(log)
+      ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line))
+      : [];
+    return { calls, output, promptPath };
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const NASTY_PROMPT = [
+  "# Athena Task",
+  "Workspace: C:\\Users\\dev\\project",
+  'Task: fix "quoted" bugs & keep 100% of %PATH% ^ intact | <ok> café — naïve',
+  'JSON: `{ "project_dir": "<workspace>", "question": "<question>" }`',
+  "",
+  "Last line.",
+].join("\n");
+
+for (const shell of windowsShells) {
+  test(`${shell.name} launch delivers the full multi-line task past a batch shim ahead on PATH`, { timeout: 120000 }, () => {
+    // Scoop's shims\claude.cmd sits ahead of npm's claude.ps1 + claude.cmd.
+    const { calls } = runWindowsAgentLaunch(shell, "claude", NASTY_PROMPT, {
+      scoop: ["claude.cmd"],
+      npm: ["claude.ps1", "claude.cmd"],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].shim, "npm/ps1");
+    const [sessionFlag, sessionId, mcpFlag, mcpPath, separator, prompt, ...extra] = calls[0].args;
+    assert.deepEqual([sessionFlag, sessionId, mcpFlag, separator], ["--session-id", "sess-1", "--mcp-config", "--"]);
+    assert.match(mcpPath, /mcp\.json$/);
+    assert.equal(prompt, NASTY_PROMPT);
+    assert.deepEqual(extra, []);
+
+    const codex = runWindowsAgentLaunch(shell, "codex", NASTY_PROMPT, { scoop: ["codex.cmd"], npm: ["codex.ps1", "codex.cmd"] });
+    assert.equal(codex.calls.length, 1);
+    assert.equal(codex.calls[0].shim, "npm/ps1");
+    assert.equal(codex.calls[0].args.at(-1), NASTY_PROMPT);
+  });
+
+  test(`${shell.name} launch passes the task file path when only a batch shim can run the agent`, { timeout: 120000 }, () => {
+    const { calls, promptPath } = runWindowsAgentLaunch(shell, "claude", NASTY_PROMPT, { scoop: ["claude.cmd"] });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].shim, "scoop/cmd");
+    assert.equal(calls[0].args.at(-1), `Read the Athena task file at ${promptPath} and follow it.`);
+  });
+}
 
 test("PowerShell resume builder quotes the session id", () => {
   const command = launchResumePowerShellCommand("claude", "C:\\ws", "sess'9", null);

@@ -206,6 +206,7 @@ export function launchResumePowerShellCommand(
     "Write-Host \"[Context Workspace] Resuming $agentLabel session: $sessionId\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable, "win32"))} -ForegroundColor Red; return }`,
+    preferNonBatchAgentPowerShell(),
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
     agent.resumePowerShellCommand,
@@ -239,14 +240,20 @@ export function launchPowerShellCommand(
       : "Write-Host \"[Context Workspace] Launching $agentLabel\" -ForegroundColor Cyan",
     "$resolvedAgent = Get-Command $agentCommand -ErrorAction SilentlyContinue",
     `if (-not $resolvedAgent) { Write-Host ${quotePowerShell(missingAgentMessage(kind, agent.executable, "win32"))} -ForegroundColor Red; return }`,
+    preferNonBatchAgentPowerShell(),
     ...(kind === "opencode" ? [selectOpenCodeBaselinePowerShell()] : []),
     ...(kind === "claude" ? [repairClaudeBinaryPowerShell()] : []),
-    // Windows PowerShell 5.1 wraps space-containing native args in quotes but does NOT escape
-    // embedded double-quotes, so a multi-line prompt containing `"` (e.g. JSON examples) gets
-    // shattered into multiple argv tokens when agent launchers (codex.ps1 / claude npm shims)
-    // re-forward $args to node. Pre-escaping `"` as `\"` makes CommandLineToArgvW treat them as
-    // literal quotes inside a single argument. See agentConfig powerShellCommand.
-    promptPath ? "$prompt = (Get-Content -LiteralPath $promptPath -Raw).Replace('\"', '\\\"')" : "",
+    // The prompt file is written as UTF-8 without a BOM, which Windows PowerShell 5.1 would
+    // otherwise read in the ANSI code page.
+    promptPath ? "$prompt = Get-Content -LiteralPath $promptPath -Raw -Encoding UTF8" : "",
+    promptPath ? batchShimPromptFallbackPowerShell() : "",
+    // Windows PowerShell 5.1 (and pwsh before 7.3) wraps space-containing native args in quotes
+    // but does NOT escape embedded double-quotes, so a multi-line prompt containing `"` (e.g.
+    // JSON examples) gets shattered into multiple argv tokens when agent launchers (codex.ps1 /
+    // claude npm shims) re-forward $args to node. Pre-escaping `"` as `\"` makes
+    // CommandLineToArgvW treat them as literal quotes inside a single argument. pwsh 7.3+
+    // escapes them itself, so pre-escaping there would hand the agent a literal `\"`.
+    promptPath ? "if ((Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue) -notin @('Standard', 'Windows')) { $prompt = $prompt.Replace('\"', '\\\"') }" : "",
     promptPath ? agent.powerShellCommand : agent.powerShellCommandWithoutPrompt,
   ].filter(Boolean).join("; ");
 }
@@ -411,7 +418,10 @@ export function repairClaudeBinaryPowerShell(): string {
     "    }",
     "  }",
     "  if (-not $claudeLaunchReady) {",
-    "    foreach ($claudeCandidate in @(Get-Command claude -All -ErrorAction SilentlyContinue)) {",
+    // Batch shims go last: cmd.exe cuts multi-line prompts (see preferNonBatchAgentPowerShell).
+    "    $claudeCandidates = @(Get-Command claude -All -ErrorAction SilentlyContinue)",
+    "    $claudeCandidates = @($claudeCandidates | Where-Object { [string]$_.Path -match '\\.(exe|ps1)$' }) + @($claudeCandidates | Where-Object { [string]$_.Path -notmatch '\\.(exe|ps1)$' })",
+    "    foreach ($claudeCandidate in $claudeCandidates) {",
     "      if (-not $claudeCandidate.Path) { continue }",
     "      try {",
     "        & $claudeCandidate.Path --version 2>$null | Out-Null",
@@ -428,6 +438,37 @@ export function repairClaudeBinaryPowerShell(): string {
     "    Write-Host \"Claude Code is installed but not runnable. Repair or reinstall it: https://docs.anthropic.com/en/docs/claude-code/setup\" -ForegroundColor Red",
     "    return",
     "  }",
+    "}",
+  ].join("\n");
+}
+
+// A `.cmd`/`.bat` shim earlier on PATH (Scoop's `shims\claude.cmd`, or npm's own
+// `.cmd` when its `.ps1` is missing) shadows npm's `.ps1` shim and the native exe.
+// Batch files run under cmd.exe, which cuts `%*` at the first newline, so a
+// multi-line Athena task reached Claude as just "# Athena Task". cmd.exe also
+// re-parses `"`, `%` and `&`, so launch arguments must not pass through one when
+// another candidate on PATH can run the agent.
+export function preferNonBatchAgentPowerShell(): string {
+  return [
+    "if ([string]$resolvedAgent.Path -match '\\.(cmd|bat)$') {",
+    "  $nonBatchAgent = @(Get-Command $agentCommand -All -ErrorAction SilentlyContinue) | Where-Object { [string]$_.Path -match '\\.(exe|ps1)$' } | Select-Object -First 1",
+    "  if ($nonBatchAgent) {",
+    "    $agentCommand = $nonBatchAgent.Path",
+    "    $resolvedAgent = $nonBatchAgent",
+    "  }",
+    "}",
+  ].join("\n");
+}
+
+// Last resort when only a batch shim can run the agent: hand it a one-line
+// pointer to the prompt file instead of the prompt, which cmd.exe would cut at
+// the first newline. Runs after the per-agent repair, which can repick the command.
+export function batchShimPromptFallbackPowerShell(): string {
+  return [
+    "$agentLaunchPath = [string](Get-Command $agentCommand -ErrorAction SilentlyContinue | Select-Object -First 1).Path",
+    "if ($agentLaunchPath -match '\\.(cmd|bat)$') {",
+    "  Write-Host \"[Context Workspace] $agentLabel only resolves to a batch shim ($agentLaunchPath), which cuts multi-line arguments. Passing the Athena context file path instead.\" -ForegroundColor Yellow",
+    "  $prompt = \"Read the Athena task file at $promptPath and follow it.\"",
     "}",
   ].join("\n");
 }
